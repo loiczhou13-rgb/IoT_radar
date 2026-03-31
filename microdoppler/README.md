@@ -75,6 +75,11 @@ TX waveforms -> SDR (tx cyclic)
 ## Lancer (prévu)
 
 ```bash
-python -m microdoppler
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -U pip
+pip install numpy matplotlib pyadi-iio
+
+python -m microdoppler --uri ip:192.168.2.1 --fc 2.4e9 --fs 600000 --waveform cw_tone
 ```
 

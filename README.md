@@ -9,6 +9,7 @@ Objectif long terme (phase 2) : **localiser** (distance/position) — non implé
 - **PlutoSDR hacké** : on tient compte des limites **BW \(\le\) ~56 MHz** et **FS limitée**. Si la configuration demandée dépasse ces limites, l’app devra afficher un **warning** (valeur demandée, limite, valeur appliquée).
 
 Documentation détaillée de l’architecture MicroDoppler : `microdoppler/README.md`.
+Lancement (quand les dépendances sont installées) : `python -m microdoppler`.
 
 ## Environnement de développement (Windows/WSL2 ou VM Linux)
 
