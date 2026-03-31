@@ -1,5 +1,15 @@
 # Projet_IoT : Radar modulaire à base de SDR et d'IA
 
+## MicroDoppler (détection respiration) — aperçu
+
+Objectif court terme (phase 1) : **détecter une respiration** (mouvement périodique de faible amplitude) dans un contexte **séisme / avalanche**, via une signature **micro‑Doppler** (spectrogramme) et une **détection de périodicité**.  
+Objectif long terme (phase 2) : **localiser** (distance/position) — non implémenté pour l’instant.
+
+- **Portée** : en **CW micro‑Doppler** (phase 1), on **ne mesure pas de distance**. L’interface affiche plutôt des métriques utiles (résolution STFT \(\Delta t, \Delta f, \Delta v\), SNR, statut `PRESENT/ABSENT`).
+- **PlutoSDR hacké** : on tient compte des limites **BW \(\le\) ~56 MHz** et **FS limitée**. Si la configuration demandée dépasse ces limites, l’app devra afficher un **warning** (valeur demandée, limite, valeur appliquée).
+
+Documentation détaillée de l’architecture MicroDoppler : `microdoppler/README.md`.
+
 ## Environnement de développement (Windows/WSL2 ou VM Linux)
 
 Cette première étape sert à obtenir un Linux “propre” (WSL2 sous Windows ou VM Linux) avec Python et les dépendances système nécessaires pour exécuter les scripts. Les dépendances SDR (PlutoSDR/RTL-SDR, drivers, etc.) dépendent fortement du matériel : pour celles-ci, référez-vous ensuite à la documentation **pysdr**.
@@ -48,6 +58,13 @@ Si vous travaillez sur la partie Pluto (`PlutoWallDetection/PlutoFMCW`) :
 
 ```bash
 pip install -r PlutoWallDetection/PlutoFMCW/requirements.txt
+```
+
+Si vous travaillez sur le module MicroDoppler (nouveau, indépendant) :
+
+```bash
+# à préciser quand le module sera ajouté au repo
+python -m microdoppler
 ```
 
 ### Documentation SDR (pysdr)
