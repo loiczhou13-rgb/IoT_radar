@@ -12,17 +12,23 @@ class UiHandles:
     ax_tx: plt.Axes
     ax_rx: plt.Axes
     ax_md: plt.Axes
+    ax_conf: plt.Axes
 
     line_tx: any
     line_rx: any
     img_md: any
     txt: any
+    line_conf: any
+    line_present: any
+    line_conf_thresh: any
 
     initialized: bool = False
     rx_ylim_fixed: tuple[float, float] = (-140.0, -10.0)
     tx_ylim_fixed: tuple[float, float] = (-160.0, 20.0)
     xlim_tx: tuple[float, float] | None = None
     xlim_rx: tuple[float, float] | None = None
+    conf_history: np.ndarray | None = None
+    present_history: np.ndarray | None = None
 
 
 def _psd_db(x: np.ndarray, fs_hz: float, nfft: int = 4096) -> tuple[np.ndarray, np.ndarray]:
@@ -51,22 +57,32 @@ def create_ui(
     fig = plt.figure(figsize=(14, 9))
     fig.canvas.manager.set_window_title(title)
 
-    gs = fig.add_gridspec(2, 2, height_ratios=[1, 1.2], hspace=0.25, wspace=0.15)
+    gs = fig.add_gridspec(3, 2, height_ratios=[1, 1.15, 0.60], hspace=0.42, wspace=0.15)
     ax_tx = fig.add_subplot(gs[0, 0])
     ax_rx = fig.add_subplot(gs[0, 1])
     ax_md = fig.add_subplot(gs[1, :])
+    ax_conf = fig.add_subplot(gs[2, :])
 
     ax_tx.set_title("Spectre émission (bande de base)")
     ax_rx.set_title("Spectre réception (bande de base)")
     ax_md.set_title("Micro‑Doppler — spectrogramme (vitesse)")
+    ax_conf.set_title("Confiance détection (respiration)")
 
     ax_tx.set_xlabel("Fréquence (Hz)")
     ax_rx.set_xlabel("Fréquence (Hz)")
     ax_md.set_xlabel("Vitesse (m/s)")
     ax_md.set_ylabel("Temps (trames)")
+    ax_conf.set_xlabel("Temps (trames)")
+    ax_conf.set_ylabel("Confiance")
 
     line_tx, = ax_tx.plot([], [], lw=1.0, color="#00d4ff")
     line_rx, = ax_rx.plot([], [], lw=1.0, color="#ffb000")
+    line_conf, = ax_conf.plot([], [], lw=1.5, color="#00ff41", label="Confiance")
+    line_present, = ax_conf.plot([], [], lw=1.2, color="#ff3b3b", alpha=0.9, label="Présence (0/1)")
+    line_conf_thresh = ax_conf.axhline(0.6, color="yellow", lw=1.0, ls="--", alpha=0.7)
+    ax_conf.set_ylim(-0.05, 1.05)
+    ax_conf.grid(True, alpha=0.2)
+    ax_conf.legend(loc="upper right", fontsize=9)
 
     md_buf = np.full((history_frames, md_v_ms.size), -120.0, dtype=np.float32)
     img_md = ax_md.imshow(
@@ -83,7 +99,7 @@ def create_ui(
 
     txt = fig.text(
         0.01,
-        0.985,
+        0.975,
         "",
         ha="left",
         va="top",
@@ -97,12 +113,18 @@ def create_ui(
         ax_tx=ax_tx,
         ax_rx=ax_rx,
         ax_md=ax_md,
+        ax_conf=ax_conf,
         line_tx=line_tx,
         line_rx=line_rx,
         img_md=img_md,
         txt=txt,
+        line_conf=line_conf,
+        line_present=line_present,
+        line_conf_thresh=line_conf_thresh,
         rx_ylim_fixed=(float(rx_ylim[0]), float(rx_ylim[1])),
     )
+    ui.conf_history = np.zeros(history_frames, dtype=np.float32)
+    ui.present_history = np.zeros(history_frames, dtype=np.float32)
 
     def _zoom_at(ax: plt.Axes, xdata: float, ydata: float, scale: float) -> None:
         x0, x1 = ax.get_xlim()
@@ -149,6 +171,9 @@ def update_ui(
     tx_iq: np.ndarray,
     rx_iq: np.ndarray,
     md_slice_db: np.ndarray,
+    confidence: float,
+    is_present: bool,
+    confidence_threshold: float = 0.6,
     decision_text: str,
     metrics_text: str,
 ) -> None:
@@ -183,4 +208,17 @@ def update_ui(
     ui.img_md.set_array(buf)
 
     ui.txt.set_text(f"{decision_text}\n{metrics_text}")
+
+    # Confidence / presence history
+    if ui.conf_history is not None and ui.present_history is not None:
+        ui.conf_history = np.roll(ui.conf_history, -1)
+        ui.present_history = np.roll(ui.present_history, -1)
+        ui.conf_history[-1] = float(np.clip(confidence, 0.0, 1.0))
+        ui.present_history[-1] = 1.0 if is_present else 0.0
+        x = np.arange(ui.conf_history.size, dtype=np.float32)
+        ui.line_conf.set_data(x, ui.conf_history)
+        ui.line_present.set_data(x, ui.present_history)
+        # update threshold line
+        ui.line_conf_thresh.set_ydata([confidence_threshold, confidence_threshold])
+        ui.ax_conf.set_xlim(0, float(ui.conf_history.size - 1))
 
