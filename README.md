@@ -8,8 +8,8 @@ Objectif long terme (phase 2) : **localiser** (distance/position) — non implé
 - **Portée** : en **CW micro‑Doppler** (phase 1), on **ne mesure pas de distance**. L’interface affiche plutôt des métriques utiles (résolution STFT \(\Delta t, \Delta f, \Delta v\), SNR, statut `PRESENT/ABSENT`).
 - **PlutoSDR hacké** : on tient compte des limites **BW \(\le\) ~56 MHz** et **FS limitée**. Si la configuration demandée dépasse ces limites, l’app devra afficher un **warning** (valeur demandée, limite, valeur appliquée).
 
-Documentation détaillée de l’architecture MicroDoppler : `microdoppler/README.md`.
-Lancement (quand les dépendances sont installées) : `python -m microdoppler`.
+Documentation détaillée de l’architecture MicroDoppler : `MicroDoppler/README.md`.
+Lancement (quand les dépendances sont installées) : `python -m MicroDoppler`.
 
 ## Environnement de développement (Windows/WSL2 ou VM Linux)
 
@@ -65,7 +65,7 @@ Si vous travaillez sur le module MicroDoppler (nouveau, indépendant) :
 
 ```bash
 # à préciser quand le module sera ajouté au repo
-python -m microdoppler
+python -m MicroDoppler
 ```
 
 ### Documentation SDR (pysdr)

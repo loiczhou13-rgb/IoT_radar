@@ -26,9 +26,9 @@ Ce module vise la **détection de respiration** (mouvements périodiques de faib
 
 Le package vit à la racine du repo :
 
-- `microdoppler/`
+- `MicroDoppler/`
   - `__main__.py`
-    - point d’entrée : `python -m microdoppler`
+    - point d’entrée : `python -m MicroDoppler`
   - `main.py`
     - orchestration : init SDR, génération TX, boucle RX, pipeline DSP, UI
   - `config.py`
@@ -80,6 +80,6 @@ source .venv/bin/activate
 pip install -U pip
 pip install numpy matplotlib pyadi-iio
 
-python -m microdoppler --uri ip:192.168.2.1 --fc 2.4e9 --fs 600000 --waveform cw_tone
+python -m MicroDoppler --uri ip:192.168.2.1 --fc 2.4e9 --fs 600000 --waveform cw_tone
 ```
 

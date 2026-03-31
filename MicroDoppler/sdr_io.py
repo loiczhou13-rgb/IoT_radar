@@ -62,7 +62,7 @@ class PlutoSdrIO:
         _dlog(
             run_id="pre-fix",
             hypothesis_id="H1_uri_or_transport",
-            location="microdoppler/sdr_io.py:PlutoSdrIO.__init__",
+            location="MicroDoppler/sdr_io.py:PlutoSdrIO.__init__",
             message="Attempting adi.Pluto connection",
             data={
                 "uri": cfg.uri,
@@ -81,7 +81,7 @@ class PlutoSdrIO:
             _dlog(
                 run_id="pre-fix",
                 hypothesis_id="H2_no_device_found",
-                location="microdoppler/sdr_io.py:PlutoSdrIO.__init__",
+                location="MicroDoppler/sdr_io.py:PlutoSdrIO.__init__",
                 message="adi.Pluto connection failed",
                 data={"uri": cfg.uri, "error_type": type(e).__name__, "error": str(e)},
             )
