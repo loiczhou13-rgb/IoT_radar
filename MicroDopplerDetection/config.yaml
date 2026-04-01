@@ -1,0 +1,60 @@
+# ── Logging ─────────────────────────────────────────────────────────────────
+logging:
+  level: "INFO"               # DEBUG | INFO | WARNING — verbosity of console logs
+
+# ── Hardware (PlutoSDR / AD936x) ────────────────────────────────────────────
+sdr:
+  uri: "ip:192.168.2.1"       # Pluto URI: ip:192.168.2.1 (Ethernet) or usb:
+  f_c: 2.4e9                  # Carrier frequency (Hz) — lambda = c/f_c ≈ 12.5 cm at 2.4 GHz
+  f_s: 2.0e6                  # ADC sample rate (Hz) — Pluto min ≈ 521 kHz; sets unambiguous Doppler span ±f_s/2 before decimation
+  rx_gain: 40                 # RX gain (dB, manual mode) — aim for high ADC use without saturation
+  tx_gain: -20                # TX attenuation (dB, negative is typical) — reduce if RX saturates
+  buffer_size: 16384          # Samples per RX buffer (e.g. 2^14)
+  # Raw length n_frames×buffer_size should exceed n_fft×D after decimation (e.g. n_fft=8192, D=1000 → ≥ ~8.2e6 samples → n_frames≥501 @ 16384)
+  n_frames: 600
+
+# ── Transmission (baseband waveform pushed to TX DAC) ───────────────────────
+emission:
+  mode: "cw_offset"           # "cw" | "cw_offset" — baseband tone generation
+  f_offset: 10000             # Frequency offset (Hz) — only for cw_offset; shifts energy off DC after downconversion
+
+# ── Decimation (reduces sample rate before slow-time / Doppler analysis) ────
+decimation:
+  enable: true
+  D: 1000                     # Integer decimation factor — new rate f_s_new = f_s / D
+  f_max_utile: 10             # Highest useful Doppler frequency (Hz) — must satisfy Shannon: f_s/D > 2*f_max_utile
+
+# ── Clutter suppression (strong zero-Doppler / static scatterers) ─────────
+clutter:
+  mode: "iir"                 # "mean" | "iir" | "mti"
+  alpha: 0.99                 # EMA forgetting close to 1 ⇒ long memory (iir only)
+
+# ── Windowing (applied inside STFT per segment; reduces spectral leakage) ───
+windowing:
+  mode: "hann"                # "hann" | "hamming" | "blackman" | "none"
+
+# ── Spectrogram (short-time Fourier transform along slow-time) ──────────────
+spectrogramme:
+  # FFT length ≤ total decimated samples; for df ≈ 0.24 Hz at f_s_dec=2 kHz use n_fft≈8192 and capture ≥ ~8 s after decimation
+  n_fft: 8192
+  overlap: 0.90               # Overlap ratio between segments (0–1)
+
+# ── Detection (respiration band vs reference noise band) ────────────────────
+detection:
+  mode: "threshold"           # "threshold" | "none"
+  bande_respiration: [0.1, 0.8]   # Search band for respiration line (Hz)
+  bande_reference: [2.0, 5.0]     # Reference band for noise floor estimate (Hz)
+  seuil_snr_dB: 10            # Alert if SNR (dB) exceeds this threshold
+
+# ── Display (matplotlib waterfall) ──────────────────────────────────────────
+affichage:
+  dynamique_dB: 60            # Waterfall dynamic range (dB)
+  ylim: [-4, 4]               # Velocity axis limits (m/s) for Doppler display
+  colormap: "inferno"
+
+# ── Simulation (no hardware; synthetic IQ for algorithm checkout) ──────────
+simulation:
+  enable: false
+  fv: 0.3                     # Simulated breathing rate (Hz)
+  D_mm: 10                    # Chest displacement amplitude (mm)
+  snr_dB: 20                  # Target SNR (dB) for micro-Doppler tone vs additive noise
