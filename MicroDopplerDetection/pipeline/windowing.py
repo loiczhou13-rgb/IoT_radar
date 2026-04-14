@@ -1,63 +1,67 @@
-"""
-FFT window utilities to control spectral leakage on finite segments.
-"""
+"""Spectral window functions for STFT analysis."""
 
 from __future__ import annotations
 
 import logging
-from typing import Literal
 
 import numpy as np
+from scipy.signal import windows as _win
 
 logger = logging.getLogger(__name__)
 
-WindowMode = Literal["hann", "hamming", "blackman", "none"]
+_WINDOW_REGISTRY: dict[str, str] = {
+    "hann": "hann",
+    "hamming": "hamming",
+    "blackman": "blackman",
+}
 
 
-def get_window(mode: WindowMode, n_fft: int) -> np.ndarray:
-    """
-    Return a window vector of length ``n_fft`` for STFT/FFT framing.
+def get_window(mode: str, n: int) -> np.ndarray:
+    """Return a real-valued window of length *n*.
 
     Parameters
     ----------
-    mode
-        ``"hann"``, ``"hamming"``, ``"blackman"``, or ``"none"`` (rectangular).
-    n_fft
-        Window length in samples (typical ``1024``).
+    mode : str
+        Window type: ``"hann"``, ``"hamming"``, ``"blackman"``, or
+        ``"none"`` (rectangular — all ones).
+    n : int
+        Number of samples in the window.
 
     Returns
     -------
     numpy.ndarray
-        Real float64 window of shape ``(n_fft,)``. For ``"none"``, all ones.
+        Float64 array of shape ``(n,)`` with values in [0, 1].
 
-    Examples
-    --------
-    >>> w = get_window("hann", 16)
-    >>> w.shape
-    (16,)
+    Raises
+    ------
+    ValueError
+        If *mode* is not a recognised window name.
 
     Notes
     -----
-    Physical / DSP note: truncating slow-time IQ to a finite block is equivalent
-    to multiplying by a rectangle, which convolves the true spectrum with a
-    sinc-like kernel and leaks energy across Doppler bins. A tapered window
-    widens the main lobe slightly but strongly suppresses sidelobes from strong
-    static clutter remnants, improving detectability of weak breathing lines.
+    In STFT-based micro-Doppler analysis each time segment is multiplied
+    by a tapering window before the FFT.  This reduces **spectral leakage**
+    — energy from strong clutter residuals or harmonics spilling into the
+    weak respiratory bins.  The trade-off is a wider main lobe (lower
+    frequency resolution).
+
+    * Hann — good general-purpose choice; −31 dB first sidelobe.
+    * Hamming — slightly lower sidelobes (−43 dB) at the cost of a
+      discontinuity at the edges.
+    * Blackman — very low sidelobes (−58 dB), ~50 % wider main lobe.
+    * None (rectangular) — maximum resolution, maximum leakage; useful
+      only when the signal is well-isolated in frequency.
     """
-    n_fft = int(n_fft)
-    if n_fft < 1:
-        raise ValueError("n_fft must be >= 1")
-
     if mode == "none":
-        w = np.ones(n_fft, dtype=np.float64)
-    elif mode == "hann":
-        w = np.hanning(n_fft).astype(np.float64)
-    elif mode == "hamming":
-        w = np.hamming(n_fft).astype(np.float64)
-    elif mode == "blackman":
-        w = np.blackman(n_fft).astype(np.float64)
-    else:
-        raise ValueError(f"Unknown window mode: {mode!r}")
+        logger.debug("Fenêtre rectangulaire (none) — %d points", n)
+        return np.ones(n, dtype=np.float64)
 
-    logger.debug("Built %s window, n_fft=%d", mode, n_fft)
-    return w
+    if mode not in _WINDOW_REGISTRY:
+        raise ValueError(
+            f"Fenêtre inconnue : '{mode}'. "
+            f"Utiliser 'hann', 'hamming', 'blackman' ou 'none'."
+        )
+
+    w = getattr(_win, _WINDOW_REGISTRY[mode])(n)
+    logger.debug("Fenêtre '%s' — %d points", mode, n)
+    return np.asarray(w, dtype=np.float64)

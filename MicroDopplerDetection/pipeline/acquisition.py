@@ -1,288 +1,247 @@
-"""
-IQ acquisition and TX streaming with PlutoSDR via pyadi-iio.
-"""
+"""IQ acquisition from PlutoSDR hardware or numerical simulation."""
 
 from __future__ import annotations
 
 import logging
-import time
 from dataclasses import dataclass
-from typing import Any, Optional
 
 import numpy as np
 
-from .emission import scale_for_pyadi_tx
-
 logger = logging.getLogger(__name__)
 
-# ADC full-scale magnitude used for saturation checks (Pluto IQ commonly ±2048).
-_ADC_FULL_SCALE: float = 2048.0
-_SATURATION_FRACTION: float = 0.8
-_SATURATION_THRESHOLD: float = _ADC_FULL_SCALE * _SATURATION_FRACTION
+# ADC full-scale for the AD9363 12-bit converter.
+_ADC_FULL_SCALE: int = 2048
+_ADC_SATURATION_RATIO: float = 0.80
 
 
 @dataclass
 class AcquisitionResult:
-    """Container for IQ data and acquisition metadata."""
+    """Container for a raw IQ acquisition.
+
+    Attributes
+    ----------
+    iq : numpy.ndarray
+        Complex64 vector of concatenated IQ samples.
+    f_s : float
+        Sampling rate (Hz).
+    f_c : float
+        Carrier frequency (Hz).
+    duration_s : float
+        Total acquisition duration (seconds).
+    """
 
     iq: np.ndarray
-    """Complex baseband samples, shape ``(n_frames * buffer_size,)``."""
-
-    duration_s: float
-    """Total span of concatenated IQ (unit: s)."""
-
     f_s: float
-    """Sample rate used for this capture (unit: Hz)."""
-
     f_c: float
-    """Carrier frequency (unit: Hz)."""
-
-
-def _check_saturation(iq_raw_scaled: np.ndarray) -> None:
-    """
-    Warn if estimated integer IQ magnitudes exceed 80% of full scale.
-
-    Parameters
-    ----------
-    iq_raw_scaled
-        Samples normalized by ``2**11`` as returned from :func:`rx_to_normalized`.
-
-    Notes
-    -----
-    Physical note: saturated ADC bins flatten the phase trajectory and wipe
-    micro-Doppler structure; reduce RX gain or TX power if this triggers.
-    """
-    mag = np.abs(iq_raw_scaled) * (2.0**11)
-    peak = float(np.max(mag)) if mag.size else 0.0
-    if peak > _SATURATION_THRESHOLD:
-        logger.warning(
-            "Possible ADC saturation: max |IQ| ≈ %.0f (%.0f%% of full scale ±%.0f). "
-            "Reduce rx_gain or tx_gain.",
-            peak,
-            100.0 * peak / _ADC_FULL_SCALE,
-            _ADC_FULL_SCALE,
-        )
-
-
-def rx_to_normalized(rx: np.ndarray) -> np.ndarray:
-    """
-    Convert Pluto ``rx()`` output to float complex with RMS near unity scale.
-
-    Parameters
-    ----------
-    rx
-        Raw complex array from ``adi.Pluto.rx()`` (driver-dependent scaling).
-
-    Returns
-    -------
-    numpy.ndarray
-        Complex64 1-D array with the same length as ``rx``.
-
-    Examples
-    --------
-    >>> rx_to_normalized(np.array([2048 + 0j], dtype=np.complex64)).real
-    array([1.], dtype=float32)
-
-    Notes
-    -----
-    Physical note: consistent scaling makes downstream thresholds comparable
-    across sessions; absolute calibration is not required for Doppler products.
-    """
-    x = np.asarray(rx, dtype=np.complex64)
-    return (x / (2.0**11)).astype(np.complex64)
+    duration_s: float
 
 
 def acquire_pluto(
     uri: str,
     f_c: float,
     f_s: float,
-    rx_gain_db: float,
-    tx_gain_db: float,
+    rx_gain: float,
+    tx_gain: float,
     buffer_size: int,
     n_frames: int,
-    tx_iq: np.ndarray,
+    tx_buffer: np.ndarray,
 ) -> AcquisitionResult:
-    """
-    Configure PlutoSDR, start cyclic TX, and capture ``n_frames`` RX buffers.
+    """Acquire IQ data from a PlutoSDR transceiver.
 
     Parameters
     ----------
-    uri
-        libiio URI, e.g. ``"ip:192.168.2.1"`` or ``"usb:"`` (unitless).
-    f_c
-        LO / carrier frequency (unit: Hz, typical ``2.4e9``).
-    f_s
-        IQ sample rate (unit: Hz, typical ``2.0e6``).
-    rx_gain_db
-        Manual RX gain in dB (typical ``40``).
-    tx_gain_db
-        TX hardware gain in dB (often negative attenuation, typical ``-20``).
-    buffer_size
-        Samples per ``rx()`` call (typical ``16384``).
-    n_frames
-        Number of buffers to concatenate (typical ``200``).
-    tx_iq
-        Cyclic TX buffer (complex64), peak nominally ``2**14`` before scaling.
+    uri : str
+        PlutoSDR address, e.g. ``"ip:192.168.2.1"`` or ``"usb:"``.
+    f_c : float
+        Carrier frequency (Hz), e.g. 2.4e9.
+    f_s : float
+        ADC sampling rate (Hz), e.g. 2.0e6.
+    rx_gain : float
+        Receiver gain (dB), manual mode.
+    tx_gain : float
+        Transmitter attenuation (dB, negative value).
+    buffer_size : int
+        Samples per RX buffer.
+    n_frames : int
+        Number of buffers to collect.
+    tx_buffer : numpy.ndarray
+        Complex64 baseband TX waveform (cyclic buffer).
 
     Returns
     -------
     AcquisitionResult
-        Concatenated IQ and timing metadata.
+        Concatenated IQ vector with metadata.
 
-    Examples
-    --------
-    >>> # result = acquire_pluto("ip:192.168.2.1", 2.4e9, 2e6, 40, -20, 256, 4, iq)
+    Raises
+    ------
+    RuntimeError
+        If the PlutoSDR cannot be reached at *uri*.
 
     Notes
     -----
-    Physical note: coherent CW illumination with shared LO on TX/RX preserves
-    phase of the echo so that slow chest motion modulates the baseband phase.
+    The PlutoSDR streams IQ samples at *f_s*.  Each call to ``sdr.rx()``
+    returns one buffer of *buffer_size* complex samples.  We collect
+    *n_frames* consecutive buffers and concatenate them into a single
+    contiguous vector so that downstream processing (decimation, STFT) can
+    operate on a long, uninterrupted time series.
+
+    The TX path is configured in cyclic mode: the PlutoSDR replays
+    *tx_buffer* continuously while receiving, ensuring a coherent CW or
+    CW-offset illumination.
     """
     try:
-        import adi  # type: ignore
-    except Exception as exc:  # pragma: no cover - import guard
+        import adi  # pyadi-iio
+    except ImportError as exc:
         raise RuntimeError(
-            "pyadi-iio is not installed. Install with `pip install pyadi-iio` "
-            "and ensure libiio is available on the system."
+            "pyadi-iio n'est pas installé. Exécuter : pip install pyadi-iio"
         ) from exc
 
-    buffer_size = int(buffer_size)
-    n_frames = int(n_frames)
-    if buffer_size < 1 or n_frames < 1:
-        raise ValueError("buffer_size and n_frames must be positive integers.")
-
-    logger.info(
-        "Connecting to PlutoSDR uri=%s f_c=%.3e Hz f_s=%.3e Hz buffer=%d frames=%d",
-        uri,
-        f_c,
-        f_s,
-        buffer_size,
-        n_frames,
-    )
-
     try:
-        sdr: Any = adi.Pluto(uri)
+        sdr = adi.Pluto(uri)
     except Exception as exc:
-        logger.error("PlutoSDR connection failed: %s", exc)
         raise RuntimeError(
-            "Could not open PlutoSDR. Check USB/Ethernet cable, power, "
-            "URI (e.g. ip:192.168.2.1), and that libiio sees the device "
-            "(libiio-utils / iio_info)."
+            f"Impossible de se connecter au PlutoSDR à '{uri}'. "
+            f"Vérifier l'adresse IP (ex. ip:192.168.2.1) ou la connexion USB (usb:)."
         ) from exc
 
     sdr.sample_rate = int(f_s)
     sdr.rx_lo = int(f_c)
     sdr.tx_lo = int(f_c)
+    sdr.rx_rf_bandwidth = int(f_s)
+    sdr.tx_rf_bandwidth = int(f_s)
     sdr.rx_buffer_size = buffer_size
-    sdr.rx_gain_control_mode_chan0 = "manual"
-    sdr.rx_hardwaregain_chan0 = int(rx_gain_db)
-    sdr.tx_gain_control_mode_chan0 = "manual"
-    sdr.tx_hardwaregain_chan0 = int(tx_gain_db)
+    sdr.gain_control_mode_chan0 = "manual"
+    sdr.rx_hardwaregain_chan0 = rx_gain
+    sdr.tx_hardwaregain_chan0 = tx_gain
 
-    tx_scaled = scale_for_pyadi_tx(np.asarray(tx_iq, dtype=np.complex64))
-    sdr.tx_destroy_buffer()
     sdr.tx_cyclic_buffer = True
-    sdr.tx(tx_scaled)
+    sdr.tx(tx_buffer)
 
-    chunks: list[np.ndarray] = []
-    t0 = time.perf_counter()
-    for k in range(n_frames):
-        raw = sdr.rx()
-        x = rx_to_normalized(np.asarray(raw, dtype=np.complex64))
-        _check_saturation(x)
-        chunks.append(x)
-    elapsed = time.perf_counter() - t0
-
-    try:
-        sdr.tx_destroy_buffer()
-    except Exception:
-        pass
-
-    iq = np.concatenate(chunks, axis=0).astype(np.complex64)
-    duration_s = float(iq.shape[0]) / float(f_s)
     logger.info(
-        "Acquisition finished: %.3f s of IQ (nominal), loop wall time %.3f s",
-        duration_s,
-        elapsed,
+        "Acquisition PlutoSDR — %d trames × %d échantillons à %.0f Hz",
+        n_frames,
+        buffer_size,
+        f_s,
     )
-    return AcquisitionResult(iq=iq, duration_s=duration_s, f_s=float(f_s), f_c=float(f_c))
+
+    frames: list[np.ndarray] = []
+    for i in range(n_frames):
+        frame = sdr.rx()
+        _check_saturation(frame, i)
+        frames.append(frame)
+        if (i + 1) % 100 == 0:
+            logger.debug("Trame %d / %d acquise", i + 1, n_frames)
+
+    sdr.tx_destroy_buffer()
+
+    iq = np.concatenate(frames).astype(np.complex64)
+    duration_s = len(iq) / f_s
+    logger.info("Acquisition terminée — %.2f s, %d échantillons", duration_s, len(iq))
+    return AcquisitionResult(iq=iq, f_s=f_s, f_c=f_c, duration_s=duration_s)
 
 
 def synthesize_iq(
-    f_s: float,
     f_c: float,
-    n_samples: int,
-    fv_hz: float,
-    displacement_m: float,
-    snr_db: float,
-    clutter_to_micro_ratio: float = 100.0,
-    rng: Optional[np.random.Generator] = None,
-) -> np.ndarray:
-    """
-    Generate synthetic baseband IQ with breathing line, strong clutter, and noise.
-
-    The micro-Doppler tone is simplified as ``J1(m) * exp(j*2*pi*fv*t)`` on top
-    of a static clutter phasor and complex Gaussian noise, matching the prompt.
+    f_s: float,
+    buffer_size: int,
+    n_frames: int,
+    fv: float,
+    D_mm: float,
+    snr_dB: float,
+    f_offset: float = 0.0,
+) -> AcquisitionResult:
+    """Synthesize a simulated IQ signal containing respiration micro-Doppler.
 
     Parameters
     ----------
-    f_s
-        Sample rate (unit: Hz).
-    f_c
-        Carrier used only to compute wavelength (unit: Hz).
-    n_samples
-        Total IQ samples (unit: samples).
-    fv_hz
-        Breathing frequency (unit: Hz, typical ``0.3``).
-    displacement_m
-        Peak chest displacement (unit: m, e.g. ``0.010`` for 10 mm).
-    snr_db
-        Target SNR of the micro-Doppler tone vs additive noise in linear domain
-        after clutter is *not* counted as noise (typical ``20``).
-    clutter_to_micro_ratio
-        Complex amplitude ratio ``|clutter| / |micro_line|`` (typical ``100``).
-    rng
-        Optional NumPy random generator for reproducibility.
+    f_c : float
+        Carrier frequency (Hz), e.g. 2.4e9.  Used only for metadata and
+        wavelength computation.
+    f_s : float
+        Sampling rate (Hz), e.g. 2.0e6.
+    buffer_size : int
+        Samples per virtual buffer (for total length calculation).
+    n_frames : int
+        Number of virtual buffers.
+    fv : float
+        Simulated breathing frequency (Hz), e.g. 0.3.
+    D_mm : float
+        Chest displacement amplitude (mm), e.g. 10.
+    snr_dB : float
+        Target SNR (dB) of the micro-Doppler signal vs. additive white
+        Gaussian noise.
+    f_offset : float, optional
+        Baseband frequency offset (Hz).  When using CW-offset emission the
+        simulated signal is centred at *f_offset* instead of DC.
 
     Returns
     -------
-    numpy.ndarray
-        Complex64 array of shape ``(n_samples,)``.
-
-    Examples
-    --------
-    >>> x = synthesize_iq(2e6, 2.4e9, 10000, 0.3, 0.01, 20.0, rng=np.random.default_rng(0))
-    >>> x.shape
-    (10000,)
+    AcquisitionResult
+        Simulated IQ vector with metadata (same interface as
+        :func:`acquire_pluto`).
 
     Notes
     -----
-    Physical note: the full phase-modulated echo ``exp(j*m*sin(2*pi*fv*t))``
-    produces Bessel sidebands at ``±k*fv``; using the first sideband amplitude
-    ``J1(m)`` isolates the dominant breathing line when modulation index
-    ``m = 4*pi*D/lambda`` is modest.
+    The received baseband signal from a breathing target is modelled as:
+
+    .. math::
+
+        x(t) = A_{clutter} + \\exp\\bigl(j\\,[2\\pi f_{offset}\\,t
+               - \\tfrac{4\\pi D}{\\lambda}\\sin(2\\pi f_v t)]\\bigr)
+               + n(t)
+
+    where the first term is static clutter (100× the signal amplitude at
+    0 Hz), the exponential is the phase-modulated return from the chest
+    wall, and *n(t)* is complex AWGN scaled to achieve *snr_dB*.
+
+    The phase-modulation index is  m = 4πD/λ.  For D = 10 mm and
+    λ = 12.5 cm, m ≈ 1.0, placing most energy in the J₀ and J₁ Bessel
+    terms.
     """
-    from scipy.special import jv  # local import keeps module import light
+    c = 299_792_458.0
+    wavelength = c / f_c
+    D_m = D_mm * 1e-3
 
-    rng = rng or np.random.default_rng()
-    n_samples = int(n_samples)
-    t = np.arange(n_samples, dtype=np.float64) / float(f_s)
+    n_total = buffer_size * n_frames
+    t = np.arange(n_total, dtype=np.float64) / f_s
 
-    c_light = 299792458.0
-    wavelength = c_light / float(f_c)
-    m = 4.0 * np.pi * float(displacement_m) / wavelength
-    j1 = float(jv(1, m))
-    micro = j1 * np.exp(1j * 2.0 * np.pi * float(fv_hz) * t)
+    phase_mod = (4.0 * np.pi * D_m / wavelength) * np.sin(2.0 * np.pi * fv * t)
+    carrier = 2.0 * np.pi * f_offset * t if f_offset != 0.0 else 0.0
+    signal = np.exp(1j * (carrier - phase_mod))
 
-    clutter = clutter_to_micro_ratio * np.exp(1j * float(rng.uniform(-np.pi, np.pi)))
-    clutter_vec = np.full(n_samples, clutter, dtype=np.complex128)
+    clutter_amplitude = 100.0
+    clutter = clutter_amplitude * np.ones(n_total, dtype=np.complex128)
 
-    signal_power = float(np.mean(np.abs(micro) ** 2))
-    noise_power = signal_power / (10.0 ** (float(snr_db) / 10.0))
-    noise_sigma = np.sqrt(noise_power / 2.0)
-    noise = (noise_sigma * (rng.standard_normal(n_samples) + 1j * rng.standard_normal(n_samples))).astype(
-        np.complex128
+    noise_power = 10.0 ** (-snr_dB / 10.0)
+    noise_std = np.sqrt(noise_power / 2.0)
+    rng = np.random.default_rng()
+    noise = noise_std * (
+        rng.standard_normal(n_total) + 1j * rng.standard_normal(n_total)
     )
 
-    x = clutter_vec + micro.astype(np.complex128) + noise
-    return x.astype(np.complex64)
+    iq = (clutter + signal + noise).astype(np.complex64)
+
+    duration_s = n_total / f_s
+    logger.info(
+        "Signal simulé — fv=%.2f Hz, D=%.1f mm, SNR=%.0f dB, %.2f s",
+        fv,
+        D_mm,
+        snr_dB,
+        duration_s,
+    )
+    return AcquisitionResult(iq=iq, f_s=f_s, f_c=f_c, duration_s=duration_s)
+
+
+def _check_saturation(frame: np.ndarray, frame_index: int) -> None:
+    """Warn if the IQ frame approaches ADC saturation."""
+    peak = np.max(np.abs(frame))
+    threshold = _ADC_SATURATION_RATIO * _ADC_FULL_SCALE
+    if peak > threshold:
+        logger.warning(
+            "Saturation ADC probable — trame %d : max(|IQ|) = %.0f "
+            "(seuil = %.0f, pleine échelle = %d)",
+            frame_index,
+            peak,
+            threshold,
+            _ADC_FULL_SCALE,
+        )

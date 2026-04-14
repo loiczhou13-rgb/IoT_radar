@@ -1,6 +1,4 @@
-"""
-Short-time Fourier transform and log-magnitude spectrogram for micro-Doppler.
-"""
+"""Short-Time Fourier Transform (STFT) computation for micro-Doppler analysis."""
 
 from __future__ import annotations
 
@@ -8,151 +6,148 @@ import logging
 from dataclasses import dataclass
 
 import numpy as np
-from scipy import signal
+from scipy.signal import stft as _scipy_stft
 
-from .windowing import WindowMode, get_window
+from MicroDopplerDetection.pipeline.windowing import get_window
 
 logger = logging.getLogger(__name__)
+
+_SPEED_OF_LIGHT: float = 299_792_458.0
 
 
 @dataclass
 class SpectrogramOutput:
-    """STFT products and derived axes."""
+    """Container for STFT results and derived physical axes.
+
+    Attributes
+    ----------
+    Z : numpy.ndarray
+        Complex STFT matrix, shape ``(n_freq, n_time)``, frequency axis
+        centred (fftshifted).
+    S_db : numpy.ndarray
+        Power spectrogram in dB, ``20·log10(|Z| + eps)``, same shape.
+    f_hz : numpy.ndarray
+        Doppler frequency axis (Hz), centred around 0, shape ``(n_freq,)``.
+    v_mps : numpy.ndarray
+        Radial velocity axis (m/s), ``v = f·λ/2``, shape ``(n_freq,)``.
+    t_s : numpy.ndarray
+        Slow-time axis (s), shape ``(n_time,)``.
+    df_hz : float
+        Frequency resolution (Hz) = ``f_s / n_fft``.
+    dv_mps : float
+        Velocity resolution (m/s) = ``df_hz · λ / 2``.
+    """
 
     Z: np.ndarray
-    """Complex STFT, shape ``(n_fft, n_frames_stft)``."""
-
     S_db: np.ndarray
-    """Log magnitude ``20*log10(|Z|+eps)``, same shape as ``Z``."""
-
     f_hz: np.ndarray
-    """Doppler frequency axis (Hz), shape ``(n_fft,)``, fft-shifted."""
-
-    t_s: np.ndarray
-    """Time axis of STFT columns (s), shape ``(n_frames_stft,)``."""
-
     v_mps: np.ndarray
-    """Velocity axis ``f * lambda / 2`` (m/s), same as ``f_hz`` mapping."""
-
+    t_s: np.ndarray
     df_hz: float
-    """Approximate frequency bin spacing (Hz)."""
-
     dv_mps: float
-    """Approximate velocity bin spacing (m/s)."""
 
 
 def compute_spectrogram(
-    x: np.ndarray,
+    iq: np.ndarray,
     f_s: float,
     f_c: float,
     n_fft: int,
-    overlap_ratio: float,
-    window_mode: WindowMode,
+    overlap: float,
+    window_mode: str,
 ) -> SpectrogramOutput:
-    """
-    Compute the complex STFT and a decibel spectrogram for IQ slow-time.
+    """Compute the STFT of a decimated, clutter-suppressed IQ signal.
 
     Parameters
     ----------
-    x
-        Complex IQ after clutter filtering, shape ``(N,)``.
-    f_s
-        Sample rate after decimation (unit: Hz).
-    f_c
-        Carrier frequency to compute wavelength (unit: Hz).
-    n_fft
-        FFT length / STFT frame length (samples, typical ``1024``).
-    overlap_ratio
-        Fraction of ``n_fft`` overlapped between adjacent windows (typical
-        ``0.90`` → ``noverlap = int(0.9 * n_fft)``).
-    window_mode
-        Taper applied per segment before FFT (see :mod:`windowing`).
+    iq : numpy.ndarray
+        Complex IQ samples (1-D) after decimation and clutter removal.
+    f_s : float
+        Sampling rate of *iq* (Hz), i.e. the decimated rate.
+    f_c : float
+        Carrier frequency (Hz), used to convert Doppler shifts to radial
+        velocities via ``v = f_doppler · λ / 2``.
+    n_fft : int
+        FFT length (number of frequency bins), e.g. 8192.
+    overlap : float
+        Overlap ratio between successive STFT segments (0 to < 1),
+        e.g. 0.90.
+    window_mode : str
+        Window name passed to :func:`~pipeline.windowing.get_window`.
 
     Returns
     -------
     SpectrogramOutput
-        ``Z``, ``S_db``, shifted frequency/velocity axes, and resolutions.
-
-    Examples
-    --------
-    >>> x = np.exp(1j * 2 * np.pi * 0.3 * np.arange(8000) / 200).astype(np.complex64)
-    >>> out = compute_spectrogram(x, 200.0, 2.4e9, 256, 0.5, "hann")
-    >>> out.Z.ndim
-    2
+        Dataclass containing the complex STFT matrix, dB spectrogram,
+        frequency / velocity / time axes, and resolution figures.
 
     Notes
     -----
-    Physical note: the STFT separates slow-time variations of the echo phase
-    into Doppler bins; breathing sidebands appear as narrow ridges that persist
-    across time columns, whereas wideband noise fills the panel uniformly.
+    The STFT decomposes the time-domain IQ stream into a 2-D
+    time–frequency representation.  For a CW micro-Doppler radar this
+    reveals **how the Doppler content evolves over slow time**:
+
+    * Respiratory motion creates a characteristic sinusoidal trace at
+      ±f_v in the spectrogram (the "micro-Doppler signature").
+    * Harmonics at ±2·f_v, ±3·f_v appear due to the non-linear
+      phase-modulation (Bessel expansion), though J_2, J_3 are weaker.
+    * The frequency axis is converted to radial velocity using the
+      Doppler relation v = f·λ/2, providing a physically meaningful
+      display on the dashboard.
+
+    The frequency axis is **centred** (via ``fftshift``) so that 0 Hz /
+    0 m/s sits in the middle of the axis, with negative velocities
+    (approaching target) below and positive (receding) above.
     """
-    x = np.asarray(x, dtype=np.complex64)
-    n_fft = int(n_fft)
-    if n_fft < 2:
-        raise ValueError("n_fft must be >= 2")
-    n_in = int(x.shape[0])
-    if n_in < n_fft:
-        logger.warning(
-            "Clamping n_fft from %d to signal length %d (capture more frames or reduce decimation D).",
-            n_fft,
-            n_in,
-        )
-        n_fft = max(2, n_in)
-    if not (0.0 <= overlap_ratio < 1.0):
-        raise ValueError("overlap_ratio must be in [0, 1)")
+    wavelength = _SPEED_OF_LIGHT / f_c
+    nperseg = n_fft
+    noverlap = int(n_fft * overlap)
 
-    noverlap = int(round(overlap_ratio * n_fft))
-    noverlap = min(max(noverlap, 0), n_fft - 1)
+    window = get_window(window_mode, nperseg)
 
-    win = get_window(window_mode, n_fft)
-    nfft = n_fft
-
-    f_raw, t_raw, Zxx = signal.stft(
-        x,
-        fs=f_s,
-        window=win,
-        nperseg=n_fft,
-        noverlap=noverlap,
-        nfft=nfft,
-        return_onesided=False,
-        boundary="zeros",
-        padded=True,
-        axis=-1,
+    logger.info(
+        "STFT — n_fft=%d, overlap=%.0f%%, fenêtre='%s', f_s=%.1f Hz",
+        n_fft,
+        overlap * 100,
+        window_mode,
+        f_s,
     )
 
-    # scipy returns Zxx shape (n_freq, n_segments); for complex input n_freq == n_fft
-    Z = np.asarray(Zxx, dtype=np.complex64)
-    f_stft = np.asarray(f_raw, dtype=np.float64)
-    t_stft = np.asarray(t_raw, dtype=np.float64)
+    f_raw, t_raw, Z_raw = _scipy_stft(
+        iq,
+        fs=f_s,
+        window=window,
+        nperseg=nperseg,
+        noverlap=noverlap,
+        nfft=n_fft,
+        return_onesided=False,
+    )
 
-    f_hz = np.fft.fftshift(f_stft)
-    Z = np.fft.fftshift(Z, axes=0)
-
-    c_light = 299792458.0
-    wavelength = c_light / float(f_c)
-    v_mps = f_hz * wavelength / 2.0
+    f_hz = np.fft.fftshift(f_raw)
+    Z = np.fft.fftshift(Z_raw, axes=0)
+    t_s = np.asarray(t_raw, dtype=np.float64)
 
     eps = 1e-12
-    S_db = (20.0 * np.log10(np.abs(Z) + eps)).astype(np.float64)
+    S_db = 20.0 * np.log10(np.abs(Z) + eps)
 
-    df_hz = float(f_s) / float(n_fft)
+    v_mps = f_hz * wavelength / 2.0
+
+    df_hz = f_s / n_fft
     dv_mps = df_hz * wavelength / 2.0
 
     logger.info(
-        "STFT: n_fft=%d overlap=%.3f -> df≈%.4g Hz, dv≈%.4g m/s, %d time frames",
-        n_fft,
-        overlap_ratio,
+        "Spectrogramme — %d bins freq × %d trames, δf=%.4f Hz, δv=%.4f m/s",
+        Z.shape[0],
+        Z.shape[1],
         df_hz,
         dv_mps,
-        Z.shape[1],
     )
 
     return SpectrogramOutput(
-        Z=Z,
-        S_db=S_db,
-        f_hz=f_hz,
-        t_s=t_stft,
-        v_mps=v_mps,
+        Z=Z.astype(np.complex64),
+        S_db=S_db.astype(np.float64),
+        f_hz=f_hz.astype(np.float64),
+        v_mps=v_mps.astype(np.float64),
+        t_s=t_s,
         df_hz=df_hz,
         dv_mps=dv_mps,
     )

@@ -1,6 +1,14 @@
-#!/usr/bin/env python3
-"""
-Entry point: load YAML, run emission → acquisition → processing → display.
+"""CLI entry point for the micro-Doppler radar pipeline.
+
+Usage
+-----
+Hardware mode::
+
+    python -m MicroDopplerDetection.main --config MicroDopplerDetection/config.yaml
+
+Simulation mode::
+
+    python -m MicroDopplerDetection.main --config MicroDopplerDetection/config.yaml --simulation
 """
 
 from __future__ import annotations
@@ -9,182 +17,278 @@ import argparse
 import logging
 import sys
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Generator
 
-import numpy as np
 import yaml
+import numpy as np
 
-# Ensure package imports resolve when launched as `python main.py`
-_ROOT = Path(__file__).resolve().parent
-if str(_ROOT) not in sys.path:
-    sys.path.insert(0, str(_ROOT))
+from MicroDopplerDetection.pipeline.emission import generate_tx_buffer
+from MicroDopplerDetection.pipeline.acquisition import (
+    AcquisitionResult,
+    acquire_pluto,
+    synthesize_iq,
+)
+from MicroDopplerDetection.pipeline.decimation import decimate_iq
+from MicroDopplerDetection.pipeline.clutter import remove_clutter
+from MicroDopplerDetection.pipeline.spectrogramme import (
+    SpectrogramOutput,
+    compute_spectrogram,
+)
+from MicroDopplerDetection.pipeline.detection import (
+    detect_respiration,
+    snr_db_per_column,
+)
+from MicroDopplerDetection.utils.display import DashboardRadar
 
-from pipeline.acquisition import AcquisitionResult, acquire_pluto, synthesize_iq
-from pipeline.clutter import ClutterMode, suppress_clutter
-from pipeline.decimation import decimate_iq
-from pipeline.detection import DetectionMode, detect_respiration
-from pipeline.emission import EmissionMode, generate_tx_waveform
-from pipeline.spectrogramme import SpectrogramOutput, compute_spectrogram
-from pipeline.windowing import WindowMode
-from utils.display import DisplayConfig, show_waterfall
-
-logger = logging.getLogger("radar")
-
-
-def _load_yaml(path: Path) -> dict[str, Any]:
-    with path.open("r", encoding="utf-8") as f:
-        data = yaml.safe_load(f)
-    if not isinstance(data, Mapping):
-        raise ValueError("config root must be a mapping")
-    return dict(data)
+logger = logging.getLogger(__name__)
 
 
-def _setup_logging(level_name: str) -> None:
-    level = getattr(logging, str(level_name).upper(), logging.INFO)
+# ------------------------------------------------------------------
+# Configuration loading
+# ------------------------------------------------------------------
+
+def _load_config(path: str) -> dict[str, Any]:
+    """Load and return the YAML configuration file."""
+    cfg_path = Path(path)
+    if not cfg_path.is_file():
+        print(f"ERREUR : fichier de configuration introuvable : {path}", file=sys.stderr)
+        sys.exit(1)
+    with open(cfg_path, encoding="utf-8") as fh:
+        cfg = yaml.safe_load(fh)
+    return cfg
+
+
+def _setup_logging(cfg: dict[str, Any]) -> None:
+    """Configure the root logger from the config ``logging`` section."""
+    level_name = cfg.get("logging", {}).get("level", "INFO")
+    level = getattr(logging, level_name.upper(), logging.INFO)
     logging.basicConfig(
         level=level,
-        format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+        format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
+        datefmt="%H:%M:%S",
     )
 
 
-def run_pipeline(cfg: Mapping[str, Any], simulation_override: bool) -> None:
+# ------------------------------------------------------------------
+# Pipeline orchestration
+# ------------------------------------------------------------------
+
+def _run_acquisition(cfg: dict[str, Any], simulation: bool) -> AcquisitionResult:
+    """Execute the acquisition stage (hardware or simulation)."""
     sdr = cfg["sdr"]
-    emission = cfg["emission"]
-    decim = cfg["decimation"]
-    clutter = cfg["clutter"]
-    windowing = cfg["windowing"]
-    spec_cfg = cfg["spectrogramme"]
-    det = cfg["detection"]
-    aff = cfg["affichage"]
+    emi = cfg["emission"]
     sim = cfg["simulation"]
 
-    use_sim = bool(sim.get("enable", False)) or simulation_override
-    f_c = float(sdr["f_c"])
-    f_s = float(sdr["f_s"])
-    buffer_size = int(sdr["buffer_size"])
-    n_frames = int(sdr["n_frames"])
-
-    if use_sim:
-        logger.info("Running in SIMULATION mode (no PlutoSDR).")
-        n_total = buffer_size * n_frames
-        rng = np.random.default_rng(42)
-        iq = synthesize_iq(
-            f_s=f_s,
-            f_c=f_c,
-            n_samples=n_total,
-            fv_hz=float(sim["fv"]),
-            displacement_m=float(sim["D_mm"]) / 1000.0,
-            snr_db=float(sim["snr_dB"]),
-            rng=rng,
-        )
-        acq = AcquisitionResult(iq=iq, duration_s=float(iq.shape[0]) / f_s, f_s=f_s, f_c=f_c)
-    else:
-        mode: EmissionMode = str(emission["mode"])  # type: ignore[assignment]
-        f_off = float(emission.get("f_offset", 0.0))
-        tx_buf = generate_tx_waveform(
-            mode,
-            n_samples=buffer_size,
-            f_s=f_s,
-            f_offset_hz=f_off,
-        )
-        acq = acquire_pluto(
-            uri=str(sdr["uri"]),
-            f_c=f_c,
-            f_s=f_s,
-            rx_gain_db=float(sdr["rx_gain"]),
-            tx_gain_db=float(sdr["tx_gain"]),
-            buffer_size=buffer_size,
-            n_frames=n_frames,
-            tx_iq=tx_buf,
-        )
-
-    iq_dec, f_s_dec = decimate_iq(
-        acq.iq,
-        f_s=acq.f_s,
-        factor=int(decim["D"]),
-        f_max_utile_hz=float(decim["f_max_utile"]),
-        enabled=bool(decim.get("enable", True)),
+    tx_buffer = generate_tx_buffer(
+        mode=emi["mode"],
+        buffer_size=sdr["buffer_size"],
+        f_s=sdr["f_s"],
+        f_offset=emi.get("f_offset", 0.0),
     )
 
-    clutter_mode: ClutterMode = str(clutter["mode"])  # type: ignore[assignment]
-    iq_filt = suppress_clutter(
-        iq_dec,
-        mode=clutter_mode,
-        alpha=float(clutter.get("alpha", 0.99)),
+    if simulation or sim.get("enable", False):
+        logger.info("Mode simulation activé")
+        # In simulation the IQ signal is already in baseband (no RF mixer),
+        # so the breathing signature sits near 0 Hz regardless of f_offset.
+        return synthesize_iq(
+            f_c=sdr["f_c"],
+            f_s=sdr["f_s"],
+            buffer_size=sdr["buffer_size"],
+            n_frames=sdr["n_frames"],
+            fv=sim["fv"],
+            D_mm=sim["D_mm"],
+            snr_dB=sim["snr_dB"],
+            f_offset=0.0,
+        )
+
+    logger.info("Mode matériel — connexion au PlutoSDR")
+    return acquire_pluto(
+        uri=sdr["uri"],
+        f_c=sdr["f_c"],
+        f_s=sdr["f_s"],
+        rx_gain=sdr["rx_gain"],
+        tx_gain=sdr["tx_gain"],
+        buffer_size=sdr["buffer_size"],
+        n_frames=sdr["n_frames"],
+        tx_buffer=tx_buffer,
     )
 
-    win_mode: WindowMode = str(windowing["mode"])  # type: ignore[assignment]
-    spec: SpectrogramOutput = compute_spectrogram(
-        iq_filt,
-        f_s=f_s_dec,
+
+def _run_preprocessing(
+    cfg: dict[str, Any],
+    acq: AcquisitionResult,
+) -> tuple[np.ndarray, float]:
+    """Decimate and remove clutter from the acquired IQ signal."""
+    dec = cfg["decimation"]
+    clu = cfg["clutter"]
+
+    iq = acq.iq
+    f_s = acq.f_s
+
+    if dec.get("enable", True):
+        iq, f_s = decimate_iq(
+            iq=iq,
+            f_s=f_s,
+            D=dec["D"],
+            f_max_utile=dec["f_max_utile"],
+        )
+
+    iq = remove_clutter(
+        iq=iq,
+        mode=clu["mode"],
+        alpha=clu.get("alpha", 0.99),
+    )
+
+    return iq, f_s
+
+
+def _run_analysis(
+    cfg: dict[str, Any],
+    iq: np.ndarray,
+    f_s: float,
+    f_c: float,
+) -> SpectrogramOutput:
+    """Compute the STFT spectrogram."""
+    spec = cfg["spectrogramme"]
+    win = cfg["windowing"]
+
+    return compute_spectrogram(
+        iq=iq,
+        f_s=f_s,
         f_c=f_c,
-        n_fft=int(spec_cfg["n_fft"]),
-        overlap_ratio=float(spec_cfg["overlap"]),
-        window_mode=win_mode,
+        n_fft=spec["n_fft"],
+        overlap=spec["overlap"],
+        window_mode=win["mode"],
     )
 
-    det_mode: DetectionMode = str(det["mode"])  # type: ignore[assignment]
-    band_r = (float(det["bande_respiration"][0]), float(det["bande_respiration"][1]))
-    band_n = (float(det["bande_reference"][0]), float(det["bande_reference"][1]))
-    det_res = detect_respiration(
-        spec.Z,
-        spec.f_hz,
-        band_respiration_hz=band_r,
-        band_reference_hz=band_n,
-        seuil_snr_db=float(det["seuil_snr_dB"]),
-        mode=det_mode,
-        df_hz=spec.df_hz,
+
+def _frame_generator(
+    cfg: dict[str, Any],
+    iq_dec: np.ndarray,
+    spect: SpectrogramOutput,
+) -> Generator[dict[str, Any], None, None]:
+    """Yield one frame_data dict per STFT column for the dashboard.
+
+    Parameters
+    ----------
+    cfg : dict
+        Full configuration dictionary.
+    iq_dec : numpy.ndarray
+        Decimated + clutter-filtered IQ signal.
+    spect : SpectrogramOutput
+        Pre-computed STFT output.
+
+    Yields
+    ------
+    dict[str, Any]
+        Frame data expected by :meth:`DashboardRadar.update_frame`:
+        ``signal_iq_dec``, ``spectre_colonne``, ``snr_dB``, ``n_trame``,
+        ``detection``.
+    """
+    det = cfg["detection"]
+    bande_resp = tuple(det["bande_respiration"])
+    bande_ref = tuple(det["bande_reference"])
+    seuil = det["seuil_snr_dB"]
+
+    snr_cols, _, _ = snr_db_per_column(
+        S_db=spect.S_db,
+        f_hz=spect.f_hz,
+        bande_respiration=bande_resp,
+        bande_reference=bande_ref,
     )
-    if det_res is not None and det_res.alert:
-        logger.warning("DETECTION ALERT: SNR %.2f dB exceeds threshold.", det_res.snr_db)
 
-    ylim = aff["ylim"]
-    disp = DisplayConfig(
-        dynamique_dB=float(aff["dynamique_dB"]),
-        ylim=(float(ylim[0]), float(ylim[1])),
-        colormap=str(aff["colormap"]),
-        f_c=f_c,
-        f_s=f_s_dec,
-        df_hz=spec.df_hz,
-        dv_mps=spec.dv_mps,
+    n_time = spect.S_db.shape[1]
+    samples_per_frame = max(1, len(iq_dec) // n_time)
+
+    for col_idx in range(n_time):
+        start = col_idx * samples_per_frame
+        end = min(start + samples_per_frame, len(iq_dec))
+        iq_chunk = iq_dec[start:end]
+
+        snr_val = float(snr_cols[col_idx])
+        alert = bool(snr_val >= seuil)
+
+        yield {
+            "signal_iq_dec": iq_chunk,
+            "spectre_colonne": spect.S_db[:, col_idx],
+            "snr_dB": snr_val,
+            "n_trame": col_idx,
+            "detection": alert,
+        }
+
+
+# ------------------------------------------------------------------
+# CLI
+# ------------------------------------------------------------------
+
+def _parse_args() -> argparse.Namespace:
+    """Parse command-line arguments."""
+    parser = argparse.ArgumentParser(
+        description="Radar micro-Doppler — détection de survivants ensevelis",
     )
-    show_waterfall(spec, disp, title="Micro-Doppler spectrogram (PlutoSDR pipeline)")
-
-
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Micro-Doppler radar pipeline (PlutoSDR).")
     parser.add_argument(
         "--config",
-        type=Path,
-        default=_ROOT / "config.yaml",
-        help="Path to YAML configuration (default: ./config.yaml next to main.py).",
+        default="MicroDopplerDetection/config.yaml",
+        help="Chemin vers le fichier de configuration YAML (défaut : %(default)s)",
     )
     parser.add_argument(
         "--simulation",
         action="store_true",
-        help="Force simulation mode even if simulation.enable is false in YAML.",
+        help="Forcer le mode simulation (pas de PlutoSDR requis)",
     )
-    args = parser.parse_args(argv)
+    return parser.parse_args()
 
-    cfg_path: Path = args.config
-    if not cfg_path.is_file():
-        print(f"Config not found: {cfg_path}", file=sys.stderr)
-        return 2
 
-    cfg = _load_yaml(cfg_path)
-    log_cfg = cfg.get("logging", {})
-    _setup_logging(str(log_cfg.get("level", "INFO")))
+def main() -> None:
+    """Top-level pipeline orchestration."""
+    args = _parse_args()
+    cfg = _load_config(args.config)
+    _setup_logging(cfg)
 
-    try:
-        run_pipeline(cfg, simulation_override=bool(args.simulation))
-    except ValueError as exc:
-        logger.error("%s", exc)
-        return 1
-    except RuntimeError as exc:
-        logger.error("%s", exc)
-        return 1
-    return 0
+    logger.info("=== Démarrage du pipeline micro-Doppler ===")
+
+    # 1. Acquisition
+    acq = _run_acquisition(cfg, simulation=args.simulation)
+
+    # 2. Preprocessing (decimation + clutter)
+    iq_dec, f_s_dec = _run_preprocessing(cfg, acq)
+
+    # 3. Spectrogram
+    spect = _run_analysis(cfg, iq_dec, f_s_dec, acq.f_c)
+
+    # 4. Global detection
+    det_cfg = cfg["detection"]
+    if det_cfg["mode"] == "threshold":
+        result = detect_respiration(
+            S_db=spect.S_db,
+            f_hz=spect.f_hz,
+            bande_respiration=tuple(det_cfg["bande_respiration"]),
+            bande_reference=tuple(det_cfg["bande_reference"]),
+            seuil_snr_dB=det_cfg["seuil_snr_dB"],
+        )
+        if result is not None:
+            logger.info(
+                "Résultat global — SNR = %.1f dB, alerte = %s",
+                result.snr_db,
+                result.alert,
+            )
+
+    # 5. Dashboard
+    context = {
+        "f_hz": spect.f_hz,
+        "v_mps": spect.v_mps,
+        "t_s": spect.t_s,
+        "f_s_dec": f_s_dec,
+        "f_c": acq.f_c,
+        "seuil_snr_dB": det_cfg["seuil_snr_dB"],
+    }
+
+    dashboard = DashboardRadar(config=cfg, context=context)
+    gen = _frame_generator(cfg, iq_dec, spect)
+    dashboard.run(gen)
+
+    logger.info("=== Pipeline terminé ===")
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()

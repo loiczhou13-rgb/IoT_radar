@@ -1,60 +1,224 @@
-# ── Logging ─────────────────────────────────────────────────────────────────
-logging:
-  level: "INFO"               # DEBUG | INFO | WARNING — verbosity of console logs
+# =============================================================================
+# Configuration — Radar Micro-Doppler — Détection de survivants ensevelis
+# =============================================================================
+#
+# Fichier unique de paramétrage du pipeline. Chaque paramètre est accompagné
+# d'un commentaire expliquant son effet physique ou algorithmique.
+#
+# Unités : fréquences en Hz, durées en secondes, distances en mètres,
+#           amplitudes en dB (sauf indication contraire).
+# =============================================================================
 
-# ── Hardware (PlutoSDR / AD936x) ────────────────────────────────────────────
+
+# ---------------------------------------------------------------------------
+# Journalisation
+# ---------------------------------------------------------------------------
+logging:
+  # Niveau de log global : DEBUG, INFO, WARNING.
+  # DEBUG affiche chaque trame acquise et chaque étape du pipeline.
+  level: "INFO"
+
+
+# ---------------------------------------------------------------------------
+# Paramètres du transceiver PlutoSDR (AD9363/AD9364)
+# ---------------------------------------------------------------------------
 sdr:
-  uri: "ip:192.168.2.1"       # Pluto URI: ip:192.168.2.1 (Ethernet) or usb:
-  f_c: 2.4e9                  # Carrier frequency (Hz) — lambda = c/f_c ≈ 12.5 cm at 2.4 GHz
-  f_s: 2.0e6                  # ADC sample rate (Hz) — Pluto min ≈ 521 kHz; sets unambiguous Doppler span ±f_s/2 before decimation
-  rx_gain: 40                 # RX gain (dB, manual mode) — aim for high ADC use without saturation
-  tx_gain: -20                # TX attenuation (dB, negative is typical) — reduce if RX saturates
-  buffer_size: 16384          # Samples per RX buffer (e.g. 2^14)
-  # Raw length n_frames×buffer_size should exceed n_fft×D after decimation (e.g. n_fft=8192, D=1000 → ≥ ~8.2e6 samples → n_frames≥501 @ 16384)
+  # Adresse réseau ou USB du PlutoSDR.
+  # Réseau : "ip:192.168.2.1" (défaut DHCP Pluto).
+  # USB    : "usb:" (détection automatique).
+  uri: "ip:192.168.2.1"
+
+  # Fréquence porteuse (Hz).
+  # λ = c / f_c ≈ 12.5 cm à 2.4 GHz.
+  # Cette longueur d'onde fixe la sensibilité à un déplacement thoracique D :
+  # la modulation de phase vaut Δφ = 4πD/λ.
+  f_c: 2.4e+9
+
+  # Taux d'échantillonnage du convertisseur ADC (Hz).
+  # Minimum matériel PlutoSDR ≈ 521 kHz.
+  # Une valeur plus élevée facilite le filtrage anti-repliement avant décimation.
+  f_s: 2.0e+6
+
+  # Gain du récepteur (dB, mode manuel AGC désactivé).
+  # Viser 50–80 % de la pleine échelle ADC 12 bits (±2048), soit ≈ ±1024–1638.
+  # Trop haut → saturation ; trop bas → bruit de quantification dominant.
+  rx_gain: 40
+
+  # Atténuation de l'émetteur (dB, valeur négative).
+  # Réduire (rendre plus négatif) si saturation RX due au couplage TX→RX.
+  tx_gain: -20
+
+  # Nombre d'échantillons IQ par buffer.
+  # Puissance de 2 pour efficacité FFT. 2^14 = 16384 → 8.2 ms par trame à 2 MHz.
+  buffer_size: 16384
+
+  # Nombre de buffers (trames) à acquérir par séquence de mesure.
+  # Durée totale ≈ n_frames × buffer_size / f_s.
+  # 600 × 16384 / 2e6 ≈ 4.9 s.
   n_frames: 600
 
-# ── Transmission (baseband waveform pushed to TX DAC) ───────────────────────
+
+# ---------------------------------------------------------------------------
+# Émission du signal TX
+# ---------------------------------------------------------------------------
 emission:
-  mode: "cw_offset"           # "cw" | "cw_offset" — baseband tone generation
-  f_offset: 10000             # Frequency offset (Hz) — only for cw_offset; shifts energy off DC after downconversion
+  # Mode d'émission :
+  #   "cw"        — onde continue pure (module constant, fréquence = f_c exactement).
+  #   "cw_offset" — sinusoïde complexe à f_offset Hz en bande de base,
+  #                  ce qui déplace le signal utile loin du pic DC (0 Hz),
+  #                  réduisant l'impact du clutter et du bruit de phase.
+  mode: "cw_offset"
 
-# ── Decimation (reduces sample rate before slow-time / Doppler analysis) ────
+  # Décalage fréquentiel du signal TX en bande de base (Hz).
+  # Utilisé uniquement si mode = "cw_offset".
+  # Le signal utile apparaîtra autour de f_offset ± f_v dans le spectre.
+  f_offset: 10000
+
+
+# ---------------------------------------------------------------------------
+# Décimation (réduction du taux d'échantillonnage)
+# ---------------------------------------------------------------------------
 decimation:
+  # Activer/désactiver la décimation.
   enable: true
-  D: 1000                     # Integer decimation factor — new rate f_s_new = f_s / D
-  f_max_utile: 10             # Highest useful Doppler frequency (Hz) — must satisfy Shannon: f_s/D > 2*f_max_utile
 
-# ── Clutter suppression (strong zero-Doppler / static scatterers) ─────────
+  # Facteur de décimation D.
+  # f_s_new = f_s / D.  Avec f_s = 2 MHz et D = 1000 → f_s_new = 2000 Hz.
+  # Un filtre passe-bas anti-repliement (scipy.signal.decimate) est appliqué
+  # avant le sous-échantillonnage.
+  D: 1000
+
+  # Fréquence utile maximale (Hz).
+  # Sert à vérifier le critère de Shannon : f_s_new > 2 × f_max_utile.
+  # Inclure une marge pour la bande de référence de détection (ex. 5 Hz) et
+  # le décalage f_offset si mode cw_offset.
+  f_max_utile: 10
+
+
+# ---------------------------------------------------------------------------
+# Suppression du clutter (composante statique / 0 Hz)
+# ---------------------------------------------------------------------------
 clutter:
-  mode: "iir"                 # "mean" | "iir" | "mti"
-  alpha: 0.99                 # EMA forgetting close to 1 ⇒ long memory (iir only)
+  # Méthode de suppression du clutter :
+  #   "mean" — soustraction de la moyenne temporelle globale de chaque trame.
+  #            Simple, mais laisse passer le clutter lentement variable.
+  #   "iir"  — filtre passe-haut IIR de type moyenne mobile exponentielle (EMA).
+  #            Estimation récursive : μ[n] = α·μ[n-1] + (1-α)·x[n],
+  #            puis y[n] = x[n] − μ[n]. Adaptif aux dérives lentes.
+  #   "mti"  — annulateur MTI (Moving Target Indicator) : y[n] = x[n] − x[n-1].
+  #            Supprime efficacement le DC et les cibles fixes.
+  mode: "iir"
 
-# ── Windowing (applied inside STFT per segment; reduces spectral leakage) ───
+  # Facteur de mémoire EMA (mode "iir" uniquement).
+  # Proche de 1 → mémoire longue (filtre passe-haut plus sélectif, coupure basse).
+  # Proche de 0 → réaction rapide (risque de supprimer le signal respiration).
+  # Fréquence de coupure approximative : f_c_hp ≈ (1−α)·f_s / (2π).
+  alpha: 0.99
+
+
+# ---------------------------------------------------------------------------
+# Fenêtrage spectral
+# ---------------------------------------------------------------------------
 windowing:
-  mode: "hann"                # "hann" | "hamming" | "blackman" | "none"
+  # Fenêtre appliquée à chaque segment avant FFT dans la STFT.
+  #   "hann"     — bon compromis résolution / fuite spectrale.
+  #   "hamming"  — lobes secondaires plus bas, lobe principal un peu plus large.
+  #   "blackman" — lobes secondaires très atténués (−58 dB), résolution réduite.
+  #   "none"     — fenêtre rectangulaire (résolution maximale, fuite maximale).
+  mode: "hann"
 
-# ── Spectrogram (short-time Fourier transform along slow-time) ──────────────
+
+# ---------------------------------------------------------------------------
+# Spectrogramme (STFT)
+# ---------------------------------------------------------------------------
 spectrogramme:
-  # FFT length ≤ total decimated samples; for df ≈ 0.24 Hz at f_s_dec=2 kHz use n_fft≈8192 and capture ≥ ~8 s after decimation
+  # Taille de la FFT (nombre de points fréquentiels).
+  # Résolution fréquentielle : δf = f_s_dec / n_fft.
+  # Avec f_s_dec = 2000 Hz et n_fft = 8192 → δf ≈ 0.24 Hz.
+  # La respiration (~0.3 Hz) occupe environ 1–2 bins.
   n_fft: 8192
-  overlap: 0.90               # Overlap ratio between segments (0–1)
 
-# ── Detection (respiration band vs reference noise band) ────────────────────
+  # Taux de recouvrement entre segments STFT successifs (ratio, 0 à <1).
+  # Un recouvrement élevé (0.90) donne un meilleur lissage temporel du
+  # spectrogramme mais augmente le coût de calcul.
+  overlap: 0.90
+
+
+# ---------------------------------------------------------------------------
+# Détection de la respiration
+# ---------------------------------------------------------------------------
 detection:
-  mode: "threshold"           # "threshold" | "none"
-  bande_respiration: [0.1, 0.8]   # Search band for respiration line (Hz)
-  bande_reference: [2.0, 5.0]     # Reference band for noise floor estimate (Hz)
-  seuil_snr_dB: 10            # Alert if SNR (dB) exceeds this threshold
+  # Mode de détection :
+  #   "threshold" — seuillage du rapport signal-sur-bruit (SNR) entre une
+  #                 bande de signal et une bande de référence.
+  #   "none"      — pas de détection automatique, affichage seul.
+  mode: "threshold"
 
-# ── Display (matplotlib waterfall) ──────────────────────────────────────────
+  # Bande de fréquences Doppler où chercher la respiration (Hz).
+  # 0.1–0.8 Hz couvre les rythmes respiratoires humains normaux et lents
+  # (6–48 cycles/min).
+  bande_respiration: [0.1, 0.8]
+
+  # Bande de référence pour estimer le plancher de bruit (Hz).
+  # Doit être éloignée de la respiration et du DC résiduel.
+  bande_reference: [2.0, 5.0]
+
+  # Seuil de détection (dB).
+  # Un SNR supérieur à ce seuil déclenche l'alerte "respiration détectée".
+  # 10 dB est un point de départ conservateur (facteur 10 en puissance).
+  seuil_snr_dB: 10
+
+
+# ---------------------------------------------------------------------------
+# Affichage (Dashboard matplotlib)
+# ---------------------------------------------------------------------------
 affichage:
-  dynamique_dB: 60            # Waterfall dynamic range (dB)
-  ylim: [-4, 4]               # Velocity axis limits (m/s) for Doppler display
+  # Dynamique de l'échelle de couleur du waterfall (dB).
+  # Étendue entre le max affiché et (max − dynamique_dB).
+  dynamique_dB: 60
+
+  # Limites de l'axe vitesse radiale (m/s).
+  # v = f_doppler × λ / 2.  À λ = 12.5 cm, ±4 m/s ≈ ±32 Hz Doppler.
+  ylim: [-4, 4]
+
+  # Table de couleurs matplotlib pour le waterfall.
   colormap: "inferno"
 
-# ── Simulation (no hardware; synthetic IQ for algorithm checkout) ──────────
+  # Durée de la fenêtre glissante du waterfall (secondes).
+  fenetre_waterfall_s: 30
+
+  # Nombre de colonnes STFT moyennées pour le profil spectral moyen.
+  N_profil_moyen: 20
+
+  # Longueur de l'historique pour les courbes SNR et probabilité de présence.
+  N_historique: 100
+
+  # Pente de la sigmoïde transformant le SNR en probabilité de présence.
+  # P(présence) = 1 / (1 + exp(−(snr − seuil) / echelle)).
+  # Plus la valeur est petite, plus la transition est abrupte autour du seuil.
+  echelle_sigmoid_dB: 3
+
+  # Activer le mode plein écran au lancement du dashboard.
+  plein_ecran: false
+
+
+# ---------------------------------------------------------------------------
+# Mode simulation (sans matériel PlutoSDR)
+# ---------------------------------------------------------------------------
 simulation:
+  # Activer le mode simulation (true) ou le mode matériel réel (false).
+  # En simulation, le signal IQ est synthétisé numériquement.
   enable: false
-  fv: 0.3                     # Simulated breathing rate (Hz)
-  D_mm: 10                    # Chest displacement amplitude (mm)
-  snr_dB: 20                  # Target SNR (dB) for micro-Doppler tone vs additive noise
+
+  # Fréquence de respiration simulée (Hz).
+  # 0.3 Hz ≈ 18 cycles/min (rythme normal au repos).
+  fv: 0.3
+
+  # Amplitude du déplacement thoracique simulé (mm).
+  # 10 mm est typique pour une respiration normale.
+  # L'indice de modulation de phase correspondant : m = 4π·D/λ ≈ 1.0.
+  D_mm: 10
+
+  # Rapport signal-sur-bruit cible (dB) du micro-Doppler vs. bruit blanc.
+  # Contrôle la puissance du bruit additif gaussien complexe.
+  snr_dB: 20

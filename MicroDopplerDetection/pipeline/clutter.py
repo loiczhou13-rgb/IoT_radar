@@ -1,83 +1,89 @@
-"""
-Clutter suppression for zero-Doppler and slowly varying static returns.
-"""
+"""Static-clutter suppression filters for micro-Doppler radar."""
 
 from __future__ import annotations
 
 import logging
-from typing import Literal
 
 import numpy as np
 
 logger = logging.getLogger(__name__)
 
-ClutterMode = Literal["mean", "iir", "mti"]
 
-
-def suppress_clutter(x: np.ndarray, mode: ClutterMode, alpha: float = 0.99) -> np.ndarray:
-    """
-    Remove strong static clutter using mean removal, EMA tracking, or MTI delay.
+def remove_clutter(
+    iq: np.ndarray,
+    mode: str,
+    alpha: float = 0.99,
+) -> np.ndarray:
+    """Remove or attenuate the static clutter (DC component) from *iq*.
 
     Parameters
     ----------
-    x
-        Complex IQ after decimation, shape ``(N,)``.
-    mode
-        ``"mean"``: subtract global mean (DC and static average phasor).
-        ``"iir"``: exponential moving average clutter tracker per sample.
-        ``"mti"``: first-order difference along time (two-pulse canceler).
-    alpha
-        EMA pole for ``"iir"`` mode, in ``[0.9, 0.999]`` (typical ``0.99``).
+    iq : numpy.ndarray
+        Complex IQ samples (1-D), typically after decimation.
+    mode : str
+        Clutter-removal strategy:
+
+        * ``"mean"`` — subtract the global mean of *iq*.
+        * ``"iir"``  — recursive EMA high-pass filter with memory factor
+          *alpha*.
+        * ``"mti"``  — single-delay Moving Target Indicator (first-order
+          difference).
+    alpha : float, optional
+        EMA memory factor for ``"iir"`` mode (0 < alpha < 1).
+        Closer to 1 → longer memory → lower cut-off frequency.
+        Default is 0.99.
 
     Returns
     -------
     numpy.ndarray
-        Filtered IQ, same shape as ``x`` (MTI shortens by one sample — we pad
-        the first sample with ``0`` to preserve length).
+        Clutter-suppressed IQ of same shape as *iq* (or ``len(iq)-1`` for
+        ``"mti"``).
 
-    Examples
-    --------
-    >>> x = np.ones(100, dtype=np.complex64)
-    >>> suppress_clutter(x, "mean")[0]
-    (0+0j)
+    Raises
+    ------
+    ValueError
+        If *mode* is not one of ``{"mean", "iir", "mti"}``.
 
     Notes
     -----
-    Physical note: walls, floor, and stationary debris dominate at 0 Hz;
-    subtracting a slow clutter estimate exposes the weak breathing-induced
-    sidebands that sit only a fraction of a hertz away from DC after decimation.
+    In a CW micro-Doppler radar the dominant return is **static clutter**:
+    direct TX→RX leakage, reflections from walls, rubble, and ground.
+    All of these appear at (or very near) 0 Hz in baseband.  The
+    respiratory signal at ±f_v is 40–60 dB weaker, so effective clutter
+    suppression is essential before spectral analysis.
+
+    * **Mean subtraction** is a batch operation — simple but assumes the
+      clutter is time-invariant.
+    * **IIR / EMA** tracks slow clutter drift adaptively:
+      μ[n] = α·μ[n−1] + (1−α)·x[n],  y[n] = x[n] − μ[n].
+      Approximate high-pass cut-off: f_hp ≈ (1−α)·f_s / (2π).
+    * **MTI** (y[n] = x[n] − x[n−1]) provides first-order cancellation
+      of any constant component, acting as a comb-null at 0 Hz.
     """
-    x = np.asarray(x, dtype=np.complex64)
-    if x.ndim != 1:
-        raise ValueError("suppress_clutter expects a 1-D array")
+    if mode not in ("mean", "iir", "mti"):
+        raise ValueError(
+            f"Mode clutter inconnu : '{mode}'. Utiliser 'mean', 'iir' ou 'mti'."
+        )
 
     if mode == "mean":
-        mu = np.mean(x)
-        y = x - mu
-        logger.debug("Clutter mean removal: |mean|=%.4g", float(np.abs(mu)))
+        logger.info("Suppression du clutter — soustraction de la moyenne globale")
+        return (iq - np.mean(iq)).astype(iq.dtype)
 
-    elif mode == "iir":
-        if not (0.9 <= alpha <= 0.999):
-            logger.warning("alpha=%g is outside [0.9, 0.999]; proceeding anyway", alpha)
-        c_hat = np.zeros_like(x, dtype=np.complex128)
-        y = np.zeros_like(x, dtype=np.complex128)
-        a = float(alpha)
-        for n in range(x.shape[0]):
-            if n == 0:
-                c_hat[n] = (1.0 - a) * x[n]
-            else:
-                c_hat[n] = a * c_hat[n - 1] + (1.0 - a) * x[n]
-            y[n] = x[n] - c_hat[n]
-        y = y.astype(np.complex64)
-        logger.debug("Clutter IIR: alpha=%g", a)
+    if mode == "iir":
+        logger.info(
+            "Suppression du clutter — filtre IIR/EMA (alpha = %.4f)", alpha
+        )
+        return _ema_highpass(iq, alpha)
 
-    elif mode == "mti":
-        # x_f[n] = x[n] - x[n-1]; x_f[0] = 0 to keep length for STFT alignment
-        y = np.zeros_like(x, dtype=np.complex64)
-        y[1:] = x[1:] - x[:-1]
-        logger.debug("Clutter MTI (first difference) applied")
+    logger.info("Suppression du clutter — annulateur MTI (np.diff)")
+    return np.diff(iq)
 
-    else:
-        raise ValueError(f"Unknown clutter mode: {mode!r}")
 
-    return y
+def _ema_highpass(iq: np.ndarray, alpha: float) -> np.ndarray:
+    """Apply a recursive EMA high-pass filter to *iq*."""
+    out = np.empty_like(iq)
+    mu = iq[0].copy()
+    for n in range(len(iq)):
+        mu = alpha * mu + (1.0 - alpha) * iq[n]
+        out[n] = iq[n] - mu
+    return out

@@ -1,110 +1,191 @@
-# Détection micro-Doppler (PlutoSDR)
+# Radar Micro-Doppler — Détection de survivants ensevelis
 
-## 1. Contexte physique
+Système radar portable à onde continue (CW) pour détecter la respiration
+de personnes ensevelies sous des décombres (séisme, avalanche, effondrement).
 
-Le thorax d’une personne respirant se déplace périodiquement (quelques mm à ~0,2–0,5 Hz). En radar CW, ce mouvement module la phase du signal réfléchi (modulation de phase). En bande de base, l’onde prend la forme \(x(t) \approx e^{j\phi(t)}\). Le développement en séries de Bessel montre que le spectre contient des raies à \(0, \pm f_v, \pm 2f_v, \ldots\); l’amplitude de la raie utile à \(\pm f_v\) est liée à \(J_1(m)\) avec \(m = 4\pi D/\lambda\). Le clutter statique domine souvent à 0 Hz; le pipeline vise à révéler la raie de respiration malgré ce pic DC et le bruit.
+Matériel : **PlutoSDR** (ADALM-PLUTO, AD9363) + **Raspberry Pi**.
 
-## 2. Schéma du pipeline (modules Python)
+---
+
+## Contexte physique
+
+Un signal CW à **f_c = 2.4 GHz** (λ ≈ 12.5 cm) est émis vers la zone de
+recherche. Le thorax d'un survivant oscille à **f_v ≈ 0.2–0.5 Hz** avec une
+amplitude **D ≈ 5–15 mm**. Ce mouvement module involontairement la phase du
+signal réfléchi (modulation PM). En bande de base, le signal reçu s'écrit :
 
 ```
-[config.yaml]
-     │
-     ▼
-┌─────────────────┐     pipeline/emission.py      Génération CW / CW+décalage
-└────────┬────────┘
-         ▼
-┌─────────────────┐     pipeline/acquisition.py   TX cyclique + RX pyadi-iio (ou simulation)
-└────────┬────────┘
-         ▼
-┌─────────────────┐     pipeline/decimation.py      Réduction f_s + garde anti-repliement
-└────────┬────────┘
-         ▼
-┌─────────────────┐     pipeline/clutter.py         mean / IIR / MTI
-└────────┬────────┘
-         ▼
-┌─────────────────┐     pipeline/windowing.py      Hann, Hamming, Blackman, none
-└────────┬────────┘
-         ▼
-┌─────────────────┐     pipeline/spectrogramme.py  STFT → Z, S_dB, axes f et v
-└────────┬────────┘
-         ▼
-┌─────────────────┐     pipeline/detection.py      Seuil SNR ou none
-└────────┬────────┘
-         ▼
-┌─────────────────┐     utils/display.py           Waterfall matplotlib (dB, m/s)
-└─────────────────┘
+x(t) = exp(j·φ(t))     avec  φ(t) = φ₀ − (4πD/λ)·sin(2π·f_v·t)
 ```
 
-Orchestration : `main.py`.
+Le développement en **séries de Bessel** révèle un peigne de raies spectrales
+à ±n·f_v. La raie fondamentale (±f_v) porte l'essentiel de l'énergie
+respiratoire (J₁(m) ≈ 0.44 pour un indice de modulation m ≈ 1).
 
-## 3. Installation
+---
+
+## Architecture du pipeline
+
+```
+┌─────────────┐     ┌──────────────┐     ┌─────────────┐
+│  emission.py │────▶│ acquisition.py│────▶│ decimation.py│
+│  Signal TX   │     │  IQ (PlutoSDR │     │ ↓ f_s par D  │
+│  CW / offset │     │  ou simulation)    │              │
+└─────────────┘     └──────────────┘     └──────┬──────┘
+                                                 │
+                    ┌──────────────┐     ┌───────▼──────┐
+                    │ windowing.py │◀────│  clutter.py  │
+                    │ Fenêtre STFT │     │ Suppression  │
+                    └──────┬───────┘     │ composante DC│
+                           │             └──────────────┘
+                    ┌──────▼───────┐
+                    │spectrogramme │
+                    │    .py       │
+                    │ STFT → Z, dB │
+                    └──────┬───────┘
+                           │
+              ┌────────────▼────────────┐
+              │     detection.py        │
+              │ SNR bande/référence     │
+              │ → alerte respiration    │
+              └────────────┬────────────┘
+                           │
+              ┌────────────▼────────────┐
+              │    utils/display.py     │
+              │  Dashboard matplotlib   │
+              │  6 panneaux temps réel  │
+              └─────────────────────────┘
+```
+
+Orchestration dans **`main.py`** :
+emission → acquisition → décimation → clutter → spectrogramme (+ fenêtrage) → détection → affichage.
+
+---
+
+## Installation
+
+### Prérequis système
 
 ```bash
-cd /path/to/IoT_radar
-python3 -m venv .venv
-source .venv/bin/activate   # Windows: .venv\Scripts\activate
-python -m pip install -r requirements.txt
+# libiio — bibliothèque de communication avec le PlutoSDR
+sudo apt install libiio-dev libiio-utils
+
+# Vérifier que le PlutoSDR est détecté
+iio_info -s
 ```
 
-- **pyadi-iio** : `pip install pyadi-iio` (déjà listé dans `requirements.txt` à la racine du dépôt).
-- **libiio** (Linux) : `sudo apt install libiio-utils` — vérifier le périphérique avec `iio_info -s`.
-- **Windows / macOS** : installer les pilotes / runtime Analog Devices pour PlutoSDR et libiio selon la documentation officielle.
-- Autres paquets : `numpy`, `scipy`, `matplotlib`, `PyYAML` (voir `requirements.txt`).
-
-## 4. Hack PlutoSDR (optionnel, AD9364 étendu)
-
-Sur le Pluto (SSH, utilisateur `root`, mot de passe `analog` par défaut) :
+### Dépendances Python
 
 ```bash
-fw_setenv compatible ad9364
-pluto_reboot reset
+pip install numpy scipy matplotlib pyyaml pyadi-iio
 ```
 
-Après redémarrage : plage indicative 70 MHz–6 GHz, bande passante IQ jusqu’à ~56 MHz (selon image firmware).
+| Paquet        | Rôle                                               |
+|---------------|-----------------------------------------------------|
+| `numpy`       | Calcul vectoriel, tableaux IQ                       |
+| `scipy`       | Décimation, fenêtrage, STFT                         |
+| `matplotlib`  | Dashboard temps réel (FuncAnimation)                |
+| `pyyaml`      | Lecture de `config.yaml`                             |
+| `pyadi-iio`   | Interface Python pour le PlutoSDR via libiio         |
 
-## 5. Utilisation
+### Mise à jour firmware PlutoSDR (optionnel)
+
+Si le firmware du Pluto est ancien, le taux d'échantillonnage minimal peut
+être supérieur à 521 kHz. Consulter le
+[wiki Analog Devices](https://wiki.analog.com/university/tools/pluto/users/firmware)
+pour mettre à jour.
+
+---
+
+## Utilisation
+
+### Mode matériel (PlutoSDR connecté)
 
 ```bash
-cd MicroDopplerDetection
-python main.py --config config.yaml
-python main.py --config config.yaml --simulation   # force la simulation (sans matériel)
+python -m MicroDopplerDetection.main --config MicroDopplerDetection/config.yaml
 ```
 
-Avec affichage graphique : backend interactif classique (`TkAgg`, `Qt5Agg`, etc.). Sans écran (Raspberry Pi, CI) : `MPLBACKEND=Agg` — la figure est fermée automatiquement sans fenêtre.
+### Mode simulation (sans matériel)
 
-## 6. Paramètres de `config.yaml` (effet physique)
+```bash
+python -m MicroDopplerDetection.main --config MicroDopplerDetection/config.yaml --simulation
+```
 
-| Section | Paramètre | Rôle |
-|--------|-----------|------|
-| `logging` | `level` | Verbosité des journaux. |
-| `sdr` | `uri` | Adresse Pluto (`ip:…` ou `usb:`). |
-| `sdr` | `f_c` | Porteuse : fixe \(\lambda = c/f_c\) pour l’axe vitesse \(v = f\lambda/2\). |
-| `sdr` | `f_s` | Cadence IQ : bande Doppler non décimée \(\pm f_s/2\) (théorique). |
-| `sdr` | `rx_gain` / `tx_gain` | Compromis sensibilité / saturation RX. |
-| `sdr` | `buffer_size` | Longueur d’un bloc `rx()`. |
-| `sdr` | `n_frames` | Nombre de blocs concaténés : doit être suffisant pour que, après décimation, la durée couvre au moins une fenêtre STFT (`n_fft` échantillons à \(f_s/D\)). |
-| `emission` | `mode`, `f_offset` | CW pur ou tonalité décalée pour éloigner l’énergie du DC numérique. |
-| `decimation` | `D`, `f_max_utile` | Baisse \(f_s\); contrainte de Shannon \(f_s/D > 2 f_{\max}\). |
-| `clutter` | `mode`, `alpha` | Atténuation du fouillis statique (moyenne, EMA, différence). |
-| `windowing` | `mode` | Réduction des lobes de fuite spectrale sur chaque segment STFT. |
-| `spectrogramme` | `n_fft`, `overlap` | Résolution fréquentielle \(\Delta f \approx f_{s,\mathrm{dec}}/n_{fft}\) et recouvrement temporel. |
-| `detection` | bandes, `seuil_snr_dB` | Comparaison d’énergie respiration / bande de référence. |
-| `affichage` | `dynamique_dB`, `ylim`, `colormap` | Lisibilité du waterfall. |
-| `simulation` | `fv`, `D_mm`, `snr_dB` | Signal synthétique + clutter fort + bruit. |
+Le flag `--simulation` force `simulation.enable: true` quel que soit le contenu
+du fichier de configuration.
 
-## 7. Pièges courants
+### Options CLI
 
-- **Saturation ADC** : échantillons « plaqués » vers \(\pm 2048\) (échelle entière) ; réduire `rx_gain` ou `tx_gain`.
-- **Pic DC** : imperfections IQ, LO leakage ; moyenne globale, tonalité `cw_offset`, filtres adaptés.
-- **Wi-Fi 2,4 GHz** : interférences ; mesurer le spectre à vide, changer de canal ou de bande si possible.
-- **Bruit de phase** : limite la cohérence sur de longues acquisitions ; fenêtres plus courtes ou moyennage prudent.
-- **Décimation et Shannon** : si \(f_s/D \le 2 f_{\max}\), le pipeline lève une exception explicite.
-- **Isolation TX/RX** : croisement de polarisation, espacement des antennes (souvent \(\geq 30\) cm), atténuateurs.
+| Option          | Défaut                                  | Description                            |
+|-----------------|-----------------------------------------|----------------------------------------|
+| `--config`      | `MicroDopplerDetection/config.yaml`     | Chemin du fichier de configuration      |
+| `--simulation`  | *(absent)*                              | Activer le mode simulation             |
 
-## 8. Résultat attendu (waterfall)
+---
 
-Avec une respiration à \(f_v \approx 0{,}3\) Hz et une résolution suffisante après décimation / STFT, on observe des raies horizontales persistantes à des vitesses correspondant à \(\pm f_v\) (symétriques en Doppler), au-dessus du fond de clutter résiduel près de 0 Hz.
+## Paramètres (`config.yaml`)
 
-## Verrouillage des versions
+Le fichier `config.yaml` est l'**unique source de vérité** pour tous les
+paramètres du pipeline. Chaque section correspond à une étape :
 
-À la racine du dépôt, `requirements.txt` liste les paquets minimaux pour ce pipeline. Pour figer tout le venv : `python -m pip freeze > requirements-lock.txt`.
+| Section          | Paramètres clés                      | Effet physique                                                                 |
+|------------------|--------------------------------------|--------------------------------------------------------------------------------|
+| `sdr`            | `f_c`, `f_s`, `rx_gain`, `tx_gain`   | Longueur d'onde λ, bande passante, dynamique ADC                               |
+| `emission`       | `mode`, `f_offset`                   | Position du signal utile dans le spectre (loin du DC si `cw_offset`)           |
+| `decimation`     | `D`, `f_max_utile`                   | Taux d'échantillonnage effectif, respect du critère de Shannon                 |
+| `clutter`        | `mode`, `alpha`                      | Suppression du retour statique dominant à 0 Hz                                 |
+| `windowing`      | `mode`                               | Compromis résolution fréquentielle / fuite spectrale                           |
+| `spectrogramme`  | `n_fft`, `overlap`                   | Résolution δf = f_s_dec / n_fft, lissage temporel                              |
+| `detection`      | `bande_respiration`, `seuil_snr_dB`  | Fréquences de recherche, sensibilité de l'alerte                               |
+| `affichage`      | `dynamique_dB`, `colormap`, `ylim`   | Rendu visuel du waterfall et des courbes                                       |
+| `simulation`     | `fv`, `D_mm`, `snr_dB`              | Paramètres du signal respiratoire synthétique                                  |
+
+Voir les commentaires détaillés directement dans `config.yaml`.
+
+---
+
+## Pièges courants
+
+### 1. Saturation de l'ADC
+
+**Symptômes** : signal IQ écrêté, harmoniques parasites dans le spectre.
+**Cause** : `rx_gain` trop élevé ou `tx_gain` insuffisamment atténué.
+**Correction** : réduire `rx_gain` ou rendre `tx_gain` plus négatif. Viser
+max(|IQ|) entre 50 % et 80 % de la pleine échelle (1024–1638 sur 2048).
+
+### 2. Pic DC (0 Hz) dominant
+
+**Origine** : couplage direct TX→RX (isolation finie), offset DC de l'ADC,
+réflexions sur les objets statiques environnants.
+**Solutions** :
+- Utiliser `emission.mode: "cw_offset"` pour décaler le signal utile.
+- Activer la suppression de clutter (`clutter.mode: "iir"` ou `"mti"`).
+
+### 3. Violation du critère de Shannon à la décimation
+
+**Symptôme** : repliement spectral (aliasing), fausses raies.
+**Cause** : facteur `D` trop grand → f_s_new < 2 × f_max_utile.
+**Correction** : réduire `D` ou augmenter `f_s`. Le pipeline lève une
+`ValueError` explicite si la condition n'est pas respectée.
+
+### 4. Bruit de phase sur longues acquisitions
+
+**Symptôme** : élargissement des raies spectrales au fil du temps.
+**Cause** : instabilité de l'oscillateur local du PlutoSDR sur des durées
+> 10 s.
+**Atténuation** : acquisitions plus courtes, moyennage incohérent, ou
+traitement par fenêtre glissante (déjà implémenté via la STFT).
+
+### 5. Isolation TX/RX insuffisante
+
+**Symptôme** : clutter résiduel très puissant même après filtrage.
+**Cause** : le signal TX fuit directement dans le récepteur.
+**Solutions matérielles** : antennes séparées avec écartement, circulateur,
+absorbant entre TX et RX.
+**Solutions logicielles** : `clutter.mode: "iir"` avec `alpha` élevé.
+
+---
+
+## Licence
+
+Projet interne — usage académique et recherche.
