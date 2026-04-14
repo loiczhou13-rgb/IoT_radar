@@ -47,6 +47,35 @@ class SpectrogramOutput:
     dv_mps: float
 
 
+@dataclass
+class ColumnOutput:
+    """Container for a single STFT column (one spectral snapshot).
+
+    Attributes
+    ----------
+    col_complex : numpy.ndarray
+        Complex spectrum, shape ``(n_fft,)``, fftshifted.
+    col_db : numpy.ndarray
+        Power in dB, shape ``(n_fft,)``.
+    f_hz : numpy.ndarray
+        Doppler frequency axis (Hz), centred.
+    v_mps : numpy.ndarray
+        Radial velocity axis (m/s).
+    df_hz : float
+        Frequency resolution (Hz).
+    """
+
+    col_complex: np.ndarray
+    col_db: np.ndarray
+    f_hz: np.ndarray
+    v_mps: np.ndarray
+    df_hz: float
+
+
+# ======================================================================
+# Batch STFT (kept for backward compatibility)
+# ======================================================================
+
 def compute_spectrogram(
     iq: np.ndarray,
     f_s: float,
@@ -150,4 +179,65 @@ def compute_spectrogram(
         t_s=t_s,
         df_hz=df_hz,
         dv_mps=dv_mps,
+    )
+
+
+# ======================================================================
+# Single-column STFT for streaming mode
+# ======================================================================
+
+def compute_single_column(
+    segment: np.ndarray,
+    f_s: float,
+    f_c: float,
+    window: np.ndarray,
+) -> ColumnOutput:
+    """Compute one STFT column from a windowed time-domain segment.
+
+    Parameters
+    ----------
+    segment : numpy.ndarray
+        Complex IQ segment, shape ``(n_fft,)``.
+    f_s : float
+        Sampling rate (Hz) of *segment*.
+    f_c : float
+        Carrier frequency (Hz), for Doppler-to-velocity conversion.
+    window : numpy.ndarray
+        Pre-computed window, same length as *segment*.
+
+    Returns
+    -------
+    ColumnOutput
+        Single spectrum column with frequency/velocity axes.
+
+    Notes
+    -----
+    This is the streaming counterpart of :func:`compute_spectrogram`.
+    Instead of computing the full STFT matrix at once, the caller
+    maintains a ring buffer and calls this function each time a new
+    segment of ``n_fft`` samples is ready.  Only one FFT is computed per
+    call, making it suitable for real-time operation.
+
+    The segment is multiplied by *window* before the FFT.  The result is
+    ``fftshift``-ed so that 0 Hz sits at the centre of the array.
+    """
+    n_fft = len(segment)
+    wavelength = _SPEED_OF_LIGHT / f_c
+
+    windowed = segment * window
+    spectrum = np.fft.fftshift(np.fft.fft(windowed, n=n_fft))
+
+    eps = 1e-12
+    col_db = 20.0 * np.log10(np.abs(spectrum) + eps)
+
+    f_hz = np.fft.fftshift(np.fft.fftfreq(n_fft, d=1.0 / f_s))
+    v_mps = f_hz * wavelength / 2.0
+    df_hz = f_s / n_fft
+
+    return ColumnOutput(
+        col_complex=spectrum.astype(np.complex64),
+        col_db=col_db.astype(np.float64),
+        f_hz=f_hz.astype(np.float64),
+        v_mps=v_mps.astype(np.float64),
+        df_hz=df_hz,
     )

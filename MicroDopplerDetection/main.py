@@ -2,11 +2,11 @@
 
 Usage
 -----
-Hardware mode::
+Hardware mode (continuous)::
 
     python -m MicroDopplerDetection.main --config MicroDopplerDetection/config.yaml
 
-Simulation mode::
+Simulation mode (continuous)::
 
     python -m MicroDopplerDetection.main --config MicroDopplerDetection/config.yaml --simulation
 """
@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+from collections import deque
 from pathlib import Path
 from typing import Any, Generator
 
@@ -24,23 +25,22 @@ import numpy as np
 
 from MicroDopplerDetection.pipeline.emission import generate_tx_buffer
 from MicroDopplerDetection.pipeline.acquisition import (
-    AcquisitionResult,
-    acquire_pluto,
-    synthesize_iq,
+    stream_pluto,
+    stream_simulation,
 )
 from MicroDopplerDetection.pipeline.decimation import decimate_iq
-from MicroDopplerDetection.pipeline.clutter import remove_clutter
+from MicroDopplerDetection.pipeline.clutter import ClutterFilter
 from MicroDopplerDetection.pipeline.spectrogramme import (
-    SpectrogramOutput,
-    compute_spectrogram,
+    ColumnOutput,
+    compute_single_column,
 )
-from MicroDopplerDetection.pipeline.detection import (
-    detect_respiration,
-    snr_db_per_column,
-)
+from MicroDopplerDetection.pipeline.detection import detect_snr_column
+from MicroDopplerDetection.pipeline.windowing import get_window
 from MicroDopplerDetection.utils.display import DashboardRadar
 
 logger = logging.getLogger(__name__)
+
+_SPEED_OF_LIGHT: float = 299_792_458.0
 
 
 # ------------------------------------------------------------------
@@ -70,151 +70,197 @@ def _setup_logging(cfg: dict[str, Any]) -> None:
 
 
 # ------------------------------------------------------------------
-# Pipeline orchestration
+# Streaming pipeline
 # ------------------------------------------------------------------
 
-def _run_acquisition(cfg: dict[str, Any], simulation: bool) -> AcquisitionResult:
-    """Execute the acquisition stage (hardware or simulation)."""
+def _build_iq_stream(
+    cfg: dict[str, Any],
+    simulation: bool,
+) -> Generator[np.ndarray, None, None]:
+    """Return an infinite IQ-buffer generator (hardware or simulation)."""
     sdr = cfg["sdr"]
     emi = cfg["emission"]
     sim = cfg["simulation"]
 
-    tx_buffer = generate_tx_buffer(
-        mode=emi["mode"],
-        buffer_size=sdr["buffer_size"],
-        f_s=sdr["f_s"],
-        f_offset=emi.get("f_offset", 0.0),
-    )
-
     if simulation or sim.get("enable", False):
-        logger.info("Mode simulation activé")
-        # In simulation the IQ signal is already in baseband (no RF mixer),
-        # so the breathing signature sits near 0 Hz regardless of f_offset.
-        return synthesize_iq(
+        logger.info("Mode simulation continu activé")
+        return stream_simulation(
             f_c=sdr["f_c"],
             f_s=sdr["f_s"],
             buffer_size=sdr["buffer_size"],
-            n_frames=sdr["n_frames"],
             fv=sim["fv"],
             D_mm=sim["D_mm"],
             snr_dB=sim["snr_dB"],
             f_offset=0.0,
         )
 
-    logger.info("Mode matériel — connexion au PlutoSDR")
-    return acquire_pluto(
+    logger.info("Mode matériel continu — connexion au PlutoSDR")
+    tx_buffer = generate_tx_buffer(
+        mode=emi["mode"],
+        buffer_size=sdr["buffer_size"],
+        f_s=sdr["f_s"],
+        f_offset=emi.get("f_offset", 0.0),
+    )
+    return stream_pluto(
         uri=sdr["uri"],
         f_c=sdr["f_c"],
         f_s=sdr["f_s"],
         rx_gain=sdr["rx_gain"],
         tx_gain=sdr["tx_gain"],
         buffer_size=sdr["buffer_size"],
-        n_frames=sdr["n_frames"],
         tx_buffer=tx_buffer,
     )
 
 
-def _run_preprocessing(
+def _streaming_frame_generator(
     cfg: dict[str, Any],
-    acq: AcquisitionResult,
-) -> tuple[np.ndarray, float]:
-    """Decimate and remove clutter from the acquired IQ signal."""
-    dec = cfg["decimation"]
-    clu = cfg["clutter"]
-
-    iq = acq.iq
-    f_s = acq.f_s
-
-    if dec.get("enable", True):
-        iq, f_s = decimate_iq(
-            iq=iq,
-            f_s=f_s,
-            D=dec["D"],
-            f_max_utile=dec["f_max_utile"],
-        )
-
-    iq = remove_clutter(
-        iq=iq,
-        mode=clu["mode"],
-        alpha=clu.get("alpha", 0.99),
-    )
-
-    return iq, f_s
-
-
-def _run_analysis(
-    cfg: dict[str, Any],
-    iq: np.ndarray,
-    f_s: float,
-    f_c: float,
-) -> SpectrogramOutput:
-    """Compute the STFT spectrogram."""
-    spec = cfg["spectrogramme"]
-    win = cfg["windowing"]
-
-    return compute_spectrogram(
-        iq=iq,
-        f_s=f_s,
-        f_c=f_c,
-        n_fft=spec["n_fft"],
-        overlap=spec["overlap"],
-        window_mode=win["mode"],
-    )
-
-
-def _frame_generator(
-    cfg: dict[str, Any],
-    iq_dec: np.ndarray,
-    spect: SpectrogramOutput,
+    simulation: bool,
 ) -> Generator[dict[str, Any], None, None]:
-    """Yield one frame_data dict per STFT column for the dashboard.
+    """Infinite generator: acquire → decimate → clutter → FFT → detect → yield.
 
     Parameters
     ----------
     cfg : dict
         Full configuration dictionary.
-    iq_dec : numpy.ndarray
-        Decimated + clutter-filtered IQ signal.
-    spect : SpectrogramOutput
-        Pre-computed STFT output.
+    simulation : bool
+        Force simulation mode.
 
     Yields
     ------
     dict[str, Any]
-        Frame data expected by :meth:`DashboardRadar.update_frame`:
-        ``signal_iq_dec``, ``spectre_colonne``, ``snr_dB``, ``n_trame``,
-        ``detection``.
+        Frame data for :meth:`DashboardRadar.update_frame`.
     """
-    det = cfg["detection"]
-    bande_resp = tuple(det["bande_respiration"])
-    bande_ref = tuple(det["bande_reference"])
-    seuil = det["seuil_snr_dB"]
+    sdr = cfg["sdr"]
+    dec_cfg = cfg["decimation"]
+    clu_cfg = cfg["clutter"]
+    spec_cfg = cfg["spectrogramme"]
+    win_cfg = cfg["windowing"]
+    det_cfg = cfg["detection"]
 
-    snr_cols, _, _ = snr_db_per_column(
-        S_db=spect.S_db,
-        f_hz=spect.f_hz,
-        bande_respiration=bande_resp,
-        bande_reference=bande_ref,
+    f_s = sdr["f_s"]
+    f_c = sdr["f_c"]
+    n_fft = spec_cfg["n_fft"]
+    overlap = spec_cfg["overlap"]
+    hop = int(n_fft * (1.0 - overlap))
+
+    do_decimate = dec_cfg.get("enable", True)
+    D = dec_cfg["D"] if do_decimate else 1
+    f_max_utile = dec_cfg.get("f_max_utile", 10.0)
+    f_s_dec = f_s / D if do_decimate else f_s
+
+    if do_decimate and f_s_dec <= 2.0 * f_max_utile:
+        raise ValueError(
+            f"Critère de Shannon violé : f_s_dec={f_s_dec:.1f} Hz "
+            f"≤ 2×f_max_utile={2.0 * f_max_utile:.1f} Hz."
+        )
+
+    clutter_filter = ClutterFilter(
+        mode=clu_cfg["mode"],
+        alpha=clu_cfg.get("alpha", 0.99),
+    )
+    window = get_window(win_cfg["mode"], n_fft)
+
+    bande_resp = tuple(det_cfg["bande_respiration"])
+    bande_ref = tuple(det_cfg["bande_reference"])
+    seuil = det_cfg["seuil_snr_dB"]
+
+    ring = deque(maxlen=n_fft)
+    iq_stream = _build_iq_stream(cfg, simulation)
+
+    logger.info(
+        "Pipeline streaming — n_fft=%d, hop=%d, f_s_dec=%.1f Hz",
+        n_fft,
+        hop,
+        f_s_dec,
     )
 
-    n_time = spect.S_db.shape[1]
-    samples_per_frame = max(1, len(iq_dec) // n_time)
+    frame_counter = 0
+    samples_since_last_fft = 0
 
-    for col_idx in range(n_time):
-        start = col_idx * samples_per_frame
-        end = min(start + samples_per_frame, len(iq_dec))
-        iq_chunk = iq_dec[start:end]
+    for raw_buf in iq_stream:
+        if do_decimate:
+            iq_dec, _ = decimate_iq(
+                iq=raw_buf, f_s=f_s, D=D, f_max_utile=f_max_utile,
+            )
+        else:
+            iq_dec = raw_buf
 
-        snr_val = float(snr_cols[col_idx])
-        alert = bool(snr_val >= seuil)
+        iq_filt = clutter_filter(iq_dec)
 
-        yield {
-            "signal_iq_dec": iq_chunk,
-            "spectre_colonne": spect.S_db[:, col_idx],
-            "snr_dB": snr_val,
-            "n_trame": col_idx,
-            "detection": alert,
-        }
+        for sample in iq_filt:
+            ring.append(sample)
+            samples_since_last_fft += 1
+
+            if len(ring) < n_fft:
+                continue
+
+            if samples_since_last_fft < hop:
+                continue
+
+            samples_since_last_fft = 0
+            segment = np.array(ring, dtype=np.complex64)
+
+            col = compute_single_column(segment, f_s_dec, f_c, window)
+
+            snr_db = detect_snr_column(
+                col_db=col.col_db,
+                f_hz=col.f_hz,
+                bande_respiration=bande_resp,
+                bande_reference=bande_ref,
+            )
+            alert = bool(snr_db >= seuil)
+
+            yield {
+                "signal_iq_dec": segment,
+                "spectre_colonne": col.col_db,
+                "snr_dB": snr_db,
+                "n_trame": frame_counter,
+                "detection": alert,
+            }
+            frame_counter += 1
+
+
+# ------------------------------------------------------------------
+# Build context for the dashboard (needs one bootstrap column)
+# ------------------------------------------------------------------
+
+def _build_context(cfg: dict[str, Any]) -> dict[str, Any]:
+    """Build the dashboard context dict from config alone."""
+    sdr = cfg["sdr"]
+    emi = cfg["emission"]
+    dec_cfg = cfg["decimation"]
+    spec_cfg = cfg["spectrogramme"]
+    det_cfg = cfg["detection"]
+
+    f_s = sdr["f_s"]
+    f_c = sdr["f_c"]
+    D = dec_cfg["D"] if dec_cfg.get("enable", True) else 1
+    f_s_dec = f_s / D
+    n_fft = spec_cfg["n_fft"]
+
+    f_hz = np.fft.fftshift(np.fft.fftfreq(n_fft, d=1.0 / f_s_dec)).astype(np.float64)
+
+    tx_buffer = generate_tx_buffer(
+        mode=emi["mode"],
+        buffer_size=sdr["buffer_size"],
+        f_s=f_s,
+        f_offset=emi.get("f_offset", 0.0),
+    )
+    tx_spectrum = np.fft.fftshift(np.fft.fft(tx_buffer, n=len(tx_buffer)))
+    eps = 1e-12
+    spectre_tx_db = 20.0 * np.log10(np.abs(tx_spectrum) + eps).astype(np.float64)
+    f_hz_tx = np.fft.fftshift(
+        np.fft.fftfreq(len(tx_buffer), d=1.0 / f_s)
+    ).astype(np.float64)
+
+    return {
+        "f_hz": f_hz,
+        "f_s_dec": f_s_dec,
+        "f_c": f_c,
+        "seuil_snr_dB": det_cfg["seuil_snr_dB"],
+        "spectre_tx_db": spectre_tx_db,
+        "f_hz_tx": f_hz_tx,
+    }
 
 
 # ------------------------------------------------------------------
@@ -240,51 +286,17 @@ def _parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
-    """Top-level pipeline orchestration."""
+    """Top-level pipeline orchestration (streaming mode)."""
     args = _parse_args()
     cfg = _load_config(args.config)
     _setup_logging(cfg)
 
-    logger.info("=== Démarrage du pipeline micro-Doppler ===")
+    logger.info("=== Démarrage du pipeline micro-Doppler (mode continu) ===")
 
-    # 1. Acquisition
-    acq = _run_acquisition(cfg, simulation=args.simulation)
-
-    # 2. Preprocessing (decimation + clutter)
-    iq_dec, f_s_dec = _run_preprocessing(cfg, acq)
-
-    # 3. Spectrogram
-    spect = _run_analysis(cfg, iq_dec, f_s_dec, acq.f_c)
-
-    # 4. Global detection
-    det_cfg = cfg["detection"]
-    if det_cfg["mode"] == "threshold":
-        result = detect_respiration(
-            S_db=spect.S_db,
-            f_hz=spect.f_hz,
-            bande_respiration=tuple(det_cfg["bande_respiration"]),
-            bande_reference=tuple(det_cfg["bande_reference"]),
-            seuil_snr_dB=det_cfg["seuil_snr_dB"],
-        )
-        if result is not None:
-            logger.info(
-                "Résultat global — SNR = %.1f dB, alerte = %s",
-                result.snr_db,
-                result.alert,
-            )
-
-    # 5. Dashboard
-    context = {
-        "f_hz": spect.f_hz,
-        "v_mps": spect.v_mps,
-        "t_s": spect.t_s,
-        "f_s_dec": f_s_dec,
-        "f_c": acq.f_c,
-        "seuil_snr_dB": det_cfg["seuil_snr_dB"],
-    }
+    context = _build_context(cfg)
 
     dashboard = DashboardRadar(config=cfg, context=context)
-    gen = _frame_generator(cfg, iq_dec, spect)
+    gen = _streaming_frame_generator(cfg, simulation=args.simulation)
     dashboard.run(gen)
 
     logger.info("=== Pipeline terminé ===")

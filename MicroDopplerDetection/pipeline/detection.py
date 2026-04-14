@@ -188,3 +188,68 @@ def snr_db_per_column(
     snr = 10.0 * np.log10(p_sig / (p_ref + eps))
 
     return snr, p_sig, p_ref
+
+
+# ======================================================================
+# Single-column SNR for streaming mode
+# ======================================================================
+
+def detect_snr_column(
+    col_db: np.ndarray,
+    f_hz: np.ndarray,
+    bande_respiration: tuple[float, float],
+    bande_reference: tuple[float, float],
+) -> float:
+    """Compute the SNR of a single spectrum column.
+
+    Parameters
+    ----------
+    col_db : numpy.ndarray
+        Power spectrum in dB, shape ``(n_fft,)``.
+    f_hz : numpy.ndarray
+        Centred frequency axis (Hz), shape ``(n_fft,)``.
+    bande_respiration : tuple[float, float]
+        ``(f_lo, f_hi)`` — signal frequency band (Hz).
+    bande_reference : tuple[float, float]
+        ``(f_lo, f_hi)`` — reference (noise) band (Hz).
+
+    Returns
+    -------
+    float
+        SNR in dB for this single column.
+
+    Raises
+    ------
+    ValueError
+        If either frequency mask selects zero bins.
+
+    Notes
+    -----
+    Streaming counterpart of :func:`snr_db_per_column`.  Operates on a
+    single 1-D spectrum instead of a full 2-D spectrogram matrix,
+    avoiding unnecessary array allocation in the real-time loop.
+    """
+    f_lo_sig, f_hi_sig = bande_respiration
+    f_lo_ref, f_hi_ref = bande_reference
+
+    abs_f = np.abs(f_hz)
+    mask_sig = (abs_f >= f_lo_sig) & (abs_f <= f_hi_sig)
+    mask_ref = (abs_f >= f_lo_ref) & (abs_f <= f_hi_ref)
+
+    if not np.any(mask_sig):
+        raise ValueError(
+            f"Masque bande respiration vide ({f_lo_sig}–{f_hi_sig} Hz). "
+            f"Vérifier δf ou élargir la bande."
+        )
+    if not np.any(mask_ref):
+        raise ValueError(
+            f"Masque bande référence vide ({f_lo_ref}–{f_hi_ref} Hz). "
+            f"Vérifier que la bande est dans la plage Nyquist."
+        )
+
+    col_lin = 10.0 ** (col_db / 10.0)
+    p_sig = float(np.mean(col_lin[mask_sig]))
+    p_ref = float(np.mean(col_lin[mask_ref]))
+
+    eps = 1e-30
+    return float(10.0 * np.log10(p_sig / (p_ref + eps)))

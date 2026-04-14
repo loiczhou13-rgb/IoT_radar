@@ -66,7 +66,7 @@ def decimate_iq(
             f"Réduire D (actuellement {D}) ou augmenter f_s."
         )
 
-    logger.info(
+    logger.debug(
         "Décimation ×%d — f_s : %.0f Hz → %.1f Hz (f_max_utile = %.1f Hz)",
         D,
         f_s,

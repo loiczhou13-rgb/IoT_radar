@@ -42,7 +42,7 @@ sdr:
   # Gain du récepteur (dB, mode manuel AGC désactivé).
   # Viser 50–80 % de la pleine échelle ADC 12 bits (±2048), soit ≈ ±1024–1638.
   # Trop haut → saturation ; trop bas → bruit de quantification dominant.
-  rx_gain: 40
+  rx_gain: 45
 
   # Atténuation de l'émetteur (dB, valeur négative).
   # Réduire (rendre plus négatif) si saturation RX due au couplage TX→RX.
@@ -113,7 +113,7 @@ clutter:
   # Proche de 1 → mémoire longue (filtre passe-haut plus sélectif, coupure basse).
   # Proche de 0 → réaction rapide (risque de supprimer le signal respiration).
   # Fréquence de coupure approximative : f_c_hp ≈ (1−α)·f_s / (2π).
-  alpha: 0.99
+  alpha: 0.9999
 
 
 # ---------------------------------------------------------------------------
@@ -166,7 +166,7 @@ detection:
   # Seuil de détection (dB).
   # Un SNR supérieur à ce seuil déclenche l'alerte "respiration détectée".
   # 10 dB est un point de départ conservateur (facteur 10 en puissance).
-  seuil_snr_dB: 10
+  seuil_snr_dB: 3
 
 
 # ---------------------------------------------------------------------------
@@ -197,6 +197,10 @@ affichage:
   # P(présence) = 1 / (1 + exp(−(snr − seuil) / echelle)).
   # Plus la valeur est petite, plus la transition est abrupte autour du seuil.
   echelle_sigmoid_dB: 3
+
+  # Seuil de décision sur la probabilité de présence (ligne horizontale).
+  # Valeur entre 0 et 1. Au-dessus de ce seuil → détection visuellement confirmée.
+  seuil_proba: 0.6
 
   # Activer le mode plein écran au lancement du dashboard.
   plein_ecran: false
