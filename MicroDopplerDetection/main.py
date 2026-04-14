@@ -41,6 +41,124 @@ from MicroDopplerDetection.utils.display import DashboardRadar
 logger = logging.getLogger(__name__)
 
 _SPEED_OF_LIGHT: float = 299_792_458.0
+_BOLTZMANN: float = 1.380649e-23
+_T0: float = 290.0
+
+
+# ------------------------------------------------------------------
+# Radar range equation
+# ------------------------------------------------------------------
+
+def _radar_range(
+    params: dict[str, Any],
+    wavelength: float,
+    B_hz: float,
+) -> float:
+    """Evaluate the radar range equation for one set of link-budget parameters.
+
+    Parameters
+    ----------
+    params : dict
+        Link-budget parameters (P_tx_dBm, G_tx_dBi, G_rx_dBi, sigma_m2,
+        NF_dB, L_sys_dB, SNR_min_dB).
+    wavelength : float
+        Carrier wavelength (m).
+    B_hz : float
+        Effective processing bandwidth (Hz).
+
+    Returns
+    -------
+    float
+        Detection range in metres.
+
+    Notes
+    -----
+    Monostatic radar range equation:
+
+    .. math::
+
+        R = \\left(
+            \\frac{P_t \\, G_{tx} \\, G_{rx} \\, \\lambda^2 \\, \\sigma}
+            {(4\\pi)^3 \\, k_B \\, T_0 \\, B \\, F \\, L \\, SNR_{min}}
+        \\right)^{1/4}
+    """
+    P_tx = 1e-3 * 10.0 ** (params["P_tx_dBm"] / 10.0)
+    G_tx = 10.0 ** (params["G_tx_dBi"] / 10.0)
+    G_rx = 10.0 ** (params["G_rx_dBi"] / 10.0)
+    sigma = params["sigma_m2"]
+    F = 10.0 ** (params["NF_dB"] / 10.0)
+    L = 10.0 ** (params["L_sys_dB"] / 10.0)
+    SNR_min = 10.0 ** (params["SNR_min_dB"] / 10.0)
+
+    numerator = P_tx * G_tx * G_rx * wavelength**2 * sigma
+    denominator = (4.0 * np.pi)**3 * _BOLTZMANN * _T0 * B_hz * F * L * SNR_min
+
+    return float((numerator / denominator) ** 0.25)
+
+
+def _compute_range(
+    cfg: dict[str, Any],
+    f_s_dec: float,
+    n_fft: int,
+) -> tuple[float, float]:
+    """Compute pessimistic and optimistic detection ranges.
+
+    Parameters
+    ----------
+    cfg : dict
+        Full configuration dictionary.
+    f_s_dec : float
+        Decimated sampling rate (Hz).
+    n_fft : int
+        FFT size, used to derive processing bandwidth.
+
+    Returns
+    -------
+    tuple[float, float]
+        ``(R_min, R_max)`` — pessimistic and optimistic range in metres.
+
+    Notes
+    -----
+    Two scenarios are evaluated from ``config.bilan_liaison``:
+
+    * **Optimistic** — free-space propagation, clear line of sight,
+      nominal antenna gains, full target RCS.
+    * **Pessimistic** — propagation through rubble/debris (high losses),
+      degraded antenna patterns, partially obscured target (reduced RCS).
+
+    The operator sees an interval ``[R_min, R_max]`` on the dashboard,
+    giving both a lower bound (worst case on the field) and an upper
+    bound (best achievable performance).
+    """
+    bl = cfg.get("bilan_liaison", {})
+    f_c = cfg["sdr"]["f_c"]
+    wavelength = _SPEED_OF_LIGHT / f_c
+    B_hz = bl.get("B_eff_hz", f_s_dec / n_fft)
+
+    defaults_opt = {
+        "P_tx_dBm": -13, "G_tx_dBi": 2, "G_rx_dBi": 2,
+        "sigma_m2": 0.5, "NF_dB": 4, "L_sys_dB": 3, "SNR_min_dB": 3,
+    }
+    defaults_pes = {
+        "P_tx_dBm": -13, "G_tx_dBi": 0, "G_rx_dBi": 0,
+        "sigma_m2": 0.05, "NF_dB": 6, "L_sys_dB": 25, "SNR_min_dB": 3,
+    }
+
+    params_opt = {k: bl.get("optimiste", {}).get(k, v) for k, v in defaults_opt.items()}
+    params_pes = {k: bl.get("pessimiste", {}).get(k, v) for k, v in defaults_pes.items()}
+
+    R_max = _radar_range(params_opt, wavelength, B_hz)
+    R_min = _radar_range(params_pes, wavelength, B_hz)
+
+    logger.info(
+        "Portée effective — R_min = %.1f m (pire-cas) / R_max = %.1f m (optimiste) "
+        "(B=%.3f Hz, λ=%.3f m)",
+        R_min,
+        R_max,
+        B_hz,
+        wavelength,
+    )
+    return R_min, R_max
 
 
 # ------------------------------------------------------------------
@@ -163,15 +281,17 @@ def _streaming_frame_generator(
     bande_resp = tuple(det_cfg["bande_respiration"])
     bande_ref = tuple(det_cfg["bande_reference"])
     seuil = det_cfg["seuil_snr_dB"]
+    skip_warmup = spec_cfg.get("skip_warmup", 0)
 
     ring = deque(maxlen=n_fft)
     iq_stream = _build_iq_stream(cfg, simulation)
 
     logger.info(
-        "Pipeline streaming — n_fft=%d, hop=%d, f_s_dec=%.1f Hz",
+        "Pipeline streaming — n_fft=%d, hop=%d, f_s_dec=%.1f Hz, skip_warmup=%d",
         n_fft,
         hop,
         f_s_dec,
+        skip_warmup,
     )
 
     frame_counter = 0
@@ -198,6 +318,12 @@ def _streaming_frame_generator(
                 continue
 
             samples_since_last_fft = 0
+            frame_counter += 1
+
+            if frame_counter <= skip_warmup:
+                logger.debug("Warm-up : trame %d/%d ignorée", frame_counter, skip_warmup)
+                continue
+
             segment = np.array(ring, dtype=np.complex64)
 
             col = compute_single_column(segment, f_s_dec, f_c, window)
@@ -217,7 +343,6 @@ def _streaming_frame_generator(
                 "n_trame": frame_counter,
                 "detection": alert,
             }
-            frame_counter += 1
 
 
 # ------------------------------------------------------------------
@@ -253,6 +378,17 @@ def _build_context(cfg: dict[str, Any]) -> dict[str, Any]:
         np.fft.fftfreq(len(tx_buffer), d=1.0 / f_s)
     ).astype(np.float64)
 
+    R_min, R_max = _compute_range(cfg, f_s_dec, n_fft)
+
+    df_hz = f_s_dec / n_fft
+    wavelength = _SPEED_OF_LIGHT / f_c
+    dv_mps = df_hz * wavelength / 2.0
+
+    clutter_mode = cfg.get("clutter", {}).get("mode", "mean")
+    bande_resp = det_cfg.get("bande_respiration", [0.1, 1.0])
+    bl = cfg.get("bilan_liaison", {})
+    B_eff_hz = bl.get("B_eff_hz", df_hz)
+
     return {
         "f_hz": f_hz,
         "f_s_dec": f_s_dec,
@@ -260,6 +396,14 @@ def _build_context(cfg: dict[str, Any]) -> dict[str, Any]:
         "seuil_snr_dB": det_cfg["seuil_snr_dB"],
         "spectre_tx_db": spectre_tx_db,
         "f_hz_tx": f_hz_tx,
+        "R_min_m": R_min,
+        "R_max_m": R_max,
+        "df_hz": df_hz,
+        "dv_mps": dv_mps,
+        "n_fft": n_fft,
+        "clutter_mode": clutter_mode,
+        "bande_resp": bande_resp,
+        "B_eff_hz": B_eff_hz,
     }
 
 

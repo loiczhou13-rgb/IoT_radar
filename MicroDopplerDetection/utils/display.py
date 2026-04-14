@@ -9,42 +9,19 @@ import numpy as np
 import matplotlib
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
+from matplotlib.gridspec import GridSpec
 
 logger = logging.getLogger(__name__)
 
 
 class DashboardRadar:
-    """Three-panel live dashboard for micro-Doppler monitoring.
+    """Three-panel live dashboard with an info box for micro-Doppler monitoring.
 
-    Parameters
-    ----------
-    config : dict
-        Full configuration dictionary (parsed ``config.yaml``).
-    context : dict
-        Pipeline context built by ``main.py``, containing at least:
+    Layout (using GridSpec)::
 
-        * ``f_hz``       — Doppler frequency axis (numpy.ndarray).
-        * ``f_s_dec``    — decimated sampling rate (float).
-        * ``f_c``        — carrier frequency (float).
-        * ``seuil_snr_dB`` — SNR detection threshold (float).
-        * ``spectre_tx_db`` — TX spectrum in dB (numpy.ndarray).
-        * ``f_hz_tx``    — TX frequency axis (numpy.ndarray).
-
-    Notes
-    -----
-    The dashboard has three vertically stacked panels:
-
-    1. **Emitted signal (TX)** — frequency-domain view of the transmit
-       waveform.  This is static (computed once at startup).
-    2. **Received signal (RX)** — live frequency-domain view of the latest
-       STFT column (Doppler spectrum after clutter removal).
-    3. **Presence probability** — sigmoid-transformed SNR over time,
-       with a configurable decision threshold line at 0.6 (or as set in
-       ``affichage.seuil_proba``).
-
-    The dashboard is driven by ``matplotlib.animation.FuncAnimation``
-    which calls :meth:`update_frame` for each new data dict yielded by
-    the pipeline generator.
+        Row 0 : TX spectrum (full width)
+        Row 1 : RX spectrum (full width)
+        Row 2 : Probability curve (left 2/3) | Info box (right 1/3)
     """
 
     def __init__(self, config: dict, context: dict) -> None:
@@ -60,13 +37,28 @@ class DashboardRadar:
         self._f_hz: np.ndarray = context["f_hz"]
         self._f_hz_tx: np.ndarray = context["f_hz_tx"]
         self._spectre_tx_db: np.ndarray = context["spectre_tx_db"]
+        self._R_min_m: float = context.get("R_min_m", 0.0)
+        self._R_max_m: float = context.get("R_max_m", 0.0)
+        self._df_hz: float = context.get("df_hz", 0.0)
+        self._dv_mps: float = context.get("dv_mps", 0.0)
+        self._n_fft: int = context.get("n_fft", 0)
+        self._clutter_mode: str = context.get("clutter_mode", "?")
+        self._bande_resp: list = context.get("bande_resp", [0.1, 1.0])
+        self._B_eff_hz: float = context.get("B_eff_hz", 0.0)
 
         self._prob_history: list[float] = []
         self._frame_count: int = 0
+        self._last_snr: float = 0.0
+        self._last_prob: float = 0.0
 
-        self._fig, self._axes = plt.subplots(
-            3, 1, figsize=(12, 9), constrained_layout=True,
-        )
+        self._fig = plt.figure(figsize=(14, 9), constrained_layout=True)
+        gs = GridSpec(3, 5, figure=self._fig)
+
+        self._ax_tx = self._fig.add_subplot(gs[0, :])
+        self._ax_rx = self._fig.add_subplot(gs[1, :])
+        self._ax_prob = self._fig.add_subplot(gs[2, :3])
+        self._ax_info = self._fig.add_subplot(gs[2, 3:])
+
         self._fig.suptitle(
             "Radar Micro-Doppler — Détection de survivants",
             fontsize=13,
@@ -83,17 +75,17 @@ class DashboardRadar:
                 except Exception:
                     pass
 
-        logger.info("Dashboard initialisé — 3 panneaux")
+        logger.info("Dashboard initialisé — 3 panneaux + encadré info")
 
     # ------------------------------------------------------------------
     # Panel initialisation
     # ------------------------------------------------------------------
 
     def _init_panels(self) -> None:
-        """Set up axes, labels, and placeholder artists for all three panels."""
-        ax_tx = self._axes[0]
-        ax_rx = self._axes[1]
-        ax_prob = self._axes[2]
+        ax_tx = self._ax_tx
+        ax_rx = self._ax_rx
+        ax_prob = self._ax_prob
+        ax_info = self._ax_info
 
         # Panel 1 — TX spectrum (static)
         ax_tx.set_title("Signal émis (domaine fréquentiel)")
@@ -118,7 +110,7 @@ class DashboardRadar:
             color="tab:orange",
         )
 
-        # Panel 3 — Presence probability
+        # Panel 3a — Presence probability
         ax_prob.set_title("Probabilité de présence")
         ax_prob.set_xlabel("Trame")
         ax_prob.set_ylabel("P(présence)")
@@ -135,28 +127,53 @@ class DashboardRadar:
         )
         ax_prob.legend(loc="upper left", fontsize=8)
 
+        # Panel 3b — Info box (static structure, updated text)
+        ax_info.set_axis_off()
+        self._info_text = ax_info.text(
+            0.05, 0.95, "",
+            transform=ax_info.transAxes,
+            fontsize=9,
+            fontfamily="monospace",
+            verticalalignment="top",
+            bbox=dict(
+                boxstyle="round,pad=0.5",
+                facecolor="#f0f0f0",
+                edgecolor="#888888",
+                linewidth=1.2,
+            ),
+        )
+        self._update_info_box()
+
+    # ------------------------------------------------------------------
+    # Info box
+    # ------------------------------------------------------------------
+
+    def _update_info_box(self) -> None:
+        lines = [
+            "╔══════════════════════╗",
+            "║   PARAMÈTRES RADAR   ║",
+            "╚══════════════════════╝",
+            "",
+            f"  δf     = {self._df_hz:.3f} Hz",
+            f"  δv     = {self._dv_mps * 100:.2f} cm/s",
+            f"  N_FFT  = {self._n_fft}",
+            f"  B_eff  = {self._B_eff_hz:.1f} Hz",
+            f"  Clutter: {self._clutter_mode}",
+            f"  Bande  : {self._bande_resp[0]}–{self._bande_resp[1]} Hz",
+            "",
+            f"  Portée : {self._R_min_m:.1f}–{self._R_max_m:.1f} m",
+            "",
+            "─────── LIVE ───────",
+            f"  SNR    = {self._last_snr:+.1f} dB",
+            f"  P(vie) = {self._last_prob:.2f}",
+        ]
+        self._info_text.set_text("\n".join(lines))
+
     # ------------------------------------------------------------------
     # Frame update (called by FuncAnimation)
     # ------------------------------------------------------------------
 
     def update_frame(self, frame_data: dict[str, Any]) -> tuple:
-        """Refresh the RX spectrum and probability panels.
-
-        Parameters
-        ----------
-        frame_data : dict
-            Dictionary produced by the pipeline generator, containing:
-
-            * ``spectre_colonne`` — RX dB spectrum, shape ``(n_fft,)``.
-            * ``snr_dB`` — scalar SNR for this frame.
-            * ``n_trame`` — frame counter (int).
-            * ``detection`` — boolean alert flag.
-
-        Returns
-        -------
-        tuple
-            Matplotlib artists that were modified.
-        """
         self._frame_count += 1
 
         col_db = frame_data["spectre_colonne"]
@@ -166,50 +183,42 @@ class DashboardRadar:
 
         # Panel 2 — RX spectrum
         self._line_rx.set_ydata(col_db)
-        ax_rx = self._axes[1]
+        ax_rx = self._ax_rx
         ax_rx.set_xlim(self._f_hz[0], self._f_hz[-1])
         _auto_ylim(ax_rx, col_db)
 
-        # Panel 3 — Presence probability
+        # Panel 3a — Presence probability
         prob = _sigmoid(snr, self._seuil_snr, self._sigmoid_scale)
         self._prob_history.append(prob)
         if len(self._prob_history) > self._N_hist:
             self._prob_history = self._prob_history[-self._N_hist:]
         x_prob = np.arange(len(self._prob_history))
         self._line_prob.set_data(x_prob, self._prob_history)
-        self._axes[2].set_xlim(0, max(len(self._prob_history), 1))
+        self._ax_prob.set_xlim(0, max(len(self._prob_history), 1))
+
+        # Panel 3b — Info box live values
+        self._last_snr = snr
+        self._last_prob = prob
+        self._update_info_box()
 
         # Title feedback
         colour = "green" if detected else "red"
         status = "RESPIRATION DÉTECTÉE" if detected else "Aucune détection"
         self._fig.suptitle(
-            f"Radar Micro-Doppler — {status}  |  Trame {n_trame}  |  "
-            f"SNR = {snr:.1f} dB  |  P = {prob:.2f}",
+            f"Radar Micro-Doppler — {status}  |  Trame {n_trame}",
             fontsize=13,
             fontweight="bold",
             color=colour,
         )
 
-        return (self._line_rx, self._line_prob)
+        return (self._line_rx, self._line_prob, self._info_text)
 
     # ------------------------------------------------------------------
     # Animation loop
     # ------------------------------------------------------------------
 
     def run(self, generator: Generator[dict[str, Any], None, None]) -> None:
-        """Start the live animation driven by a frame generator.
-
-        Parameters
-        ----------
-        generator : Generator[dict[str, Any], None, None]
-            Yields one ``frame_data`` dict per pipeline iteration.
-
-        Notes
-        -----
-        ``FuncAnimation`` pulls one frame per call from the generator.
-        The dashboard remains responsive because matplotlib's event loop
-        handles redraw and user interaction between frames.
-        """
+        """Start the live animation driven by a frame generator."""
         logger.info("Lancement du dashboard temps réel")
 
         self._anim = FuncAnimation(

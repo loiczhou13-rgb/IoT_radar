@@ -143,6 +143,13 @@ spectrogramme:
   # spectrogramme mais augmente le coût de calcul.
   overlap: 0.90
 
+  # Nombre de trames à ignorer au démarrage (warm-up).
+  # Pendant ces trames, le filtre de clutter IIR n'a pas encore convergé,
+  # ce qui produit un SNR artificiellement élevé (proba collée à 1).
+  # Règle d'or : skip_warmup ≈ τ / T_hop ≈ (1/(1−α)) / (n_fft × (1−overlap) / f_s_dec).
+  # Avec α=0.9995, n_fft=8192, overlap=0.9, f_s_dec=2000 → ≈ 5 trames.
+  skip_warmup: 5
+
 
 # ---------------------------------------------------------------------------
 # Détection de la respiration
@@ -204,6 +211,52 @@ affichage:
 
   # Activer le mode plein écran au lancement du dashboard.
   plein_ecran: false
+
+
+# ---------------------------------------------------------------------------
+# Bilan de liaison radar (portée effective)
+# ---------------------------------------------------------------------------
+bilan_liaison:
+  # ---- Scénario optimiste (espace libre, cible dégagée) ----
+  optimiste:
+    # Puissance émise (dBm). PlutoSDR avec tx_gain = -20 dB : environ -13 dBm.
+    P_tx_dBm: -13
+    # Gain antenne TX (dBi). Omnidirectionnelle ≈ 2, patch ≈ 6–10.
+    G_tx_dBi: 2
+    # Gain antenne RX (dBi).
+    G_rx_dBi: 2
+    # Section efficace radar de la cible (m²). Thorax humain de face ≈ 0.5–1.0.
+    sigma_m2: 0.5
+    # Facteur de bruit récepteur (dB). AD9363 typique : 3–5 dB.
+    NF_dB: 4
+    # Pertes système (câbles, connecteurs, adaptation) (dB).
+    L_sys_dB: 3
+    # SNR minimum requis (dB).
+    SNR_min_dB: 3
+
+  # ---- Scénario pessimiste (décombres, pire-cas terrain) ----
+  pessimiste:
+    # Même puissance TX.
+    P_tx_dBm: -13
+    # Antennes mal orientées / environnement dégradé → gain réduit.
+    G_tx_dBi: 0
+    G_rx_dBi: 0
+    # Cible partiellement masquée par des décombres → SER réduite.
+    sigma_m2: 0.05
+    # Facteur de bruit pire-cas.
+    NF_dB: 6
+    # Pertes totales : 3 dB câbles + 20 dB propagation décombres (aller-retour).
+    L_sys_dB: 25
+    # SNR minimum identique.
+    SNR_min_dB: 3
+
+  # Bande passante effective de bruit (Hz).
+  # En théorie, δf = f_s_dec / n_fft ≈ 0.24 Hz.
+  # En pratique, le bruit de phase de l'oscillateur du PlutoSDR élargit
+  # le plancher de bruit autour de la porteuse (bruit en 1/f).
+  # La bande effective de bruit est bien plus large que δf.
+  # Valeur réaliste pour un PlutoSDR : 30–100 Hz.
+  B_eff_hz: 50
 
 
 # ---------------------------------------------------------------------------

@@ -71,7 +71,7 @@ class ClutterFilter:
     def _apply_iir(self, iq: np.ndarray) -> np.ndarray:
         """Recursive EMA high-pass with state carry-over."""
         out = np.empty_like(iq)
-        mu = self._mu if self._mu is not None else complex(iq[0])
+        mu = self._mu if self._mu is not None else complex(np.mean(iq))
         alpha = self._alpha
         for n in range(len(iq)):
             mu = alpha * mu + (1.0 - alpha) * iq[n]
