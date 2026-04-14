@@ -39,6 +39,7 @@ def run(cli_args: list[str] | None = None) -> None:
 
     radio = cfg.radio
     stft_cfg = cfg.stft
+    proc_cfg = cfg.processing
     det_cfg = cfg.detector
 
     sdr_cfg = PlutoSdrConfig(
@@ -69,13 +70,28 @@ def run(cli_args: list[str] | None = None) -> None:
     clutter_state = ClutterFilterState()
     detector_state = init_detector_state()
 
+    def _decimate(x: np.ndarray, decim: int) -> np.ndarray:
+        if decim <= 1:
+            return x
+        # Simple anti-aliasing: moving-average FIR then downsample.
+        k = int(decim)
+        kernel = np.ones(k, dtype=np.float32) / float(k)
+        xr = np.convolve(x.real.astype(np.float32), kernel, mode="same")
+        xi = np.convolve(x.imag.astype(np.float32), kernel, mode="same")
+        return (xr[::k] + 1j * xi[::k]).astype(np.complex64)
+
+    fs_stft_target = float(proc_cfg.stft_fs_target_hz)
+    decim = int(max(1, round(sdr_cfg.fs_hz / max(fs_stft_target, 1.0))))
+    fs_stft = float(sdr_cfg.fs_hz) / float(decim)
+
     # Create UI after we know v-axis for microdoppler
     # Prime one RX capture to define STFT grids.
     rx0 = sdr.rx()
     y0 = apply_clutter_filter(rx0, clutter_state, method=clutter_method, iir_alpha=iir_alpha)
+    y0 = _decimate(y0, decim)
     stft0 = stft_microdoppler(
         y0,
-        fs_hz=sdr_cfg.fs_hz,
+        fs_hz=fs_stft,
         fc_hz=sdr_cfg.fc_hz,
         window_size=stft_cfg.window_size,
         hop_size=stft_cfg.hop_size,
@@ -92,9 +108,10 @@ def run(cli_args: list[str] | None = None) -> None:
 
         rx = sdr.rx()
         y = apply_clutter_filter(rx, clutter_state, method=clutter_method, iir_alpha=iir_alpha)
+        y = _decimate(y, decim)
         stft = stft_microdoppler(
             y,
-            fs_hz=sdr_cfg.fs_hz,
+            fs_hz=fs_stft,
             fc_hz=sdr_cfg.fc_hz,
             window_size=stft_cfg.window_size,
             hop_size=stft_cfg.hop_size,
@@ -127,7 +144,7 @@ def run(cli_args: list[str] | None = None) -> None:
 
         metrics_text = (
             f"STFT Δt={stft.dt_s:.4f}s  Δf={stft.df_hz:.2f}Hz  Δv={stft.dv_ms:.4g}m/s | "
-            f"fe={sdr.status.applied_fs_hz:.0f}Hz  fc={sdr.status.applied_fc_hz/1e9:.3f}GHz | "
+            f"fe={sdr.status.applied_fs_hz:.0f}Hz  fe_STFT={fs_stft:.0f}Hz (÷{decim})  fc={sdr.status.applied_fc_hz/1e9:.3f}GHz | "
             f"filtrage_décor={clutter_method}"
         )
 
@@ -140,6 +157,9 @@ def run(cli_args: list[str] | None = None) -> None:
             tx_iq=tx_iq,
             rx_iq=rx,
             md_slice_db=md_slice,
+            confidence=decision.confidence,
+            is_present=decision.is_present,
+            confidence_threshold=det_cfg.confidence_min,
             decision_text=decision_text,
             metrics_text=metrics_text,
         )

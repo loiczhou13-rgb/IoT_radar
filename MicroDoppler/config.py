@@ -9,8 +9,8 @@ class RadioConfig:
     fs_hz: float = 600_000  # keep stable; Pluto hack supports higher but prefer conservative defaults
     rx_buffer_size: int = 65_536
 
-    tx_gain_db: int = -40
-    rx_gain_db: int = 55
+    tx_gain_db: int = -20
+    rx_gain_db: int = 120
     rx_gain_mode: str = "manual"  # "manual" | "slow_attack"
 
     pluto_uri: str = "ip:192.168.2.1"
@@ -20,7 +20,7 @@ class RadioConfig:
 class TxConfig:
     waveform: str = "cw_tone"  # cw_tone | noise | qpsk | chirp
     amplitude: float = 0.5
-    tone_hz: float = 10_000.0
+    tone_hz: float = 0.
 
 
 @dataclass(frozen=True)
@@ -32,6 +32,13 @@ class StftConfig:
 
     history_frames: int = 220  # number of spectrogram time slices to keep
     update_ms: int = 80
+
+
+@dataclass(frozen=True)
+class ProcessingConfig:
+    # Respiration Doppler frequencies are very low (sub-Hz). Decimate before STFT
+    # to obtain fine Doppler/velocity resolution without huge FFT sizes.
+    stft_fs_target_hz: float = 5_000.0
 
 
 @dataclass(frozen=True)
@@ -49,8 +56,8 @@ class RespirationTarget:
 
 @dataclass(frozen=True)
 class DetectorConfig:
-    velocity_band_min_ms: float = 0.01
-    velocity_band_max_ms: float = 0.40
+    velocity_band_min_ms: float = 0.001
+    velocity_band_max_ms: float = 0.10
     snr_db_min: float = 6.0
     confidence_min: float = 0.6
 
@@ -60,6 +67,7 @@ class AppConfig:
     radio: RadioConfig = RadioConfig()
     tx: TxConfig = TxConfig()
     stft: StftConfig = StftConfig()
+    processing: ProcessingConfig = ProcessingConfig()
     clutter: ClutterConfig = ClutterConfig()
     target: RespirationTarget = RespirationTarget()
     detector: DetectorConfig = DetectorConfig()
