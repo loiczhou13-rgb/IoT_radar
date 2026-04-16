@@ -50,8 +50,7 @@ sdr:
 
   # Nombre d'échantillons IQ par buffer.
   # Puissance de 2 pour efficacité FFT. 2^14 = 16384 → 8.2 ms par trame à 2 MHz.
-  # buffer_size: 16384
-  buffer_size: 1024
+  buffer_size: 16384
 
   # Nombre de buffers (trames) à acquérir par séquence de mesure.
   # Durée totale ≈ n_frames × buffer_size / f_s.
@@ -73,7 +72,7 @@ emission:
   # Décalage fréquentiel du signal TX en bande de base (Hz).
   # Utilisé uniquement si mode = "cw_offset".
   # Le signal utile apparaîtra autour de f_offset ± f_v dans le spectre.
-  f_offset: 10000
+  f_offset: 500
 
 
 # ---------------------------------------------------------------------------
@@ -137,7 +136,7 @@ spectrogramme:
   # Résolution fréquentielle : δf = f_s_dec / n_fft.
   # Avec f_s_dec = 2000 Hz et n_fft = 8192 → δf ≈ 0.24 Hz.
   # La respiration (~0.3 Hz) occupe environ 1–2 bins.
-  n_fft: 1024
+  n_fft: 8192
 
   # Taux de recouvrement entre segments STFT successifs (ratio, 0 à <1).
   # Un recouvrement élevé (0.90) donne un meilleur lissage temporel du

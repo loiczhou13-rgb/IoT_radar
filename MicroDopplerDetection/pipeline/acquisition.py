@@ -270,7 +270,7 @@ def stream_pluto(
     Raises
     ------
     RuntimeError
-        If the PlutoSDR cannot be reached.
+        If the PlutoSDR cannot be reached at *uri*.
 
     Notes
     -----
