@@ -6,7 +6,7 @@ import logging
 import math
 
 import numpy as np
-from scipy.signal import butter, sosfilt, sosfilt_zi
+from scipy.signal import butter, lfilter, sosfilt, sosfilt_zi
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +112,17 @@ class ClutterFilter:
         numpy.ndarray
             Clutter-suppressed IQ (same length as *iq*).
         """
+        if iq.ndim != 1:
+            raise ValueError(
+                f"iq doit être 1-D, reçu ndim={iq.ndim} shape={iq.shape}."
+            )
+        if not np.iscomplexobj(iq):
+            logger.warning(
+                "iq n'est pas complexe (dtype=%s) — cast vers complex128.",
+                iq.dtype,
+            )
+            iq = iq.astype(np.complex128)
+
         if self._mode == "mean":
             return self._apply_mean(iq)
         if self._mode == "iir":
@@ -132,15 +143,18 @@ class ClutterFilter:
         return out
 
     def _apply_iir(self, iq: np.ndarray) -> np.ndarray:
-        """Recursive EMA high-pass with state carry-over."""
-        out = np.empty_like(iq)
-        mu = self._mu if self._mu is not None else complex(np.mean(iq))
+        """Vectorised EMA high-pass using lfilter with state carry-over."""
         alpha = self._alpha
-        for n in range(len(iq)):
-            mu = alpha * mu + (1.0 - alpha) * iq[n]
-            out[n] = iq[n] - mu
-        self._mu = mu
-        return out
+        b = np.array([1.0 - alpha])
+        a = np.array([1.0, -alpha])
+
+        if not hasattr(self, "_zi_iir"):
+            mu0 = complex(np.mean(iq))
+            self._zi_iir = np.array([mu0 * alpha])
+
+        mu_filtered, self._zi_iir = lfilter(b, a, iq, zi=self._zi_iir)
+        self._mu = complex(mu_filtered[-1])
+        return (iq - mu_filtered).astype(iq.dtype)
 
     def _apply_mti(self, iq: np.ndarray) -> np.ndarray:
         """Single-delay MTI with state carry-over."""
