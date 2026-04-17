@@ -26,12 +26,9 @@ class DashboardRadar:
 
     def __init__(self, config: dict, context: dict) -> None:
         aff = config["affichage"]
-        det = config["detection"]
 
         self._N_hist: int = aff["N_historique"]
-        self._sigmoid_scale: float = aff["echelle_sigmoid_dB"]
         self._plein_ecran: bool = aff["plein_ecran"]
-        self._seuil_snr: float = det["seuil_snr_dB"]
         self._seuil_proba: float = aff.get("seuil_proba", 0.6)
 
         self._f_hz: np.ndarray = context["f_hz"]
@@ -178,6 +175,7 @@ class DashboardRadar:
 
         col_db = frame_data["spectre_colonne"]
         snr = frame_data["snr_dB"]
+        prob = frame_data["prob"]
         n_trame = frame_data["n_trame"]
         detected = frame_data["detection"]
 
@@ -188,7 +186,6 @@ class DashboardRadar:
         _auto_ylim(ax_rx, col_db)
 
         # Panel 3a — Presence probability
-        prob = _sigmoid(snr, self._seuil_snr, self._sigmoid_scale)
         self._prob_history.append(prob)
         if len(self._prob_history) > self._N_hist:
             self._prob_history = self._prob_history[-self._N_hist:]
@@ -236,13 +233,6 @@ class DashboardRadar:
 # ----------------------------------------------------------------------
 # Private helpers
 # ----------------------------------------------------------------------
-
-def _sigmoid(x: float, center: float, scale: float) -> float:
-    """Logistic sigmoid: 1 / (1 + exp(-(x - center) / scale))."""
-    z = -(x - center) / scale
-    z = max(min(z, 500.0), -500.0)
-    return 1.0 / (1.0 + np.exp(z))
-
 
 def _auto_ylim(
     ax: matplotlib.axes.Axes,

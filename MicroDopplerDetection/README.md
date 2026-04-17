@@ -27,17 +27,17 @@ respiratoire (J₁(m) ≈ 0.44 pour un indice de modulation m ≈ 1).
 ## Architecture du pipeline
 
 ```
-┌─────────────┐     ┌──────────────┐     ┌─────────────┐
-│  emission.py │────▶│ acquisition.py│────▶│ decimation.py│
-│  Signal TX   │     │  IQ (PlutoSDR │     │ ↓ f_s par D  │
-│  CW / offset │     │  ou simulation)    │              │
-└─────────────┘     └──────────────┘     └──────┬──────┘
-                                                 │
-                    ┌──────────────┐     ┌───────▼──────┐
-                    │ windowing.py │◀────│  clutter.py  │
-                    │ Fenêtre STFT │     │ Suppression  │
-                    └──────┬───────┘     │ composante DC│
-                           │             └──────────────┘
+┌─────────────┐      ┌────────────────┐      ┌──────────────┐
+│  emission.py │────▶│ acquisition.py │────▶│ decimation.py│
+│  Signal TX   │     │  IQ (PlutoSDR  │      │ ↓ f_s par D  │
+│  CW / offset │     │  ou simulation)|      │              │
+└─────────────┘      └────────────────┘      └──────┬───────┘
+                                                    │
+                    ┌──────────────┐        ┌───────▼──────┐
+                    │ windowing.py │◀──────│  clutter.py  │
+                    │ Fenêtre STFT │        │ Suppression  │
+                    └──────┬───────┘        │ composante DC│
+                           │                └──────────────┘
                     ┌──────▼───────┐
                     │spectrogramme │
                     │    .py       │

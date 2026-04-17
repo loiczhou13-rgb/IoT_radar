@@ -107,7 +107,7 @@ clutter:
   #            puis y[n] = x[n] − μ[n]. Adaptif aux dérives lentes.
   #   "mti"  — annulateur MTI (Moving Target Indicator) : y[n] = x[n] − x[n-1].
   #            Supprime efficacement le DC et les cibles fixes.
-  mode: "mti"
+  mode: "iir"
 
   # Facteur de mémoire EMA (mode "iir" uniquement).
   # Proche de 1 → mémoire longue (filtre passe-haut plus sélectif, coupure basse).
@@ -161,19 +161,24 @@ detection:
   #   "none"      — pas de détection automatique, affichage seul.
   mode: "threshold"
 
-  # Bande de fréquences Doppler où chercher la respiration (Hz).
+  # Bande de fréquences Doppler où chercher la respiration (Hz),
+  # exprimée RELATIVEMENT à la porteuse (autour de 0 Hz).
   # 0.1–0.8 Hz couvre les rythmes respiratoires humains normaux et lents
   # (6–48 cycles/min).
+  # En mode cw_offset, le code décale automatiquement ces bandes de f_offset.
   bande_respiration: [0.1, 0.8]
 
-  # Bande de référence pour estimer le plancher de bruit (Hz).
+  # Bande de référence pour estimer le plancher de bruit (Hz),
+  # exprimée RELATIVEMENT à la porteuse.
   # Doit être éloignée de la respiration et du DC résiduel.
+  # En mode cw_offset, décalée automatiquement de f_offset.
   bande_reference: [2.0, 5.0]
 
-  # Seuil de détection (dB).
-  # Un SNR supérieur à ce seuil déclenche l'alerte "respiration détectée".
-  # 10 dB est un point de départ conservateur (facteur 10 en puissance).
-  seuil_snr_dB: 3
+  # Centre de la sigmoïde SNR → probabilité (dB).
+  # Quand SNR = centre_sigmoid_dB, la probabilité vaut exactement 0.5.
+  # La décision de détection est prise sur la probabilité (voir affichage.seuil_proba),
+  # pas directement sur le SNR.
+  centre_sigmoid_dB: 3
 
 
 # ---------------------------------------------------------------------------

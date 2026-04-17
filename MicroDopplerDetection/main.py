@@ -45,6 +45,13 @@ _BOLTZMANN: float = 1.380649e-23
 _T0: float = 290.0
 
 
+def _sigmoid(x: float, center: float, scale: float) -> float:
+    """Logistic sigmoid mapping SNR (dB) to probability [0, 1]."""
+    z = -(x - center) / scale
+    z = max(min(z, 500.0), -500.0)
+    return 1.0 / (1.0 + np.exp(z))
+
+
 # ------------------------------------------------------------------
 # Radar range equation
 # ------------------------------------------------------------------
@@ -201,7 +208,8 @@ def _build_iq_stream(
     sim = cfg["simulation"]
 
     if simulation or sim.get("enable", False):
-        logger.info("Mode simulation continu activé")
+        f_off = emi.get("f_offset", 0.0) if emi.get("mode") == "cw_offset" else 0.0
+        logger.info("Mode simulation continu activé (f_offset=%.1f Hz)", f_off)
         return stream_simulation(
             f_c=sdr["f_c"],
             f_s=sdr["f_s"],
@@ -209,7 +217,7 @@ def _build_iq_stream(
             fv=sim["fv"],
             D_mm=sim["D_mm"],
             snr_dB=sim["snr_dB"],
-            f_offset=0.0,
+            f_offset=f_off,
         )
 
     logger.info("Mode matériel continu — connexion au PlutoSDR")
@@ -278,9 +286,18 @@ def _streaming_frame_generator(
     )
     window = get_window(win_cfg["mode"], n_fft)
 
-    bande_resp = tuple(det_cfg["bande_respiration"])
-    bande_ref = tuple(det_cfg["bande_reference"])
-    seuil = det_cfg["seuil_snr_dB"]
+    emi = cfg["emission"]
+    f_offset = emi.get("f_offset", 0.0) if emi.get("mode") == "cw_offset" else 0.0
+
+    bande_resp_rel = det_cfg["bande_respiration"]
+    bande_ref_rel = det_cfg["bande_reference"]
+    bande_resp = (bande_resp_rel[0] + f_offset, bande_resp_rel[1] + f_offset)
+    bande_ref = (bande_ref_rel[0] + f_offset, bande_ref_rel[1] + f_offset)
+
+    aff = cfg["affichage"]
+    centre_sigmoid = det_cfg.get("centre_sigmoid_dB", 3.0)
+    echelle_sigmoid = aff["echelle_sigmoid_dB"]
+    seuil_proba = aff.get("seuil_proba", 0.6)
     skip_warmup = spec_cfg.get("skip_warmup", 0)
 
     ring = deque(maxlen=n_fft)
@@ -292,6 +309,15 @@ def _streaming_frame_generator(
         hop,
         f_s_dec,
         skip_warmup,
+    )
+    logger.info(
+        "Bandes de détection (f_offset=%.1f Hz) — respiration=%.1f–%.1f Hz, "
+        "référence=%.1f–%.1f Hz",
+        f_offset,
+        bande_resp[0],
+        bande_resp[1],
+        bande_ref[0],
+        bande_ref[1],
     )
 
     frame_counter = 0
@@ -334,12 +360,14 @@ def _streaming_frame_generator(
                 bande_respiration=bande_resp,
                 bande_reference=bande_ref,
             )
-            alert = bool(snr_db >= seuil)
+            prob = _sigmoid(snr_db, centre_sigmoid, echelle_sigmoid)
+            alert = bool(prob >= seuil_proba)
 
             yield {
                 "signal_iq_dec": segment,
                 "spectre_colonne": col.col_db,
                 "snr_dB": snr_db,
+                "prob": prob,
                 "n_trame": frame_counter,
                 "detection": alert,
             }
@@ -385,7 +413,9 @@ def _build_context(cfg: dict[str, Any]) -> dict[str, Any]:
     dv_mps = df_hz * wavelength / 2.0
 
     clutter_mode = cfg.get("clutter", {}).get("mode", "mean")
-    bande_resp = det_cfg.get("bande_respiration", [0.1, 1.0])
+    f_offset = emi.get("f_offset", 0.0) if emi.get("mode") == "cw_offset" else 0.0
+    bande_resp_rel = det_cfg.get("bande_respiration", [0.1, 0.8])
+    bande_resp = [bande_resp_rel[0] + f_offset, bande_resp_rel[1] + f_offset]
     bl = cfg.get("bilan_liaison", {})
     B_eff_hz = bl.get("B_eff_hz", df_hz)
 
@@ -393,7 +423,7 @@ def _build_context(cfg: dict[str, Any]) -> dict[str, Any]:
         "f_hz": f_hz,
         "f_s_dec": f_s_dec,
         "f_c": f_c,
-        "seuil_snr_dB": det_cfg["seuil_snr_dB"],
+        "centre_sigmoid_dB": det_cfg.get("centre_sigmoid_dB", 3.0),
         "spectre_tx_db": spectre_tx_db,
         "f_hz_tx": f_hz_tx,
         "R_min_m": R_min,
