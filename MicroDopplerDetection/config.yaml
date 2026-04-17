@@ -100,14 +100,17 @@ decimation:
 # ---------------------------------------------------------------------------
 clutter:
   # Méthode de suppression du clutter :
-  #   "mean" — soustraction de la moyenne temporelle globale de chaque trame.
+  #   "mean" — soustraction de la moyenne glissante EMA (boucle Python).
   #            Simple, mais laisse passer le clutter lentement variable.
-  #   "iir"  — filtre passe-haut IIR de type moyenne mobile exponentielle (EMA).
+  #   "iir"  — filtre passe-haut IIR EMA vectorisé (scipy.signal.lfilter).
   #            Estimation récursive : μ[n] = α·μ[n-1] + (1-α)·x[n],
-  #            puis y[n] = x[n] − μ[n]. Adaptif aux dérives lentes.
-  #   "mti"  — annulateur MTI (Moving Target Indicator) : y[n] = x[n] − x[n-1].
-  #            Supprime efficacement le DC et les cibles fixes.
-  mode: "iir"
+  #            puis y[n] = x[n] − μ[n]. État conservé entre buffers.
+  #            Identique mathématiquement à "mean" mais exécuté en C.
+  #   "mti"  — (DÉPRÉCIÉ) annulateur MTI : y[n] = x[n] − x[n-1].
+  #            Inadapté à la détection de respiration (atténue les basses fréquences).
+  #   "butterworth" — filtre Butterworth passe-haut (scipy.signal.sosfilt).
+  #            Meilleure sélectivité, ordre et fréquence de coupure configurables.
+  mode: "butterworth"
 
   # Facteur de mémoire EMA (modes "iir" et "mean").
   # Proche de 1 → mémoire longue (filtre passe-haut plus sélectif, coupure basse).

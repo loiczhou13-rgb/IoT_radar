@@ -22,8 +22,8 @@ class SpectrogramOutput:
     Attributes
     ----------
     Z : numpy.ndarray
-        Complex STFT matrix, shape ``(n_freq, n_time)``, frequency axis
-        centred (fftshifted).
+        Complex STFT matrix (complex128), shape ``(n_freq, n_time)``,
+        frequency axis centred (fftshifted).
     S_db : numpy.ndarray
         Power spectrogram in dB, ``20·log10(|Z| + eps)``, same shape.
     f_hz : numpy.ndarray
@@ -54,7 +54,7 @@ class ColumnOutput:
     Attributes
     ----------
     col_complex : numpy.ndarray
-        Complex spectrum, shape ``(n_fft,)``, fftshifted.
+        Complex spectrum (complex128), shape ``(n_fft,)``, fftshifted.
     col_db : numpy.ndarray
         Power in dB, shape ``(n_fft,)``.
     f_hz : numpy.ndarray
@@ -172,7 +172,7 @@ def compute_spectrogram(
     )
 
     return SpectrogramOutput(
-        Z=Z.astype(np.complex64),
+        Z=Z,
         S_db=S_db.astype(np.float64),
         f_hz=f_hz.astype(np.float64),
         v_mps=v_mps.astype(np.float64),
@@ -235,7 +235,7 @@ def compute_single_column(
     df_hz = f_s / n_fft
 
     return ColumnOutput(
-        col_complex=spectrum.astype(np.complex64),
+        col_complex=spectrum,
         col_db=col_db.astype(np.float64),
         f_hz=f_hz.astype(np.float64),
         v_mps=v_mps.astype(np.float64),
