@@ -109,11 +109,18 @@ clutter:
   #            Supprime efficacement le DC et les cibles fixes.
   mode: "iir"
 
-  # Facteur de mémoire EMA (mode "iir" uniquement).
+  # Facteur de mémoire EMA (modes "iir" et "mean").
   # Proche de 1 → mémoire longue (filtre passe-haut plus sélectif, coupure basse).
   # Proche de 0 → réaction rapide (risque de supprimer le signal respiration).
   # Fréquence de coupure approximative : f_c_hp ≈ (1−α)·f_s / (2π).
   alpha: 0.9999
+
+  # Ordre du filtre Butterworth passe-haut (mode "butterworth" uniquement).
+  butterworth_order: 2
+
+  # Fréquence de coupure du filtre Butterworth (Hz, mode "butterworth" uniquement).
+  # Doit être bien en dessous de la fréquence de respiration (0.1 Hz).
+  butterworth_cutoff: 0.05
 
 
 # ---------------------------------------------------------------------------

@@ -282,7 +282,10 @@ def _streaming_frame_generator(
 
     clutter_filter = ClutterFilter(
         mode=clu_cfg["mode"],
-        alpha=clu_cfg.get("alpha", 0.99),
+        fs=f_s_dec,
+        alpha=clu_cfg.get("alpha", 0.9999),
+        butterworth_order=clu_cfg.get("butterworth_order", 2),
+        butterworth_cutoff=clu_cfg.get("butterworth_cutoff", 0.05),
     )
     window = get_window(win_cfg["mode"], n_fft)
 

@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import logging
+import math
 
 import numpy as np
+from scipy.signal import butter, sosfilt, sosfilt_zi
 
 logger = logging.getLogger(__name__)
+
+_VALID_MODES = ("mean", "iir", "mti", "butterworth")
 
 
 class ClutterFilter:
@@ -15,33 +19,85 @@ class ClutterFilter:
     Parameters
     ----------
     mode : str
-        Clutter-removal strategy: ``"mean"``, ``"iir"``, or ``"mti"``.
+        Clutter-removal strategy: ``"mean"``, ``"iir"``, ``"mti"``,
+        or ``"butterworth"``.
+    fs : float
+        Sampling rate of the input signal (Hz).  Used for cutoff
+        frequency computation and logging.
     alpha : float, optional
-        EMA memory factor for ``"iir"`` mode.  Default is 0.99.
+        EMA memory factor for ``"iir"`` and ``"mean"`` modes.
+        Default is 0.9999.
+    butterworth_order : int, optional
+        Filter order for ``"butterworth"`` mode.  Default is 2.
+    butterworth_cutoff : float, optional
+        High-pass cutoff frequency (Hz) for ``"butterworth"`` mode.
+        Default is 0.05.
 
     Notes
     -----
-    Unlike the stateless :func:`remove_clutter` function, this class
-    retains its internal state (running mean for IIR, previous sample for
-    MTI) across successive calls to :meth:`__call__`.  This is essential
-    in a streaming pipeline where each buffer must be processed
-    incrementally while maintaining filter continuity.
+    This class retains the internal state (running mean for IIR,
+    previous sample for MTI) across successive calls to 
+    :meth:`__call__`.  This is essential in a streaming pipeline
+    where each buffer must be processed incrementally while
+    maintaining filter continuity.
     """
 
-    def __init__(self, mode: str, alpha: float = 0.99) -> None:
-        if mode not in ("mean", "iir", "mti"):
+    def __init__(
+        self,
+        mode: str,
+        fs: float,
+        alpha: float = 0.9999,
+        butterworth_order: int = 2,
+        butterworth_cutoff: float = 0.05,
+    ) -> None:
+        if mode not in _VALID_MODES:
             raise ValueError(
-                f"Mode clutter inconnu : '{mode}'. Utiliser 'mean', 'iir' ou 'mti'."
+                f"Mode clutter inconnu : '{mode}'. "
+                f"Utiliser {', '.join(repr(m) for m in _VALID_MODES)}."
             )
         self._mode = mode
+        self._fs = fs
         self._alpha = alpha
         self._mu: complex | None = None
         self._prev: complex | None = None
-        logger.info(
-            "ClutterFilter initialisé — mode='%s'%s",
-            mode,
-            f", alpha={alpha:.4f}" if mode == "iir" else "",
-        )
+
+        if mode in ("iir", "mean"):
+            f_cut = (1.0 - alpha) * fs / (2.0 * math.pi)
+            logger.info(
+                "ClutterFilter initialisé — mode='%s', alpha=%.4f, "
+                "f_coupure≈%.3f Hz (fs=%.1f Hz)",
+                mode,
+                alpha,
+                f_cut,
+                fs,
+            )
+
+        if mode == "mti":
+            logger.warning(
+                "Mode MTI inadapté à la détection de respiration : "
+                "atténuation ~60 dB à 0.3 Hz pour fs_dec=%.0f Hz. "
+                "Préférer 'iir' ou 'butterworth'.",
+                fs,
+            )
+
+        if mode == "butterworth":
+            self._sos = butter(
+                butterworth_order,
+                butterworth_cutoff,
+                btype="high",
+                fs=fs,
+                output="sos",
+            )
+            zi = sosfilt_zi(self._sos)
+            self._zi_real = zi.copy()
+            self._zi_imag = zi.copy()
+            logger.info(
+                "ClutterFilter initialisé — mode='butterworth', "
+                "ordre=%d, f_coupure=%.3f Hz (fs=%.1f Hz)",
+                butterworth_order,
+                butterworth_cutoff,
+                fs,
+            )
 
     def __call__(self, iq: np.ndarray) -> np.ndarray:
         """Filter one buffer of IQ samples.
@@ -54,32 +110,32 @@ class ClutterFilter:
         Returns
         -------
         numpy.ndarray
-            Clutter-suppressed IQ (same length for ``"mean"`` and
-            ``"iir"``; ``len(iq)`` for ``"mti"`` — the first sample uses
-            the previous buffer's last sample for continuity).
+            Clutter-suppressed IQ (same length as *iq*).
         """
         if self._mode == "mean":
             return self._apply_mean(iq)
         if self._mode == "iir":
             return self._apply_iir(iq)
+        if self._mode == "butterworth":
+            return self._apply_butterworth(iq)
         return self._apply_mti(iq)
 
     def _apply_mean(self, iq: np.ndarray) -> np.ndarray:
-        """Subtract the block mean."""
-        logger.info(
-            "Suppression du clutter — soustraction de la moyenne globale"
-            )
-        return (iq - np.mean(iq)).astype(iq.dtype)
+        """Stateful mean subtraction using EMA tracking."""
+        out = np.empty_like(iq)
+        mu = self._mu if self._mu is not None else complex(np.mean(iq))
+        alpha = self._alpha
+        for n in range(len(iq)):
+            mu = alpha * mu + (1.0 - alpha) * iq[n]
+            out[n] = iq[n] - mu
+        self._mu = mu
+        return out
 
     def _apply_iir(self, iq: np.ndarray) -> np.ndarray:
         """Recursive EMA high-pass with state carry-over."""
-        alpha = self._alpha
-        logger.info(
-            "Suppression du clutter — filtre IIR/EMA (alpha = %.4f)",
-            alpha
-            )
         out = np.empty_like(iq)
         mu = self._mu if self._mu is not None else complex(np.mean(iq))
+        alpha = self._alpha
         for n in range(len(iq)):
             mu = alpha * mu + (1.0 - alpha) * iq[n]
             out[n] = iq[n] - mu
@@ -88,10 +144,17 @@ class ClutterFilter:
 
     def _apply_mti(self, iq: np.ndarray) -> np.ndarray:
         """Single-delay MTI with state carry-over."""
-        logger.info(
-            "Suppression du clutter — annulateur MTI (np.diff)"
-            )
         prev = self._prev if self._prev is not None else complex(iq[0])
         extended = np.concatenate(([prev], iq))
         self._prev = complex(iq[-1])
         return np.diff(extended)
+
+    def _apply_butterworth(self, iq: np.ndarray) -> np.ndarray:
+        """High-pass Butterworth with state carry-over (I/Q separate)."""
+        y_real, self._zi_real = sosfilt(
+            self._sos, iq.real.astype(np.float64), zi=self._zi_real,
+        )
+        y_imag, self._zi_imag = sosfilt(
+            self._sos, iq.imag.astype(np.float64), zi=self._zi_imag,
+        )
+        return (y_real + 1j * y_imag).astype(iq.dtype)
