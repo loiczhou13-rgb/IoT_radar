@@ -75,7 +75,8 @@ class ClutterFilter:
         if mode == "mti":
             logger.warning(
                 "Mode MTI inadapté à la détection de respiration : "
-                "atténuation ~60 dB à 0.3 Hz pour fs_dec=%.0f Hz. "
+                "le filtre y[n]=x[n]-x[n-1] atténue de ~60 dB à 0.3 Hz "
+                "pour fs_dec=%.0f Hz — il DÉTRUIT le signal respiratoire. "
                 "Préférer 'iir' ou 'butterworth'.",
                 fs,
             )
@@ -88,9 +89,8 @@ class ClutterFilter:
                 fs=fs,
                 output="sos",
             )
-            zi = sosfilt_zi(self._sos)
-            self._zi_real = zi.copy()
-            self._zi_imag = zi.copy()
+            self._zi_real = None
+            self._zi_imag = None
             logger.info(
                 "ClutterFilter initialisé — mode='butterworth', "
                 "ordre=%d, f_coupure=%.3f Hz (fs=%.1f Hz)",
@@ -165,6 +165,11 @@ class ClutterFilter:
 
     def _apply_butterworth(self, iq: np.ndarray) -> np.ndarray:
         """High-pass Butterworth with state carry-over (I/Q separate)."""
+        if self._zi_real is None:
+            zi = sosfilt_zi(self._sos)
+            self._zi_real = zi * iq.real[0]
+            self._zi_imag = zi * iq.imag[0]
+
         y_real, self._zi_real = sosfilt(
             self._sos, iq.real.astype(np.float64), zi=self._zi_real,
         )

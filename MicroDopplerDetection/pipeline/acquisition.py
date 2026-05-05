@@ -154,6 +154,7 @@ def synthesize_iq(
     D_mm: float,
     snr_dB: float,
     f_offset: float = 0.0,
+    clutter_amplitude: float = 100.0,
 ) -> AcquisitionResult:
     """Synthesize a simulated IQ signal containing respiration micro-Doppler.
 
@@ -177,6 +178,12 @@ def synthesize_iq(
         Gaussian noise.
     f_offset : float, optional
         Baseband frequency offset (Hz).  Default is 0.
+    clutter_amplitude : float, optional
+        Amplitude of the static-clutter component relative to the signal
+        (unit amplitude).  Models the TX-to-RX isolation ratio: a value
+        of 100 means the clutter is 40 dB above the signal, which is
+        typical of a monostatic CW radar with moderate antenna isolation.
+        Default is 100.0.
 
     Returns
     -------
@@ -193,9 +200,9 @@ def synthesize_iq(
                - \\tfrac{4\\pi D}{\\lambda}\\sin(2\\pi f_v t)]\\bigr)
                + n(t)
 
-    where the first term is static clutter (100× the signal amplitude at
-    0 Hz), the exponential is the phase-modulated return from the chest
-    wall, and *n(t)* is complex AWGN scaled to achieve *snr_dB*.
+    where the first term is static clutter (*clutter_amplitude* × signal
+    at 0 Hz), the exponential is the phase-modulated return from the
+    chest wall, and *n(t)* is complex AWGN scaled to achieve *snr_dB*.
     """
     wavelength = _SPEED_OF_LIGHT / f_c
     D_m = D_mm * 1e-3
@@ -207,7 +214,6 @@ def synthesize_iq(
     carrier = 2.0 * np.pi * f_offset * t if f_offset != 0.0 else 0.0
     signal = np.exp(1j * (carrier - phase_mod))
 
-    clutter_amplitude = 100.0
     clutter = clutter_amplitude * np.ones(n_total, dtype=np.complex128)
 
     noise_power = 10.0 ** (-snr_dB / 10.0)
@@ -333,6 +339,7 @@ def stream_simulation(
     D_mm: float,
     snr_dB: float,
     f_offset: float = 0.0,
+    clutter_amplitude: float = 100.0,
 ) -> Generator[np.ndarray, None, None]:
     """Yield simulated IQ buffers indefinitely with continuous phase.
 
@@ -352,6 +359,12 @@ def stream_simulation(
         Target micro-Doppler SNR (dB).
     f_offset : float, optional
         Baseband frequency offset (Hz).  Default is 0.
+    clutter_amplitude : float, optional
+        Amplitude of the static-clutter component relative to the signal
+        (unit amplitude).  Models the TX-to-RX isolation ratio: a value
+        of 100 means the clutter is 40 dB above the signal, which is
+        typical of a monostatic CW radar with moderate antenna isolation.
+        Default is 100.0.
 
     Yields
     ------
@@ -372,8 +385,6 @@ def stream_simulation(
     noise_power = 10.0 ** (-snr_dB / 10.0)
     noise_std = np.sqrt(noise_power / 2.0)
     rng = np.random.default_rng()
-
-    clutter_amplitude = 100.0
 
     logger.info(
         "Streaming simulation — fv=%.2f Hz, D=%.1f mm, SNR=%.0f dB (continu)",

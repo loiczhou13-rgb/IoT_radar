@@ -294,3 +294,10 @@ simulation:
   # Rapport signal-sur-bruit cible (dB) du micro-Doppler vs. bruit blanc.
   # Contrôle la puissance du bruit additif gaussien complexe.
   snr_dB: 20
+
+  # Amplitude du clutter statique par rapport au signal (ratio linéaire).
+  # Modélise le rapport d'isolation TX→RX : 100 signifie que le clutter
+  # est 40 dB au-dessus du signal utile, typique d'un radar CW monostatique
+  # avec une isolation d'antenne modérée (~20 dB aller-retour).
+  # Augmenter pour simuler un couplage TX/RX plus fort (pire isolation).
+  clutter_amplitude: 100.0

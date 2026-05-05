@@ -81,8 +81,9 @@ def decimate_iq(
     Raises
     ------
     ValueError
-        If the Shannon–Nyquist criterion is violated after decimation,
-        i.e. ``f_s / D <= 2 * f_max_utile``, or if *D* contains a prime
+        If the Shannon–Nyquist criterion (with filter transition-band
+        margin) is violated after decimation, i.e.
+        ``f_s / D <= 2.5 * f_max_utile``, or if *D* contains a prime
         factor > 13.
 
     Notes
@@ -98,10 +99,10 @@ def decimate_iq(
     """
     f_s_new = f_s / D
 
-    if f_s_new <= 2.0 * f_max_utile:
+    if f_s_new <= 2.5 * f_max_utile:
         raise ValueError(
-            f"Critère de Shannon violé après décimation : "
-            f"f_s_new = {f_s_new:.1f} Hz ≤ 2 × f_max_utile = {2.0 * f_max_utile:.1f} Hz. "
+            f"Critère de Shannon (avec marge filtre anti-repliement) violé : "
+            f"f_s_new = {f_s_new:.1f} Hz ≤ 2.5 × f_max_utile = {2.5 * f_max_utile:.1f} Hz. "
             f"Réduire D (actuellement {D}) ou augmenter f_s."
         )
 

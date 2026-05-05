@@ -25,7 +25,7 @@ class SpectrogramOutput:
         Complex STFT matrix (complex128), shape ``(n_freq, n_time)``,
         frequency axis centred (fftshifted).
     S_db : numpy.ndarray
-        Power spectrogram in dB, ``20·log10(|Z| + eps)``, same shape.
+        Power spectrogram in dB, ``10·log10(|Z|² + eps)``, same shape.
     f_hz : numpy.ndarray
         Doppler frequency axis (Hz), centred around 0, shape ``(n_freq,)``.
     v_mps : numpy.ndarray
@@ -156,7 +156,7 @@ def compute_spectrogram(
     t_s = np.asarray(t_raw, dtype=np.float64)
 
     eps = 1e-12
-    S_db = 20.0 * np.log10(np.abs(Z) + eps)
+    S_db = 10.0 * np.log10(np.abs(Z) ** 2 + eps)
 
     v_mps = f_hz * wavelength / 2.0
 
@@ -228,7 +228,7 @@ def compute_single_column(
     spectrum = np.fft.fftshift(np.fft.fft(windowed, n=n_fft))
 
     eps = 1e-12
-    col_db = 20.0 * np.log10(np.abs(spectrum) + eps)
+    col_db = 10.0 * np.log10(np.abs(spectrum) ** 2 + eps)
 
     f_hz = np.fft.fftshift(np.fft.fftfreq(n_fft, d=1.0 / f_s))
     v_mps = f_hz * wavelength / 2.0

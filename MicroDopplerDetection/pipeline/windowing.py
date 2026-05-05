@@ -13,6 +13,7 @@ _WINDOW_REGISTRY: dict[str, str] = {
     "hann": "hann",
     "hamming": "hamming",
     "blackman": "blackman",
+    "flattop": "flattop",
 }
 
 
@@ -22,8 +23,8 @@ def get_window(mode: str, n: int) -> np.ndarray:
     Parameters
     ----------
     mode : str
-        Window type: ``"hann"``, ``"hamming"``, ``"blackman"``, or
-        ``"none"`` (rectangular — all ones).
+        Window type: ``"hann"``, ``"hamming"``, ``"blackman"``,
+        ``"flattop"``, or ``"none"`` (rectangular — all ones).
     n : int
         Number of samples in the window.
 
@@ -49,6 +50,10 @@ def get_window(mode: str, n: int) -> np.ndarray:
     * Hamming — slightly lower sidelobes (−43 dB) at the cost of a
       discontinuity at the edges.
     * Blackman — very low sidelobes (−58 dB), ~50 % wider main lobe.
+    * Flat-top — best amplitude accuracy (< 0.01 dB error), useful for
+      measuring Bessel-series harmonic magnitudes, but widest main lobe
+      (~3.8× Hann) — not recommended for detection where frequency
+      resolution is critical.
     * None (rectangular) — maximum resolution, maximum leakage; useful
       only when the signal is well-isolated in frequency.
     """
@@ -59,7 +64,7 @@ def get_window(mode: str, n: int) -> np.ndarray:
     if mode not in _WINDOW_REGISTRY:
         raise ValueError(
             f"Fenêtre inconnue : '{mode}'. "
-            f"Utiliser 'hann', 'hamming', 'blackman' ou 'none'."
+            f"Utiliser 'hann', 'hamming', 'blackman', 'flattop' ou 'none'."
         )
 
     w = getattr(_win, _WINDOW_REGISTRY[mode])(n)
