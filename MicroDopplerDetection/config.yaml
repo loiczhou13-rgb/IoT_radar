@@ -186,9 +186,20 @@ detection:
 
   # Centre de la sigmoïde SNR → probabilité (dB).
   # Quand SNR = centre_sigmoid_dB, la probabilité vaut exactement 0.5.
-  # La décision de détection est prise sur la probabilité (voir affichage.seuil_proba),
-  # pas directement sur le SNR.
+  # NOTE : depuis le passage au test de Fisher + ACF (detect_presence),
+  # ce paramètre n'est plus utilisé pour la décision binaire (alert).
+  # Conservé pour compatibilité avec l'ancien dashboard.
   centre_sigmoid_dB: 3
+
+  # Seuil de p-valeur pour l'alerte (test de Fisher).
+  # alpha = 0.01 signifie 1 % de probabilité de fausse alarme.
+  # L'alerte (alert=True) est déclenchée quand p_value_f < alpha.
+  alpha: 0.01
+
+  # Poids du score Fisher dans la fusion (score_acf a le poids 1-w).
+  # w=1 → décision purement spectrale ; w=0 → purement autocorrélation.
+  # 0.5 → équilibre entre les deux tests (recommandé).
+  w: 0.5
 
 
 # ---------------------------------------------------------------------------
@@ -218,6 +229,9 @@ affichage:
   # Pente de la sigmoïde transformant le SNR en probabilité de présence.
   # P(présence) = 1 / (1 + exp(−(snr − seuil) / echelle)).
   # Plus la valeur est petite, plus la transition est abrupte autour du seuil.
+  # NOTE : depuis le passage au test de Fisher + ACF (detect_presence),
+  # ce paramètre n'est plus utilisé pour la décision. Conservé pour
+  # compatibilité avec l'ancien dashboard.
   echelle_sigmoid_dB: 3
 
   # Seuil de décision sur la probabilité de présence (ligne horizontale).

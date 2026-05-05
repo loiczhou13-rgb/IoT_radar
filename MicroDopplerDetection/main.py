@@ -34,7 +34,7 @@ from MicroDopplerDetection.pipeline.spectrogramme import (
     ColumnOutput,
     compute_single_column,
 )
-from MicroDopplerDetection.pipeline.detection import detect_snr_column
+from MicroDopplerDetection.pipeline.detection import detect_presence_column
 from MicroDopplerDetection.pipeline.windowing import get_window
 from MicroDopplerDetection.utils.display import DashboardRadar
 
@@ -43,13 +43,6 @@ logger = logging.getLogger(__name__)
 _SPEED_OF_LIGHT: float = 299_792_458.0
 _BOLTZMANN: float = 1.380649e-23
 _T0: float = 290.0
-
-
-def _sigmoid(x: float, center: float, scale: float) -> float:
-    """Logistic sigmoid mapping SNR (dB) to probability [0, 1]."""
-    z = -(x - center) / scale
-    z = max(min(z, 500.0), -500.0)
-    return 1.0 / (1.0 + np.exp(z))
 
 
 # ------------------------------------------------------------------
@@ -274,10 +267,11 @@ def _streaming_frame_generator(
     f_max_utile = dec_cfg.get("f_max_utile", 10.0)
     f_s_dec = f_s / D if do_decimate else f_s
 
-    if do_decimate and f_s_dec <= 2.0 * f_max_utile:
+    if do_decimate and f_s_dec < 2.5 * f_max_utile:
         raise ValueError(
-            f"Critère de Shannon violé : f_s_dec={f_s_dec:.1f} Hz "
-            f"≤ 2×f_max_utile={2.0 * f_max_utile:.1f} Hz."
+            f"Critère de Shannon (avec marge filtre anti-repliement) violé : "
+            f"f_s_dec={f_s_dec:.1f} Hz < 2.5×f_max_utile="
+            f"{2.5 * f_max_utile:.1f} Hz."
         )
 
     clutter_filter = ClutterFilter(
@@ -297,10 +291,8 @@ def _streaming_frame_generator(
     bande_resp = (bande_resp_rel[0] + f_offset, bande_resp_rel[1] + f_offset)
     bande_ref = (bande_ref_rel[0] + f_offset, bande_ref_rel[1] + f_offset)
 
-    aff = cfg["affichage"]
-    centre_sigmoid = det_cfg.get("centre_sigmoid_dB", 3.0)
-    echelle_sigmoid = aff["echelle_sigmoid_dB"]
-    seuil_proba = aff.get("seuil_proba", 0.6)
+    alpha = det_cfg.get("alpha", 0.01)
+    w = det_cfg.get("w", 0.5)
     skip_warmup = spec_cfg.get("skip_warmup", 0)
 
     ring = deque(maxlen=n_fft)
@@ -335,6 +327,7 @@ def _streaming_frame_generator(
             iq_dec = raw_buf
 
         iq_filt = clutter_filter(iq_dec)
+        phi_dec = np.unwrap(np.angle(iq_filt.astype(np.complex128)))
 
         for sample in iq_filt:
             ring.append(sample)
@@ -357,22 +350,28 @@ def _streaming_frame_generator(
 
             col = compute_single_column(segment, f_s_dec, f_c, window)
 
-            snr_db = detect_snr_column(
-                col_db=col.col_db,
-                f_hz=col.f_hz,
-                bande_respiration=bande_resp,
-                bande_reference=bande_ref,
+            score_presence, p_value_f, acf_peak, fv_estimated = (
+                detect_presence_column(
+                    col_db=col.col_db,
+                    f_hz=col.f_hz,
+                    phi_buffer=phi_dec,
+                    f_s=f_s_dec,
+                    bande_respiration=bande_resp,
+                    bande_reference=bande_ref,
+                    w=w,
+                )
             )
-            prob = _sigmoid(snr_db, centre_sigmoid, echelle_sigmoid)
-            alert = bool(prob >= seuil_proba)
+            alert = bool(p_value_f < alpha)
 
             yield {
-                "signal_iq_dec": segment,
+                "signal_iq_dec":   segment,
                 "spectre_colonne": col.col_db,
-                "snr_dB": snr_db,
-                "prob": prob,
-                "n_trame": frame_counter,
-                "detection": alert,
+                "score_presence":  score_presence,
+                "p_value_f":       p_value_f,
+                "acf_peak":        acf_peak,
+                "fv_estimated":    fv_estimated,
+                "n_trame":         frame_counter,
+                "detection":       alert,
             }
 
 
@@ -426,7 +425,6 @@ def _build_context(cfg: dict[str, Any]) -> dict[str, Any]:
         "f_hz": f_hz,
         "f_s_dec": f_s_dec,
         "f_c": f_c,
-        "centre_sigmoid_dB": det_cfg.get("centre_sigmoid_dB", 3.0),
         "spectre_tx_db": spectre_tx_db,
         "f_hz_tx": f_hz_tx,
         "R_min_m": R_min,
