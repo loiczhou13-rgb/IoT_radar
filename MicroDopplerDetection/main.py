@@ -2,18 +2,23 @@
 
 Usage
 -----
-Hardware mode (continuous)::
+Hardware mode (continuous, default config)::
 
-    python -m MicroDopplerDetection.main --config MicroDopplerDetection/config.yaml
+    python -m MicroDopplerDetection.main
 
 Simulation mode (continuous)::
 
-    python -m MicroDopplerDetection.main --config MicroDopplerDetection/config.yaml --simulation
+    python -m MicroDopplerDetection.main --simulation
+
+Custom config file::
+
+    python -m MicroDopplerDetection.main --config MicroDopplerDetection/configs/my.yaml
 """
 
 from __future__ import annotations
 
 import argparse
+import datetime as _dt
 import logging
 import math
 import sys
@@ -41,6 +46,10 @@ logger = logging.getLogger(__name__)
 _SPEED_OF_LIGHT: float = 299_792_458.0
 _BOLTZMANN: float = 1.380649e-23
 _T0: float = 290.0
+
+_PACKAGE_ROOT: Path = Path(__file__).resolve().parent
+_DEFAULT_CONFIG: Path = _PACKAGE_ROOT / "configs" / "config.yaml"
+_LOGS_DIR: Path = _PACKAGE_ROOT / "logs"
 
 
 # ------------------------------------------------------------------
@@ -154,15 +163,64 @@ def _load_config(path: str) -> dict[str, Any]:
         return yaml.safe_load(fh)
 
 
-def _setup_logging(cfg: dict[str, Any]) -> None:
-    """Configure the root logger from the config ``logging`` section."""
-    level_name = cfg.get("logging", {}).get("level", "INFO")
+def _setup_logging(cfg: dict[str, Any], log_file: Path | None = None) -> Path | None:
+    """Configure the root logger from the config ``logging`` section.
+
+    A console handler is always installed.  If *log_file* is provided
+    (or if ``logging.to_file`` is true in the config), a parallel
+    ``FileHandler`` writes the same records to disk so that runs can be
+    audited offline.
+
+    Parameters
+    ----------
+    cfg : dict
+        Full configuration dictionary; reads ``logging.level`` and
+        optionally ``logging.to_file`` (default: ``True``).
+    log_file : pathlib.Path or None, optional
+        Explicit log-file path.  When ``None``, a timestamped file is
+        created under ``MicroDopplerDetection/logs/``.
+
+    Returns
+    -------
+    pathlib.Path or None
+        Path of the file handler (``None`` if file logging is disabled).
+    """
+    log_cfg = cfg.get("logging", {})
+    level_name = log_cfg.get("level", "INFO")
     level = getattr(logging, level_name.upper(), logging.INFO)
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
-        datefmt="%H:%M:%S",
+
+    fmt = "%(asctime)s [%(levelname)s] %(name)s — %(message)s"
+    datefmt = "%H:%M:%S"
+
+    root = logging.getLogger()
+    root.setLevel(level)
+    for handler in list(root.handlers):
+        root.removeHandler(handler)
+
+    console = logging.StreamHandler()
+    console.setLevel(level)
+    console.setFormatter(logging.Formatter(fmt, datefmt=datefmt))
+    root.addHandler(console)
+
+    write_to_file = bool(log_cfg.get("to_file", True))
+    if not write_to_file:
+        return None
+
+    if log_file is None:
+        _LOGS_DIR.mkdir(parents=True, exist_ok=True)
+        stamp = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+        log_file = _LOGS_DIR / f"radar_{stamp}.log"
+    else:
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+
+    file_handler = logging.FileHandler(log_file, mode="w", encoding="utf-8")
+    file_handler.setLevel(level)
+    file_handler.setFormatter(
+        logging.Formatter("%(asctime)s [%(levelname)s] %(name)s — %(message)s")
     )
+    root.addHandler(file_handler)
+    logger.info("Journal écrit dans %s", log_file)
+    return log_file
 
 
 # ------------------------------------------------------------------
@@ -417,13 +475,21 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--config",
-        default="MicroDopplerDetection/config.yaml",
+        default=str(_DEFAULT_CONFIG),
         help="Chemin vers le fichier de configuration YAML (défaut : %(default)s)",
     )
     parser.add_argument(
         "--simulation",
         action="store_true",
         help="Forcer le mode simulation (pas de PlutoSDR requis)",
+    )
+    parser.add_argument(
+        "--log-file",
+        default=None,
+        help=(
+            "Chemin explicite du fichier de log.  Par défaut, "
+            "MicroDopplerDetection/logs/radar_<timestamp>.log."
+        ),
     )
     return parser.parse_args()
 
@@ -432,9 +498,15 @@ def main() -> None:
     """Top-level pipeline orchestration (streaming mode)."""
     args = _parse_args()
     cfg = _load_config(args.config)
-    _setup_logging(cfg)
+    log_path = _setup_logging(
+        cfg,
+        log_file=Path(args.log_file) if args.log_file else None,
+    )
 
     logger.info("=== Démarrage du pipeline micro-Doppler (mode continu) ===")
+    logger.info("Configuration chargée depuis %s", args.config)
+    if log_path is not None:
+        logger.info("Logs persistants : %s", log_path)
 
     context = _build_context(cfg)
     dashboard = DashboardRadar(config=cfg, context=context)

@@ -1,0 +1,4 @@
+# Logs generes par les exécutions du pipeline.
+# Le fichier .gitignore est conservé pour preserver le dossier dans git.
+*.log
+!.gitignore

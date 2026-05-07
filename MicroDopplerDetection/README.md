@@ -62,6 +62,20 @@ Orchestration dans **`main.py`** :
 émission → acquisition → décimation streaming → clutter → fenêtrage + STFT
 colonne par colonne → détection Fisher × ACF → affichage temps réel.
 
+### Arborescence
+
+```
+MicroDopplerDetection/
+├── main.py              # point d'entrée CLI streaming
+├── accueil.py           # interface (travail en cours, hors pipeline)
+├── configs/             # fichiers YAML de configuration
+│   └── config.yaml      # config par défaut
+├── logs/                # logs persistants des exécutions (radar_<ts>.log)
+├── pipeline/            # chaîne de traitement temps réel
+├── utils/               # dashboard matplotlib
+└── legacy/              # code batch / hors-ligne (non appelé par main.py)
+```
+
 Le code historique en mode batch (acquisition complète, spectrogramme 2-D,
 détection sur matrice) est préservé sous **`legacy/`** pour l'analyse
 hors-ligne ; il n'est plus appelé par le pipeline.
@@ -108,30 +122,41 @@ pour mettre à jour.
 ### Mode matériel (PlutoSDR connecté)
 
 ```bash
-python -m MicroDopplerDetection.main --config MicroDopplerDetection/config.yaml
+python -m MicroDopplerDetection.main
 ```
 
 ### Mode simulation (sans matériel)
 
 ```bash
-python -m MicroDopplerDetection.main --config MicroDopplerDetection/config.yaml --simulation
+python -m MicroDopplerDetection.main --simulation
+```
+
+### Configuration alternative
+
+```bash
+python -m MicroDopplerDetection.main --config MicroDopplerDetection/configs/mon_setup.yaml
 ```
 
 Le flag `--simulation` force `simulation.enable: true` quel que soit le contenu
-du fichier de configuration.
+du fichier de configuration.  Chaque exécution écrit en plus un journal
+dans `MicroDopplerDetection/logs/radar_<timestamp>.log` (désactivable via
+`logging.to_file: false` ou redirigeable via `--log-file`).
 
 ### Options CLI
 
-| Option          | Défaut                                  | Description                            |
-|-----------------|-----------------------------------------|----------------------------------------|
-| `--config`      | `MicroDopplerDetection/config.yaml`     | Chemin du fichier de configuration      |
-| `--simulation`  | *(absent)*                              | Activer le mode simulation             |
+| Option         | Défaut                                              | Description                                |
+|----------------|-----------------------------------------------------|--------------------------------------------|
+| `--config`     | `MicroDopplerDetection/configs/config.yaml`         | Fichier de configuration YAML              |
+| `--simulation` | *(absent)*                                          | Forcer le mode simulation                  |
+| `--log-file`   | `MicroDopplerDetection/logs/radar_<timestamp>.log`  | Fichier de log (à défaut, auto-horodaté)   |
 
 ---
 
-## Paramètres (`config.yaml`)
+## Paramètres (`configs/config.yaml`)
 
-Le fichier `config.yaml` est l'**unique source de vérité** pour le pipeline.
+Le fichier `configs/config.yaml` est l'**unique source de vérité** pour le
+pipeline.  Pour tester d'autres réglages sans toucher au fichier de
+référence, dupliquez-le dans `configs/` et passez son chemin via `--config`.
 
 | Section          | Paramètres clés                       | Effet                                                                          |
 |------------------|----------------------------------------|--------------------------------------------------------------------------------|
@@ -146,7 +171,7 @@ Le fichier `config.yaml` est l'**unique source de vérité** pour le pipeline.
 | `bilan_liaison`  | `optimiste`/`pessimiste`, `B_eff_hz`  | Portée min/max affichée                                                        |
 | `simulation`     | `fv`, `D_mm`, `snr_dB`, `clutter_amplitude` | Paramètres du signal respiratoire synthétique                                  |
 
-Voir les commentaires détaillés directement dans `config.yaml`.
+Voir les commentaires détaillés directement dans `configs/config.yaml`.
 
 ---
 
