@@ -24,41 +24,47 @@ respiratoire (J₁(m) ≈ 0.44 pour un indice de modulation m ≈ 1).
 
 ---
 
-## Architecture du pipeline
+## Architecture du pipeline (streaming)
 
 ```
 ┌─────────────┐      ┌────────────────┐      ┌──────────────┐
-│  emission.py │────▶│ acquisition.py │────▶│ decimation.py│
-│  Signal TX   │     │  IQ (PlutoSDR  │      │ ↓ f_s par D  │
-│  CW / offset │     │  ou simulation)|      │              │
+│ emission.py │─────▶│ acquisition.py │─────▶│decimation.py │
+│  buffer TX  │      │  IQ (PlutoSDR  │      │  Decimator   │
+│  ×2¹⁴ scale │      │  ou simulation)│      │  stateful    │
 └─────────────┘      └────────────────┘      └──────┬───────┘
                                                     │
-                    ┌──────────────┐        ┌───────▼──────┐
-                    │ windowing.py │◀──────│  clutter.py  │
-                    │ Fenêtre STFT │        │ Suppression  │
-                    └──────┬───────┘        │ composante DC│
-                           │                └──────────────┘
-                    ┌──────▼───────┐
-                    │spectrogramme │
-                    │    .py       │
-                    │ STFT → Z, dB │
-                    └──────┬───────┘
-                           │
-              ┌────────────▼────────────┐
-              │     detection.py        │
-              │ SNR bande/référence     │
-              │ → alerte respiration    │
-              └────────────┬────────────┘
-                           │
-              ┌────────────▼────────────┐
-              │    utils/display.py     │
-              │  Dashboard matplotlib   │
-              │  6 panneaux temps réel  │
-              └─────────────────────────┘
+                                            ┌───────▼──────┐
+                                            │  clutter.py  │
+                                            │ ClutterFilter│
+                                            └──────┬───────┘
+                                                   │
+                                            ┌──────▼───────┐
+                                            │spectrogramme │
+                                            │     .py      │
+                                            │compute_single│
+                                            │   _column    │
+                                            └──────┬───────┘
+                                                   │
+                                       ┌───────────▼────────────┐
+                                       │     detection.py        │
+                                       │ Fisher F-test  +  ACF   │
+                                       │ → score & alerte        │
+                                       └───────────┬─────────────┘
+                                                   │
+                                       ┌───────────▼─────────────┐
+                                       │    utils/display.py     │
+                                       │  Dashboard matplotlib   │
+                                       │  3 panneaux + encadré   │
+                                       └─────────────────────────┘
 ```
 
 Orchestration dans **`main.py`** :
-emission → acquisition → décimation → clutter → spectrogramme (+ fenêtrage) → détection → affichage.
+émission → acquisition → décimation streaming → clutter → fenêtrage + STFT
+colonne par colonne → détection Fisher × ACF → affichage temps réel.
+
+Le code historique en mode batch (acquisition complète, spectrogramme 2-D,
+détection sur matrice) est préservé sous **`legacy/`** pour l'analyse
+hors-ligne ; il n'est plus appelé par le pipeline.
 
 ---
 
@@ -83,7 +89,7 @@ pip install numpy scipy matplotlib pyyaml pyadi-iio
 | Paquet        | Rôle                                               |
 |---------------|-----------------------------------------------------|
 | `numpy`       | Calcul vectoriel, tableaux IQ                       |
-| `scipy`       | Décimation, fenêtrage, STFT                         |
+| `scipy`       | Décimation IIR, fenêtrage, STFT, ACF               |
 | `matplotlib`  | Dashboard temps réel (FuncAnimation)                |
 | `pyyaml`      | Lecture de `config.yaml`                             |
 | `pyadi-iio`   | Interface Python pour le PlutoSDR via libiio         |
@@ -125,20 +131,20 @@ du fichier de configuration.
 
 ## Paramètres (`config.yaml`)
 
-Le fichier `config.yaml` est l'**unique source de vérité** pour tous les
-paramètres du pipeline. Chaque section correspond à une étape :
+Le fichier `config.yaml` est l'**unique source de vérité** pour le pipeline.
 
-| Section          | Paramètres clés                      | Effet physique                                                                 |
-|------------------|--------------------------------------|--------------------------------------------------------------------------------|
-| `sdr`            | `f_c`, `f_s`, `rx_gain`, `tx_gain`   | Longueur d'onde λ, bande passante, dynamique ADC                               |
-| `emission`       | `mode`, `f_offset`                   | Position du signal utile dans le spectre (loin du DC si `cw_offset`)           |
-| `decimation`     | `D`, `f_max_utile`                   | Taux d'échantillonnage effectif, respect du critère de Shannon                 |
-| `clutter`        | `mode`, `alpha`                      | Suppression du retour statique dominant à 0 Hz                                 |
-| `windowing`      | `mode`                               | Compromis résolution fréquentielle / fuite spectrale                           |
-| `spectrogramme`  | `n_fft`, `overlap`                   | Résolution δf = f_s_dec / n_fft, lissage temporel                              |
-| `detection`      | `bande_respiration`, `seuil_snr_dB`  | Fréquences de recherche, sensibilité de l'alerte                               |
-| `affichage`      | `dynamique_dB`, `colormap`, `ylim`   | Rendu visuel du waterfall et des courbes                                       |
-| `simulation`     | `fv`, `D_mm`, `snr_dB`              | Paramètres du signal respiratoire synthétique                                  |
+| Section          | Paramètres clés                       | Effet                                                                          |
+|------------------|----------------------------------------|--------------------------------------------------------------------------------|
+| `sdr`            | `f_c`, `f_s`, `rx_gain`, `tx_gain`    | Longueur d'onde, bande, dynamique ADC                                          |
+| `emission`       | `mode`, `f_offset`                    | Position du signal utile (loin du DC si `cw_offset`)                          |
+| `decimation`     | `D`, `f_max_utile`                    | Taux d'échantillonnage effectif, vérif Shannon (avec `f_offset` pris en compte) |
+| `clutter`        | `mode`, `alpha`, `butterworth_*`      | Suppression du retour statique à 0 Hz                                          |
+| `windowing`      | `mode`                                | Compromis résolution / fuite spectrale                                         |
+| `spectrogramme`  | `n_fft`, `overlap`, `skip_warmup`     | Résolution δf, lissage, warm-up clutter (auto si `null`)                       |
+| `detection`      | `bande_respiration`, `bande_reference`, `alpha`, `w` | Test Fisher F + ACF fusionnés                                                  |
+| `affichage`      | `N_historique`, `seuil_proba`         | Score history, seuil visuel                                                    |
+| `bilan_liaison`  | `optimiste`/`pessimiste`, `B_eff_hz`  | Portée min/max affichée                                                        |
+| `simulation`     | `fv`, `D_mm`, `snr_dB`, `clutter_amplitude` | Paramètres du signal respiratoire synthétique                                  |
 
 Voir les commentaires détaillés directement dans `config.yaml`.
 
@@ -159,30 +165,39 @@ max(|IQ|) entre 50 % et 80 % de la pleine échelle (1024–1638 sur 2048).
 réflexions sur les objets statiques environnants.
 **Solutions** :
 - Utiliser `emission.mode: "cw_offset"` pour décaler le signal utile.
-- Activer la suppression de clutter (`clutter.mode: "iir"` ou `"mti"`).
+- Activer la suppression de clutter (par défaut `clutter.mode: "butterworth"`,
+  alternatives `"iir"` ou `"mean"`).
 
-### 3. Violation du critère de Shannon à la décimation
+### 3. TX absent du spectre alors que le pipeline tourne
 
-**Symptôme** : repliement spectral (aliasing), fausses raies.
-**Cause** : facteur `D` trop grand → f_s_new < 2 × f_max_utile.
-**Correction** : réduire `D` ou augmenter `f_s`. Le pipeline lève une
-`ValueError` explicite si la condition n'est pas respectée.
+**Origine** : oubli du facteur `2**14` (échelle DAC PlutoSDR).
+**Correction** : déjà appliquée dans `pipeline/emission.py`. Si vous
+modifiez le buffer TX, conserver la mise à l'échelle ; sans elle, le DAC
+ne reçoit que ~1 LSB et n'émet rien d'observable à l'analyseur.
 
-### 4. Bruit de phase sur longues acquisitions
+### 4. Violation du critère de Shannon à la décimation
+
+**Symptôme** : repliement spectral, fausses raies.
+**Cause** : `D` trop grand → `f_s_new < 2.5 × max(f_max_utile, |f_offset| + bande_ref_max)`.
+**Correction** : réduire `D`, augmenter `f_s`, ou ajuster `f_max_utile`.
+Le pipeline lève une `ValueError` explicite si la condition n'est pas
+respectée.
+
+### 5. Bruit de phase sur longues acquisitions
 
 **Symptôme** : élargissement des raies spectrales au fil du temps.
-**Cause** : instabilité de l'oscillateur local du PlutoSDR sur des durées
-> 10 s.
-**Atténuation** : acquisitions plus courtes, moyennage incohérent, ou
-traitement par fenêtre glissante (déjà implémenté via la STFT).
+**Cause** : instabilité de l'oscillateur local du PlutoSDR (> ~10 s).
+**Atténuation** : la STFT en fenêtre glissante limite déjà l'effet ;
+sinon, raccourcir `n_fft` ou augmenter le recouvrement.
 
-### 5. Isolation TX/RX insuffisante
+### 6. Isolation TX/RX insuffisante
 
 **Symptôme** : clutter résiduel très puissant même après filtrage.
 **Cause** : le signal TX fuit directement dans le récepteur.
-**Solutions matérielles** : antennes séparées avec écartement, circulateur,
-absorbant entre TX et RX.
-**Solutions logicielles** : `clutter.mode: "iir"` avec `alpha` élevé.
+**Solutions matérielles** : antennes séparées, circulateur, absorbant
+entre TX et RX.
+**Solutions logicielles** : `clutter.mode: "iir"` avec `alpha` élevé,
+ou `"butterworth"` avec coupure plus haute.
 
 ---
 

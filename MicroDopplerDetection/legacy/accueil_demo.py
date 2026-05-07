@@ -1,3 +1,15 @@
+"""Legacy PyGame welcome screen — kept here as a demo / launcher prototype.
+
+Displays four panels of *random* data (no link to the real radar pipeline)
+and exposes a button that launches the actual streaming pipeline via
+``MicroDopplerDetection.main.main``.  Not used by the production entry
+points; preserved for reference.
+
+Run with::
+
+    python -m MicroDopplerDetection.legacy.accueil_demo
+"""
+
 import pygame
 import pygame.freetype  # Pour des polices lisses
 import numpy as np

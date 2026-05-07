@@ -9,6 +9,19 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 
+_DAC_FULL_SCALE: int = 1 << 14
+"""PlutoSDR DAC convention used by ``pyadi-iio``.
+
+The ``adi.Pluto.tx()`` API casts ``complex64`` samples directly to
+``int16`` without applying any scaling.  The AD9363 DAC is 12-bit but
+``pyadi-iio`` aligns its samples to the upper bits of the ``int16`` word,
+so unit-amplitude IQ has to be multiplied by ``2**14`` to reach DAC
+full-scale.  Without this scaling the carrier sits at ~1 LSB
+(≈ −84 dBFS) and is invisible on a spectrum analyser, which is exactly
+what is observed when the radar appears to "transmit only at startup".
+"""
+
+
 def generate_tx_buffer(
     mode: str,
     buffer_size: int,
@@ -20,14 +33,13 @@ def generate_tx_buffer(
     Parameters
     ----------
     mode : str
-        Emission mode. ``"cw"`` produces a constant-envelope carrier
-        (all samples equal to 1+0j).  ``"cw_offset"`` produces a complex
-        sinusoid at *f_offset* Hz, which shifts the useful signal away
-        from the DC bin in the received spectrum.
+        Emission mode. ``"cw"`` produces a constant-envelope carrier;
+        ``"cw_offset"`` produces a complex sinusoid at *f_offset* Hz,
+        which shifts the useful signal away from the DC bin.
     buffer_size : int
-        Number of IQ samples in the transmit buffer (e.g. 16384).
+        Number of IQ samples in the transmit buffer.
     f_s : float
-        ADC / DAC sampling rate (Hz), e.g. 2.0e6.
+        ADC / DAC sampling rate (Hz).
     f_offset : float, optional
         Frequency offset in baseband (Hz).  Only used when
         *mode* = ``"cw_offset"``.  Default is 0.
@@ -35,27 +47,25 @@ def generate_tx_buffer(
     Returns
     -------
     numpy.ndarray
-        Complex64 array of shape ``(buffer_size,)`` with values in [-1, 1]
-        (unit amplitude).
+        Complex64 array of shape ``(buffer_size,)`` with samples scaled
+        to the PlutoSDR DAC full-scale (``±2**14``).
 
     Raises
     ------
     ValueError
-        If *mode* is not one of ``{"cw", "cw_offset"}``.
-    ValueError
-        If *f_offset* violates the Nyquist criterion (|f_offset| >= f_s / 2).
+        If *mode* is not one of ``{"cw", "cw_offset"}``, or if *f_offset*
+        violates the Nyquist criterion (``|f_offset| >= f_s / 2``).
 
     Notes
     -----
-    In a CW micro-Doppler radar the transmit signal is a pure tone at carrier
-    frequency f_c.  The PlutoSDR up-converts the baseband buffer to RF, so:
+    * **CW mode** — baseband samples are a constant ``2**14 + 0j``;
+      the RF output is a pure tone at exactly ``f_c``.
+    * **CW-offset mode** — baseband samples are
+      ``2**14 · exp(j·2π·f_offset·t)``, producing an RF tone at
+      ``f_c + f_offset`` and avoiding the DC clutter.
 
-    * **CW mode** — the baseband signal is a DC value (constant 1+0j).
-      The RF output is a pure tone at exactly f_c.
-    * **CW-offset mode** — the baseband signal is exp(j·2π·f_offset·t),
-      producing an RF tone at f_c + f_offset.  This moves the reflected
-      signal away from the large DC leakage caused by limited TX/RX
-      isolation, reducing the dynamic-range burden on clutter suppression.
+    The ``2**14`` scaling is **mandatory**: without it the DAC effectively
+    transmits a zero-amplitude signal (see :data:`_DAC_FULL_SCALE`).
     """
     if mode not in ("cw", "cw_offset"):
         raise ValueError(
@@ -63,9 +73,11 @@ def generate_tx_buffer(
         )
 
     if mode == "cw":
-        logger.info("Génération du buffer TX — mode CW (module constant)")
-        tx_buffer = np.ones(buffer_size, dtype=np.complex64)
-        return tx_buffer
+        logger.info(
+            "Génération du buffer TX — mode CW (module constant, scale=%d)",
+            _DAC_FULL_SCALE,
+        )
+        return np.full(buffer_size, _DAC_FULL_SCALE + 0j, dtype=np.complex64)
 
     if abs(f_offset) >= f_s / 2:
         raise ValueError(
@@ -74,9 +86,10 @@ def generate_tx_buffer(
         )
 
     logger.info(
-        "Génération du buffer TX — mode CW-offset (f_offset = %.0f Hz)",
+        "Génération du buffer TX — mode CW-offset (f_offset=%.0f Hz, scale=%d)",
         f_offset,
+        _DAC_FULL_SCALE,
     )
     t = np.arange(buffer_size, dtype=np.float64) / f_s
-    tx_buffer = np.exp(1j * 2 * np.pi * f_offset * t).astype(np.complex64)
-    return tx_buffer
+    waveform = _DAC_FULL_SCALE * np.exp(1j * 2 * np.pi * f_offset * t)
+    return waveform.astype(np.complex64)

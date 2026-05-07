@@ -56,6 +56,8 @@ class DashboardRadar:
         self._last_p_value_f: float = 1.0
         self._last_acf_peak: float = 0.0
         self._last_fv_estimated: float | None = None
+        self._rx_limits_initialised: bool = False
+        self._generator: Generator[dict[str, Any], None, None] | None = None
 
         self._fig = plt.figure(figsize=(14, 9), constrained_layout=True)
         gs = GridSpec(3, 5, figure=self._fig)
@@ -197,11 +199,12 @@ class DashboardRadar:
         n_trame = frame_data["n_trame"]
         detected = frame_data["detection"]
 
-        # Panel 2 — RX spectrum
+        # Panel 2 — RX spectrum (limits set on first frame, then user-controlled)
         self._line_rx.set_ydata(col_db)
-        ax_rx = self._ax_rx
-        ax_rx.set_xlim(self._f_hz[0], self._f_hz[-1])
-        _auto_ylim(ax_rx, col_db)
+        if not self._rx_limits_initialised:
+            self._ax_rx.set_xlim(self._f_hz[0], self._f_hz[-1])
+            _auto_ylim(self._ax_rx, col_db)
+            self._rx_limits_initialised = True
 
         # Panel 3a — Presence score history
         self._score_history.append(score)
@@ -235,8 +238,15 @@ class DashboardRadar:
     # ------------------------------------------------------------------
 
     def run(self, generator: Generator[dict[str, Any], None, None]) -> None:
-        """Start the live animation driven by a frame generator."""
+        """Start the live animation driven by a frame generator.
+
+        The generator is closed cleanly on figure close so that the
+        underlying SDR (if any) releases its TX cyclic buffer.
+        """
         logger.info("Lancement du dashboard temps réel")
+
+        self._generator = generator
+        self._fig.canvas.mpl_connect("close_event", self._on_close)
 
         self._anim = FuncAnimation(
             self._fig,
@@ -247,7 +257,24 @@ class DashboardRadar:
             cache_frame_data=False,
             repeat=False,
         )
-        plt.show()
+        try:
+            plt.show()
+        finally:
+            self._close_generator()
+
+    def _on_close(self, _event) -> None:
+        self._close_generator()
+
+    def _close_generator(self) -> None:
+        if self._generator is None:
+            return
+        try:
+            self._generator.close()
+            logger.info("Générateur de trames fermé proprement")
+        except Exception as exc:
+            logger.warning("Erreur à la fermeture du générateur : %s", exc)
+        finally:
+            self._generator = None
 
 
 # ----------------------------------------------------------------------

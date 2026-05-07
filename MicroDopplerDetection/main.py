@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import math
 import sys
 from collections import deque
 from pathlib import Path
@@ -28,12 +29,9 @@ from MicroDopplerDetection.pipeline.acquisition import (
     stream_pluto,
     stream_simulation,
 )
-from MicroDopplerDetection.pipeline.decimation import decimate_iq
+from MicroDopplerDetection.pipeline.decimation import Decimator
 from MicroDopplerDetection.pipeline.clutter import ClutterFilter
-from MicroDopplerDetection.pipeline.spectrogramme import (
-    ColumnOutput,
-    compute_single_column,
-)
+from MicroDopplerDetection.pipeline.spectrogramme import compute_single_column
 from MicroDopplerDetection.pipeline.detection import detect_presence_column
 from MicroDopplerDetection.pipeline.windowing import get_window
 from MicroDopplerDetection.utils.display import DashboardRadar
@@ -46,6 +44,43 @@ _T0: float = 290.0
 
 
 # ------------------------------------------------------------------
+# Helpers
+# ------------------------------------------------------------------
+
+def _resolve_f_offset(cfg: dict[str, Any]) -> float:
+    """Return the effective baseband offset (Hz), 0 if not in cw_offset mode."""
+    emi = cfg.get("emission", {})
+    if emi.get("mode") == "cw_offset":
+        return float(emi.get("f_offset", 0.0))
+    return 0.0
+
+
+def _auto_skip_warmup(
+    clu_cfg: dict[str, Any],
+    f_s_dec: float,
+    hop: int,
+) -> int:
+    """Compute a sensible warm-up length from the active clutter filter.
+
+    The clutter filter has a transient of ~3·τ.  We translate it into a
+    number of STFT hops and round up.  The user can still override via
+    ``spectrogramme.skip_warmup`` in the config.
+    """
+    mode = clu_cfg.get("mode", "butterworth")
+    if mode in ("iir", "mean"):
+        alpha = float(clu_cfg.get("alpha", 0.9999))
+        tau_s = 1.0 / max((1.0 - alpha) * f_s_dec, 1e-12)
+    elif mode == "butterworth":
+        f_cut = float(clu_cfg.get("butterworth_cutoff", 0.05))
+        tau_s = 1.0 / (2.0 * math.pi * max(f_cut, 1e-6))
+    else:
+        tau_s = 0.0
+
+    hop_s = hop / f_s_dec
+    return int(math.ceil(3.0 * tau_s / hop_s)) if hop_s > 0 else 0
+
+
+# ------------------------------------------------------------------
 # Radar range equation
 # ------------------------------------------------------------------
 
@@ -54,34 +89,7 @@ def _radar_range(
     wavelength: float,
     B_hz: float,
 ) -> float:
-    """Evaluate the radar range equation for one set of link-budget parameters.
-
-    Parameters
-    ----------
-    params : dict
-        Link-budget parameters (P_tx_dBm, G_tx_dBi, G_rx_dBi, sigma_m2,
-        NF_dB, L_sys_dB, SNR_min_dB).
-    wavelength : float
-        Carrier wavelength (m).
-    B_hz : float
-        Effective processing bandwidth (Hz).
-
-    Returns
-    -------
-    float
-        Detection range in metres.
-
-    Notes
-    -----
-    Monostatic radar range equation:
-
-    .. math::
-
-        R = \\left(
-            \\frac{P_t \\, G_{tx} \\, G_{rx} \\, \\lambda^2 \\, \\sigma}
-            {(4\\pi)^3 \\, k_B \\, T_0 \\, B \\, F \\, L \\, SNR_{min}}
-        \\right)^{1/4}
-    """
+    """Evaluate the monostatic radar range equation."""
     P_tx = 1e-3 * 10.0 ** (params["P_tx_dBm"] / 10.0)
     G_tx = 10.0 ** (params["G_tx_dBi"] / 10.0)
     G_rx = 10.0 ** (params["G_rx_dBi"] / 10.0)
@@ -92,7 +100,6 @@ def _radar_range(
 
     numerator = P_tx * G_tx * G_rx * wavelength**2 * sigma
     denominator = (4.0 * np.pi)**3 * _BOLTZMANN * _T0 * B_hz * F * L * SNR_min
-
     return float((numerator / denominator) ** 0.25)
 
 
@@ -101,35 +108,7 @@ def _compute_range(
     f_s_dec: float,
     n_fft: int,
 ) -> tuple[float, float]:
-    """Compute pessimistic and optimistic detection ranges.
-
-    Parameters
-    ----------
-    cfg : dict
-        Full configuration dictionary.
-    f_s_dec : float
-        Decimated sampling rate (Hz).
-    n_fft : int
-        FFT size, used to derive processing bandwidth.
-
-    Returns
-    -------
-    tuple[float, float]
-        ``(R_min, R_max)`` — pessimistic and optimistic range in metres.
-
-    Notes
-    -----
-    Two scenarios are evaluated from ``config.bilan_liaison``:
-
-    * **Optimistic** — free-space propagation, clear line of sight,
-      nominal antenna gains, full target RCS.
-    * **Pessimistic** — propagation through rubble/debris (high losses),
-      degraded antenna patterns, partially obscured target (reduced RCS).
-
-    The operator sees an interval ``[R_min, R_max]`` on the dashboard,
-    giving both a lower bound (worst case on the field) and an upper
-    bound (best achievable performance).
-    """
+    """Return ``(R_min, R_max)`` — pessimistic and optimistic ranges (m)."""
     bl = cfg.get("bilan_liaison", {})
     f_c = cfg["sdr"]["f_c"]
     wavelength = _SPEED_OF_LIGHT / f_c
@@ -172,8 +151,7 @@ def _load_config(path: str) -> dict[str, Any]:
         print(f"ERREUR : fichier de configuration introuvable : {path}", file=sys.stderr)
         sys.exit(1)
     with open(cfg_path, encoding="utf-8") as fh:
-        cfg = yaml.safe_load(fh)
-    return cfg
+        return yaml.safe_load(fh)
 
 
 def _setup_logging(cfg: dict[str, Any]) -> None:
@@ -197,11 +175,10 @@ def _build_iq_stream(
 ) -> Generator[np.ndarray, None, None]:
     """Return an infinite IQ-buffer generator (hardware or simulation)."""
     sdr = cfg["sdr"]
-    emi = cfg["emission"]
     sim = cfg["simulation"]
+    f_off = _resolve_f_offset(cfg)
 
     if simulation or sim.get("enable", False):
-        f_off = emi.get("f_offset", 0.0) if emi.get("mode") == "cw_offset" else 0.0
         logger.info("Mode simulation continu activé (f_offset=%.1f Hz)", f_off)
         return stream_simulation(
             f_c=sdr["f_c"],
@@ -211,14 +188,15 @@ def _build_iq_stream(
             D_mm=sim["D_mm"],
             snr_dB=sim["snr_dB"],
             f_offset=f_off,
+            clutter_amplitude=sim.get("clutter_amplitude", 100.0),
         )
 
     logger.info("Mode matériel continu — connexion au PlutoSDR")
     tx_buffer = generate_tx_buffer(
-        mode=emi["mode"],
+        mode=cfg["emission"]["mode"],
         buffer_size=sdr["buffer_size"],
         f_s=sdr["f_s"],
-        f_offset=emi.get("f_offset", 0.0),
+        f_offset=f_off,
     )
     return stream_pluto(
         uri=sdr["uri"],
@@ -235,44 +213,31 @@ def _streaming_frame_generator(
     cfg: dict[str, Any],
     simulation: bool,
 ) -> Generator[dict[str, Any], None, None]:
-    """Infinite generator: acquire → decimate → clutter → FFT → detect → yield.
-
-    Parameters
-    ----------
-    cfg : dict
-        Full configuration dictionary.
-    simulation : bool
-        Force simulation mode.
-
-    Yields
-    ------
-    dict[str, Any]
-        Frame data for :meth:`DashboardRadar.update_frame`.
-    """
-    sdr = cfg["sdr"]
+    """Acquire → decimate → clutter → FFT → detect → yield, indefinitely."""
+    sdr_cfg = cfg["sdr"]
     dec_cfg = cfg["decimation"]
     clu_cfg = cfg["clutter"]
     spec_cfg = cfg["spectrogramme"]
     win_cfg = cfg["windowing"]
     det_cfg = cfg["detection"]
 
-    f_s = sdr["f_s"]
-    f_c = sdr["f_c"]
-    n_fft = spec_cfg["n_fft"]
-    overlap = spec_cfg["overlap"]
-    hop = int(n_fft * (1.0 - overlap))
+    f_s = float(sdr_cfg["f_s"])
+    f_c = float(sdr_cfg["f_c"])
+    n_fft = int(spec_cfg["n_fft"])
+    overlap = float(spec_cfg["overlap"])
+    hop = max(1, int(n_fft * (1.0 - overlap)))
 
     do_decimate = dec_cfg.get("enable", True)
-    D = dec_cfg["D"] if do_decimate else 1
-    f_max_utile = dec_cfg.get("f_max_utile", 10.0)
-    f_s_dec = f_s / D if do_decimate else f_s
+    D = int(dec_cfg["D"]) if do_decimate else 1
+    f_max_utile = float(dec_cfg.get("f_max_utile", 10.0))
 
-    if do_decimate and f_s_dec < 2.5 * f_max_utile:
-        raise ValueError(
-            f"Critère de Shannon (avec marge filtre anti-repliement) violé : "
-            f"f_s_dec={f_s_dec:.1f} Hz < 2.5×f_max_utile="
-            f"{2.5 * f_max_utile:.1f} Hz."
-        )
+    f_off = _resolve_f_offset(cfg)
+    bande_resp_bb = tuple(det_cfg["bande_respiration"])
+    bande_ref_bb = tuple(det_cfg["bande_reference"])
+
+    f_max_eff = max(f_max_utile, abs(f_off) + bande_ref_bb[1])
+    decimator = Decimator(f_s=f_s, D=D, f_max_utile=f_max_eff)
+    f_s_dec = decimator.f_s_out
 
     clutter_filter = ClutterFilter(
         mode=clu_cfg["mode"],
@@ -283,85 +248,88 @@ def _streaming_frame_generator(
     )
     window = get_window(win_cfg["mode"], n_fft)
 
-    emi = cfg["emission"]
-    f_offset = emi.get("f_offset", 0.0) if emi.get("mode") == "cw_offset" else 0.0
+    bande_resp_spec = (bande_resp_bb[0] + f_off, bande_resp_bb[1] + f_off)
+    bande_ref_spec = (bande_ref_bb[0] + f_off, bande_ref_bb[1] + f_off)
+    w = float(det_cfg.get("w", 0.5))
+    alpha_alert = float(det_cfg.get("alpha", 0.01))
 
-    bande_resp_rel = det_cfg["bande_respiration"]
-    bande_ref_rel = det_cfg["bande_reference"]
-    bande_resp = (bande_resp_rel[0] + f_offset, bande_resp_rel[1] + f_offset)
-    bande_ref = (bande_ref_rel[0] + f_offset, bande_ref_rel[1] + f_offset)
+    user_warmup = spec_cfg.get("skip_warmup")
+    auto_warmup = _auto_skip_warmup(clu_cfg, f_s_dec, hop)
+    skip_warmup = int(user_warmup) if user_warmup is not None else auto_warmup
 
-    alpha = det_cfg.get("alpha", 0.01)
-    w = det_cfg.get("w", 0.5)
-    skip_warmup = spec_cfg.get("skip_warmup", 0)
-
-    ring = deque(maxlen=n_fft)
+    ring: deque[np.complex64] = deque(maxlen=n_fft)
     iq_stream = _build_iq_stream(cfg, simulation)
 
     logger.info(
-        "Pipeline streaming — n_fft=%d, hop=%d, f_s_dec=%.1f Hz, skip_warmup=%d",
+        "Pipeline streaming — n_fft=%d, hop=%d, f_s_dec=%.1f Hz, "
+        "skip_warmup=%d (auto=%d), f_offset=%.1f Hz",
         n_fft,
         hop,
         f_s_dec,
         skip_warmup,
+        auto_warmup,
+        f_off,
     )
     logger.info(
-        "Bandes de détection (f_offset=%.1f Hz) — respiration=%.1f–%.1f Hz, "
-        "référence=%.1f–%.1f Hz",
-        f_offset,
-        bande_resp[0],
-        bande_resp[1],
-        bande_ref[0],
-        bande_ref[1],
+        "Bandes spectrales — respiration=%.1f–%.1f Hz, référence=%.1f–%.1f Hz "
+        "(baseband respiration=%.2f–%.2f Hz pour ACF)",
+        bande_resp_spec[0],
+        bande_resp_spec[1],
+        bande_ref_spec[0],
+        bande_ref_spec[1],
+        bande_resp_bb[0],
+        bande_resp_bb[1],
     )
+
+    if f_off != 0.0:
+        t_seg = np.arange(n_fft, dtype=np.float64) / f_s_dec
+        demod_lo = np.exp(-1j * 2.0 * np.pi * f_off * t_seg)
+    else:
+        demod_lo = None
 
     frame_counter = 0
     samples_since_last_fft = 0
 
     for raw_buf in iq_stream:
-        if do_decimate:
-            iq_dec, _ = decimate_iq(
-                iq=raw_buf, f_s=f_s, D=D, f_max_utile=f_max_utile,
-            )
-        else:
-            iq_dec = raw_buf
-
+        iq_dec = decimator(raw_buf)
         iq_filt = clutter_filter(iq_dec)
-        phi_dec = np.unwrap(np.angle(iq_filt.astype(np.complex128)))
 
-        for sample in iq_filt:
-            ring.append(sample)
-            samples_since_last_fft += 1
+        ring.extend(iq_filt)
+        samples_since_last_fft += len(iq_filt)
 
-            if len(ring) < n_fft:
-                continue
-
-            if samples_since_last_fft < hop:
-                continue
-
-            samples_since_last_fft = 0
+        while len(ring) == n_fft and samples_since_last_fft >= hop:
+            samples_since_last_fft -= hop
             frame_counter += 1
 
             if frame_counter <= skip_warmup:
-                logger.debug("Warm-up : trame %d/%d ignorée", frame_counter, skip_warmup)
+                logger.debug(
+                    "Warm-up : trame %d/%d ignorée", frame_counter, skip_warmup,
+                )
                 continue
 
-            segment = np.array(ring, dtype=np.complex64)
+            segment = np.fromiter(ring, dtype=np.complex64, count=n_fft)
 
             col = compute_single_column(segment, f_s_dec, f_c, window)
+
+            if demod_lo is not None:
+                segment_demod = segment.astype(np.complex128) * demod_lo
+            else:
+                segment_demod = segment.astype(np.complex128)
+            phi_seg = np.unwrap(np.angle(segment_demod))
 
             score_presence, p_value_f, acf_peak, fv_estimated = (
                 detect_presence_column(
                     col_db=col.col_db,
                     f_hz=col.f_hz,
-                    phi_buffer=phi_dec,
+                    phi_buffer=phi_seg,
                     f_s=f_s_dec,
-                    bande_respiration=bande_resp,
-                    bande_reference=bande_ref,
+                    bande_respiration_spectral=bande_resp_spec,
+                    bande_reference_spectral=bande_ref_spec,
+                    bande_respiration_baseband=bande_resp_bb,
                     w=w,
                 )
             )
-            alert = bool(p_value_f < alpha)
+            alert = bool(p_value_f < alpha_alert)
 
             yield {
                 "signal_iq_dec":   segment,
@@ -376,7 +344,7 @@ def _streaming_frame_generator(
 
 
 # ------------------------------------------------------------------
-# Build context for the dashboard (needs one bootstrap column)
+# Build context for the dashboard
 # ------------------------------------------------------------------
 
 def _build_context(cfg: dict[str, Any]) -> dict[str, Any]:
@@ -387,19 +355,20 @@ def _build_context(cfg: dict[str, Any]) -> dict[str, Any]:
     spec_cfg = cfg["spectrogramme"]
     det_cfg = cfg["detection"]
 
-    f_s = sdr["f_s"]
-    f_c = sdr["f_c"]
-    D = dec_cfg["D"] if dec_cfg.get("enable", True) else 1
+    f_s = float(sdr["f_s"])
+    f_c = float(sdr["f_c"])
+    D = int(dec_cfg["D"]) if dec_cfg.get("enable", True) else 1
     f_s_dec = f_s / D
-    n_fft = spec_cfg["n_fft"]
+    n_fft = int(spec_cfg["n_fft"])
 
     f_hz = np.fft.fftshift(np.fft.fftfreq(n_fft, d=1.0 / f_s_dec)).astype(np.float64)
 
+    f_off = _resolve_f_offset(cfg)
     tx_buffer = generate_tx_buffer(
         mode=emi["mode"],
         buffer_size=sdr["buffer_size"],
         f_s=f_s,
-        f_offset=emi.get("f_offset", 0.0),
+        f_offset=f_off,
     )
     tx_spectrum = np.fft.fftshift(np.fft.fft(tx_buffer, n=len(tx_buffer)))
     eps = 1e-12
@@ -414,10 +383,9 @@ def _build_context(cfg: dict[str, Any]) -> dict[str, Any]:
     wavelength = _SPEED_OF_LIGHT / f_c
     dv_mps = df_hz * wavelength / 2.0
 
-    clutter_mode = cfg.get("clutter", {}).get("mode", "mean")
-    f_offset = emi.get("f_offset", 0.0) if emi.get("mode") == "cw_offset" else 0.0
-    bande_resp_rel = det_cfg.get("bande_respiration", [0.1, 0.8])
-    bande_resp = [bande_resp_rel[0] + f_offset, bande_resp_rel[1] + f_offset]
+    clutter_mode = cfg.get("clutter", {}).get("mode", "butterworth")
+    bande_resp_bb = list(det_cfg.get("bande_respiration", [0.1, 0.8]))
+    bande_resp_disp = [bande_resp_bb[0] + f_off, bande_resp_bb[1] + f_off]
     bl = cfg.get("bilan_liaison", {})
     B_eff_hz = bl.get("B_eff_hz", df_hz)
 
@@ -433,7 +401,7 @@ def _build_context(cfg: dict[str, Any]) -> dict[str, Any]:
         "dv_mps": dv_mps,
         "n_fft": n_fft,
         "clutter_mode": clutter_mode,
-        "bande_resp": bande_resp,
+        "bande_resp": bande_resp_disp,
         "B_eff_hz": B_eff_hz,
     }
 
@@ -469,7 +437,6 @@ def main() -> None:
     logger.info("=== Démarrage du pipeline micro-Doppler (mode continu) ===")
 
     context = _build_context(cfg)
-
     dashboard = DashboardRadar(config=cfg, context=context)
     gen = _streaming_frame_generator(cfg, simulation=args.simulation)
     dashboard.run(gen)

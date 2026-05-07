@@ -1,20 +1,33 @@
-"""Sample-rate reduction through cascaded low-pass filtering and down-sampling."""
+"""Sample-rate reduction for the streaming pipeline.
+
+The :class:`Decimator` keeps filter state and a sub-sampling phase counter
+across successive ``__call__`` invocations, so that buffer-by-buffer
+processing produces the *same* output as a single batch decimation of the
+concatenated stream — no boundary artefacts and no transient wasted at
+each buffer.
+
+The legacy stateless ``decimate_iq`` helper has been removed; offline
+analysis can call ``scipy.signal.decimate`` directly on a concatenated
+vector.
+"""
 
 from __future__ import annotations
 
 import logging
 
 import numpy as np
-from scipy.signal import decimate as _scipy_decimate
+from scipy.signal import cheby1, lfilter
 
 logger = logging.getLogger(__name__)
 
-_MAX_SINGLE_STAGE = 13
+_MAX_PRIME = 13
 _PRIMES = (2, 3, 5, 7, 11, 13)
+_CHEBY_ORDER = 8
+_CHEBY_RIPPLE_DB = 0.05
 
 
 def _factorise(D: int) -> list[int]:
-    """Decompose *D* into prime factors ≤ 13.
+    """Decompose *D* into prime factors ≤ 13 (sorted ascending).
 
     Each factor becomes one decimation stage with its own Chebyshev
     anti-aliasing filter, maximising stopband rejection per stage.
@@ -37,110 +50,117 @@ def _factorise(D: int) -> list[int]:
 
     if remaining > 1:
         raise ValueError(
-            f"D={D} contient un facteur premier > 13 (résidu={remaining}). "
-            f"Choisir un D décomposable en petits facteurs ({', '.join(map(str, _PRIMES))})."
+            f"D={D} contient un facteur premier > {_MAX_PRIME} (résidu={remaining})."
         )
 
     factors.sort()
     return factors
 
 
-def _decimate_1d(x: np.ndarray, q: int) -> np.ndarray:
-    """Decimate a real 1-D array by factor *q* (single stage)."""
-    return _scipy_decimate(x, q, ftype="iir", zero_phase=True)
-
-
-def decimate_iq(
-    iq: np.ndarray,
-    f_s: float,
-    D: int,
-    f_max_utile: float,
-) -> tuple[np.ndarray, float]:
-    """Decimate the IQ vector by factor *D* using cascaded stages.
+class Decimator:
+    """Stateful cascaded decimator for streaming complex IQ.
 
     Parameters
     ----------
-    iq : numpy.ndarray
-        Complex IQ samples at rate *f_s*.
     f_s : float
-        Current sampling rate (Hz), e.g. 2.0e6.
+        Input sampling rate (Hz).
     D : int
-        Total decimation factor.  Must be decomposable into prime
-        factors ≤ 13.  The output rate is ``f_s / D``.
+        Total decimation factor.  Must factor into primes ≤ 13.
     f_max_utile : float
-        Maximum frequency of interest (Hz), e.g. 10.  Used to verify
-        the Nyquist criterion after decimation.
-
-    Returns
-    -------
-    iq_decimated : numpy.ndarray
-        Decimated complex IQ vector of shape ``(len(iq) // D,)``.
-    f_s_new : float
-        New sampling rate (Hz) = ``f_s / D``.
-
-    Raises
-    ------
-    ValueError
-        If the Shannon–Nyquist criterion (with filter transition-band
-        margin) is violated after decimation, i.e.
-        ``f_s / D <= 2.5 * f_max_utile``, or if *D* contains a prime
-        factor > 13.
+        Maximum frequency of interest (Hz), used for the Shannon check
+        ``f_s / D > 2.5 · f_max_utile``.
 
     Notes
     -----
-    *D* is decomposed into its prime factors and each factor becomes a
-    separate decimation stage.  This follows the ``scipy.signal.decimate``
-    recommendation to keep each stage's factor ≤ 13 for adequate
-    anti-aliasing with the built-in Chebyshev type-I order-8 filter
-    (≈ −33 dB rejection per stage of 2, −24 dB per stage of 5).
+    Each stage applies a Chebyshev type-I order-8 low-pass filter with
+    ``Wn = 0.8 / q`` (same design as ``scipy.signal.decimate``), then
+    downsamples by *q*.  Filter state and sub-sampling phase are
+    preserved across calls so that the streamed output equals the batch
+    output of a single ``scipy.signal.decimate`` applied to the full
+    concatenation.
 
-    I and Q channels are decimated independently to preserve the analytic
-    (complex) nature of the signal.
+    Forward IIR (``lfilter``) is used instead of ``filtfilt`` because
+    forward-backward filtering is incompatible with streaming.  The
+    breathing band (≤ 1 Hz) is far below the cutoff (~0.4 · f_out) so the
+    induced group delay is approximately constant and harmless for
+    detection.
     """
-    f_s_new = f_s / D
 
-    if f_s_new <= 2.5 * f_max_utile:
-        raise ValueError(
-            f"Critère de Shannon (avec marge filtre anti-repliement) violé : "
-            f"f_s_new = {f_s_new:.1f} Hz ≤ 2.5 × f_max_utile = {2.5 * f_max_utile:.1f} Hz. "
-            f"Réduire D (actuellement {D}) ou augmenter f_s."
+    def __init__(self, f_s: float, D: int, f_max_utile: float) -> None:
+        self.f_s_in = float(f_s)
+        self.D = int(D)
+        self.f_s_out = self.f_s_in / self.D
+
+        if self.D > 1 and self.f_s_out <= 2.5 * f_max_utile:
+            raise ValueError(
+                f"Critère de Shannon (avec marge filtre anti-repliement) violé : "
+                f"f_s_out = {self.f_s_out:.1f} Hz ≤ 2.5 × f_max_utile = "
+                f"{2.5 * f_max_utile:.1f} Hz. Réduire D (actuellement {self.D}) "
+                f"ou augmenter f_s ou f_max_utile."
+            )
+
+        self._stages: list[tuple[np.ndarray, np.ndarray, int]] = []
+        self._zi_re: list[np.ndarray] = []
+        self._zi_im: list[np.ndarray] = []
+        self._phase: list[int] = []
+
+        f_cur = self.f_s_in
+        for q in _factorise(self.D):
+            b, a = cheby1(_CHEBY_ORDER, _CHEBY_RIPPLE_DB, 0.8 / q)
+            n_state = max(len(a), len(b)) - 1
+            self._stages.append((b, a, q))
+            self._zi_re.append(np.zeros(n_state, dtype=np.float64))
+            self._zi_im.append(np.zeros(n_state, dtype=np.float64))
+            self._phase.append(0)
+            f_cur /= q
+
+        logger.info(
+            "Decimator — D=%d, %d étage(s), f_s : %.0f → %.1f Hz",
+            self.D,
+            len(self._stages),
+            self.f_s_in,
+            self.f_s_out,
         )
 
-    stages = _factorise(D)
+    def __call__(self, iq: np.ndarray) -> np.ndarray:
+        """Decimate one IQ buffer, preserving filter state.
 
-    logger.debug(
-        "Décimation ×%d en %d étage(s) %s — f_s : %.0f → %.1f Hz",
-        D,
-        len(stages),
-        stages,
-        f_s,
-        f_s_new,
-    )
+        Parameters
+        ----------
+        iq : numpy.ndarray
+            Complex IQ samples (1-D) at rate ``f_s_in``.
 
-    iq_i = iq.real.astype(np.float64)
-    iq_q = iq.imag.astype(np.float64)
+        Returns
+        -------
+        numpy.ndarray
+            Complex64 vector at rate ``f_s_out``.  Length depends on the
+            input buffer size and the current sub-sampling phase; for a
+            steady stream of equal-sized buffers, the average length per
+            call is ``len(iq) / D``.
+        """
+        if self.D == 1:
+            return iq.astype(np.complex64, copy=False)
 
-    f_cur = f_s
-    for i, q in enumerate(stages):
-        f_cut = 0.8 * (f_cur / q) / 2.0
-        logger.debug(
-            "  Étage %d/%d : ×%d — f_s=%.1f Hz → %.1f Hz, f_coupure≈%.1f Hz",
-            i + 1,
-            len(stages),
-            q,
-            f_cur,
-            f_cur / q,
-            f_cut,
-        )
-        iq_i = _decimate_1d(iq_i, q)
-        iq_q = _decimate_1d(iq_q, q)
-        f_cur /= q
+        re = iq.real.astype(np.float64, copy=False)
+        im = iq.imag.astype(np.float64, copy=False)
 
-    iq_decimated = (iq_i + 1j * iq_q).astype(np.complex64)
+        for i, (b, a, q) in enumerate(self._stages):
+            if re.size == 0:
+                continue
+            re, self._zi_re[i] = lfilter(b, a, re, zi=self._zi_re[i])
+            im, self._zi_im[i] = lfilter(b, a, im, zi=self._zi_im[i])
 
-    logger.debug(
-        "Décimation terminée — %d → %d échantillons",
-        len(iq),
-        len(iq_decimated),
-    )
-    return iq_decimated, f_s_new
+            offset = self._phase[i]
+            n = re.size
+            if offset >= n:
+                self._phase[i] = offset - n
+                re = re[:0]
+                im = im[:0]
+                continue
+
+            keep = np.arange(offset, n, q)
+            self._phase[i] = (keep[-1] + q) - n
+            re = re[keep]
+            im = im[keep]
+
+        return (re + 1j * im).astype(np.complex64)
