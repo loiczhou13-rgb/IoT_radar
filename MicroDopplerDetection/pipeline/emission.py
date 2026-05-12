@@ -9,7 +9,7 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 
-_DAC_FULL_SCALE: int = 1 << 14
+_DAC_FULL_SCALE: int = 2**14
 """PlutoSDR DAC convention used by ``pyadi-iio``.
 
 The ``adi.Pluto.tx()`` API casts ``complex64`` samples directly to

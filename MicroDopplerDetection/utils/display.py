@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import threading
+import time
 from typing import Any, Generator
 
 import numpy as np
@@ -24,9 +26,26 @@ class DashboardRadar:
         Row 2 : Presence score curve (left 3/5) | Info box (right 2/5)
 
     The presence score is the fused output of the Fisher band-power F-test
-    and the phase-autocorrelation peak (see
-    :func:`MicroDopplerDetection.pipeline.detection.detect_presence_column`).
-    The binary alert is driven by the Fisher p-value vs. ``detection.alpha``.
+    and the phase-autocorrelation peak.  The binary alert is driven by the
+    Fisher p-value vs. ``detection.alpha``.
+
+    Architecture
+    ------------
+    The frame generator is consumed in a daemon producer thread.  This
+    decouples the (sometimes long) acquisition + processing path from the
+    GUI event loop, which is essential on real hardware where
+    ``sdr.rx()`` blocks ~8 ms per buffer at 2 MHz / 16384 samples.
+
+    Two specific WSLg + TkAgg pitfalls are explicitly avoided here:
+
+    * **Grey / unopenable window.**  The producer thread is *not* started
+      until the dashboard fires its first ``draw_event``.  This
+      guarantees Tk has fully painted the window before any GIL pressure
+      from the producer kicks in.
+    * **Generator-already-executing race.**  ``generator.close()`` is
+      called *only* from inside the producer thread's ``finally`` block,
+      never from the GUI thread.  The GUI just sets a stop flag and
+      joins.
     """
 
     def __init__(self, config: dict, context: dict) -> None:
@@ -57,7 +76,6 @@ class DashboardRadar:
         self._last_acf_peak: float = 0.0
         self._last_fv_estimated: float | None = None
         self._rx_limits_initialised: bool = False
-        self._generator: Generator[dict[str, Any], None, None] | None = None
 
         self._fig = plt.figure(figsize=(14, 9), constrained_layout=True)
         gs = GridSpec(3, 5, figure=self._fig)
@@ -83,7 +101,10 @@ class DashboardRadar:
                 except Exception:
                     pass
 
-        logger.info("Dashboard initialisé — 3 panneaux + encadré info")
+        logger.info(
+            "Dashboard initialisé — 3 panneaux + encadré info (backend=%s)",
+            matplotlib.get_backend(),
+        )
 
     # ------------------------------------------------------------------
     # Panel initialisation
@@ -117,12 +138,25 @@ class DashboardRadar:
             linewidth=0.8,
             color="tab:orange",
         )
+        ax_rx.set_xlim(self._f_hz[0], self._f_hz[-1])
+        ax_rx.set_ylim(-120, 0)
+        # Status text drawn on the RX axes (blit-friendly, unlike a
+        # figure-level suptitle which cannot be blitted).
+        self._status_text = ax_rx.text(
+            0.99, 0.98, "En attente de la première trame…",
+            transform=ax_rx.transAxes,
+            ha="right", va="top",
+            fontsize=11, fontweight="bold", color="grey",
+            bbox=dict(boxstyle="round,pad=0.3",
+                      facecolor="white", edgecolor="grey", alpha=0.8),
+        )
 
         # Panel 3a — Presence score (Fisher × ACF fusion)
         ax_score.set_title("Score de présence")
         ax_score.set_xlabel("Trame")
         ax_score.set_ylabel("Score (Fisher × ACF)")
         ax_score.set_ylim(-0.05, 1.05)
+        ax_score.set_xlim(0, max(self._N_hist, 1))
         (self._line_score,) = ax_score.plot(
             [], [], linewidth=1.2, color="tab:purple",
         )
@@ -185,10 +219,25 @@ class DashboardRadar:
         self._info_text.set_text("\n".join(lines))
 
     # ------------------------------------------------------------------
-    # Frame update (called by FuncAnimation)
+    # Frame update (called by FuncAnimation in the GUI thread)
     # ------------------------------------------------------------------
 
-    def update_frame(self, frame_data: dict[str, Any]) -> tuple:
+    def update_frame(self, frame_data: dict[str, Any] | None) -> tuple:
+        """Refresh the live panels with a new frame, or no-op if ``None``.
+
+        Returns the tuple of artists that may have changed.  This is
+        what ``FuncAnimation`` redraws when ``blit=True``.
+        """
+        artists = (
+            self._line_rx,
+            self._line_score,
+            self._info_text,
+            self._status_text,
+        )
+
+        if frame_data is None:
+            return artists
+
         self._frame_count += 1
 
         col_db = frame_data["spectre_colonne"]
@@ -199,10 +248,9 @@ class DashboardRadar:
         n_trame = frame_data["n_trame"]
         detected = frame_data["detection"]
 
-        # Panel 2 — RX spectrum (limits set on first frame, then user-controlled)
+        # Panel 2 — RX spectrum
         self._line_rx.set_ydata(col_db)
         if not self._rx_limits_initialised:
-            self._ax_rx.set_xlim(self._f_hz[0], self._f_hz[-1])
             _auto_ylim(self._ax_rx, col_db)
             self._rx_limits_initialised = True
 
@@ -212,7 +260,6 @@ class DashboardRadar:
             self._score_history = self._score_history[-self._N_hist:]
         x_score = np.arange(len(self._score_history))
         self._line_score.set_data(x_score, self._score_history)
-        self._ax_score.set_xlim(0, max(len(self._score_history), 1))
 
         # Panel 3b — Info box live values
         self._last_score = score
@@ -221,17 +268,15 @@ class DashboardRadar:
         self._last_fv_estimated = fv_estimated
         self._update_info_box()
 
-        # Title feedback (driven by Fisher alert, not score threshold)
-        colour = "green" if detected else "red"
-        status = "RESPIRATION DÉTECTÉE" if detected else "Aucune détection"
-        self._fig.suptitle(
-            f"Radar Micro-Doppler — {status}  |  Trame {n_trame}",
-            fontsize=13,
-            fontweight="bold",
-            color=colour,
-        )
+        # Status feedback (driven by Fisher alert)
+        if detected:
+            self._status_text.set_text(f"RESPIRATION DÉTECTÉE — Trame {n_trame}")
+            self._status_text.set_color("green")
+        else:
+            self._status_text.set_text(f"Aucune détection — Trame {n_trame}")
+            self._status_text.set_color("red")
 
-        return (self._line_rx, self._line_score, self._info_text)
+        return artists
 
     # ------------------------------------------------------------------
     # Animation loop
@@ -240,41 +285,101 @@ class DashboardRadar:
     def run(self, generator: Generator[dict[str, Any], None, None]) -> None:
         """Start the live animation driven by a frame generator.
 
-        The generator is closed cleanly on figure close so that the
-        underlying SDR (if any) releases its TX cyclic buffer.
+        Lifecycle:
+
+        1. Build the figure (already done in ``__init__``).
+        2. Schedule ``FuncAnimation`` ticks (drives ``update_frame``).
+        3. The first ``draw_event`` (i.e. when the OS window is actually
+           painted) starts a daemon producer thread.  The thread iterates
+           the generator and stores the latest frame in ``_latest_frame``.
+        4. Every animation tick, the GUI thread reads ``_latest_frame``
+           (newest frame, dropping any older ones) and forwards it to
+           ``update_frame``.
+        5. On window close, ``_stop_event`` is set and the producer
+           thread finishes (which calls ``generator.close()`` → SDR
+           cleanup).
         """
         logger.info("Lancement du dashboard temps réel")
 
         self._generator = generator
-        self._fig.canvas.mpl_connect("close_event", self._on_close)
+        self._stop_event = threading.Event()
+        self._latest_frame: dict[str, Any] | None = None
+        self._producer_thread: threading.Thread | None = None
+        self._producer_started = False
 
+        def _producer() -> None:
+            try:
+                for frame in generator:
+                    if self._stop_event.is_set():
+                        break
+                    self._latest_frame = frame
+                    # Yield the GIL so Tk's event loop on the main thread
+                    # can keep processing redraws and user input.  Most
+                    # NumPy / SciPy primitives already release the GIL,
+                    # but the surrounding Python loop does not, and on
+                    # WSLg + TkAgg even small bursts of GIL pressure can
+                    # delay the very first window paint.
+                    time.sleep(0)
+            except Exception:
+                logger.exception("Erreur dans le thread de production")
+            finally:
+                try:
+                    generator.close()
+                except Exception:
+                    pass
+                logger.info("Producteur de trames arrêté")
+
+        def _start_producer_once(_event=None) -> None:
+            if self._producer_started:
+                return
+            self._producer_started = True
+            self._producer_thread = threading.Thread(
+                target=_producer, name="radar-frame-producer", daemon=True,
+            )
+            self._producer_thread.start()
+            logger.info("Producteur de trames démarré (fenêtre visible)")
+
+        def _on_close(_event) -> None:
+            self._stop_event.set()
+
+        # Pull-from-shared-variable frame source for FuncAnimation.
+        def _frames():
+            # On the very first call, ensure the producer is running.
+            # (``draw_event`` is the cleanest signal but is backend-
+            # dependent; this is a defensive fallback.)
+            if not self._producer_started:
+                _start_producer_once()
+            while not self._stop_event.is_set():
+                # Atomic read — last writer wins (single producer).
+                frame = self._latest_frame
+                self._latest_frame = None  # don't redraw the same frame twice
+                yield frame
+
+        # The producer is started by the first draw event, which fires
+        # *after* Tk has painted the window for the first time.  This
+        # avoids the WSLg "grey window" issue.
+        self._fig.canvas.mpl_connect("draw_event", _start_producer_once)
+        self._fig.canvas.mpl_connect("close_event", _on_close)
+
+        # ``interval=30`` gives the GUI a refresh ceiling of ~33 Hz.
+        # ``blit=True`` makes redraws cheap by only re-blitting the
+        # artists returned by :meth:`update_frame`.
         self._anim = FuncAnimation(
             self._fig,
             self.update_frame,
-            frames=generator,
-            interval=50,
-            blit=False,
+            frames=_frames(),
+            interval=30,
+            blit=True,
             cache_frame_data=False,
             repeat=False,
         )
+
         try:
             plt.show()
         finally:
-            self._close_generator()
-
-    def _on_close(self, _event) -> None:
-        self._close_generator()
-
-    def _close_generator(self) -> None:
-        if self._generator is None:
-            return
-        try:
-            self._generator.close()
-            logger.info("Générateur de trames fermé proprement")
-        except Exception as exc:
-            logger.warning("Erreur à la fermeture du générateur : %s", exc)
-        finally:
-            self._generator = None
+            self._stop_event.set()
+            if self._producer_thread is not None and self._producer_thread.is_alive():
+                self._producer_thread.join(timeout=2.0)
 
 
 # ----------------------------------------------------------------------

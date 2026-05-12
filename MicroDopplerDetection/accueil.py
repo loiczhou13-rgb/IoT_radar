@@ -3,7 +3,7 @@ import pygame.freetype  # Pour des polices lisses
 import numpy as np
 import sys
 import matplotlib.pyplot as plt
-from MicroDopplerDetection.main import main
+from main import main
 
 # Initialisation
 pygame.init()

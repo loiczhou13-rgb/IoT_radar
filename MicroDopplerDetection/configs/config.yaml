@@ -35,7 +35,7 @@ sdr:
 
   # Fréquence porteuse (Hz).  λ = c / f_c ≈ 12.5 cm à 2.4 GHz.
   # Fixe la sensibilité à un déplacement thoracique D : Δφ = 4πD/λ.
-  f_c: 2.4e+9
+  f_c: 3.5e+9
 
   # Taux d'échantillonnage du convertisseur ADC (Hz).
   # Minimum matériel PlutoSDR ≈ 521 kHz.
