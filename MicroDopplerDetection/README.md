@@ -1,87 +1,108 @@
 # Radar Micro-Doppler — Détection de survivants ensevelis
 
-Système radar portable à onde continue (CW) pour détecter la respiration
-de personnes ensevelies sous des décombres (séisme, avalanche, effondrement).
+Système radar portable à onde continue (CW) pour détecter la respiration de
+personnes ensevelies sous des décombres (séisme, avalanche, effondrement).
 
-Matériel : **PlutoSDR** (ADALM-PLUTO, AD9363) + **Raspberry Pi**.
+Matériel visé : **PlutoSDR** (ADALM-PLUTO, AD9363).  
+Orchestration **streaming** dans **`main.py`**.
 
 ---
 
 ## Contexte physique
 
-Un signal CW à **f_c = 2.4 GHz** (λ ≈ 12.5 cm) est émis vers la zone de
-recherche. Le thorax d'un survivant oscille à **f_v ≈ 0.2–0.5 Hz** avec une
-amplitude **D ≈ 5–15 mm**. Ce mouvement module involontairement la phase du
-signal réfléchi (modulation PM). En bande de base, le signal reçu s'écrit :
+Un signal CW à **f_c ≈ 2.4 GHz** (λ ≈ 12.5 cm) illumine la scène. Le mouvement
+thoracique (**f_v ≈ 0,2–0,5 Hz**, amplitude **D ≈ 5–15 mm**) module la phase du
+signal reçu. En bande de base :
 
 ```
 x(t) = exp(j·φ(t))     avec  φ(t) = φ₀ − (4πD/λ)·sin(2π·f_v·t)
 ```
 
-Le développement en **séries de Bessel** révèle un peigne de raies spectrales
-à ±n·f_v. La raie fondamentale (±f_v) porte l'essentiel de l'énergie
-respiratoire (J₁(m) ≈ 0.44 pour un indice de modulation m ≈ 1).
+Les raies micro-Doppler autour de **±f_v** sont analysées après STFT.
 
 ---
 
 ## Architecture du pipeline (streaming)
 
+La fenêtre FFT utilisée pour la colonne spectrale est choisie dans
+**`configs/config.yaml`** (`windowing.mode`) et instanciée par **`pipeline/windowing.py`** (`get_window`), puis passée à **`spectrogramme.compute_single_column`** — ce n’est pas une étape “disque” séparée, mais un bloc fonctionnel distinct entre le segment IQ et la FFT.
+
 ```
 ┌─────────────┐      ┌────────────────┐      ┌──────────────┐
 │ emission.py │─────▶│ acquisition.py │─────▶│decimation.py │
-│  buffer TX  │      │  IQ (PlutoSDR  │      │  Decimator   │
-│  ×2¹⁴ scale │      │  ou simulation)│      │  stateful    │
+│  buffer TX  │      │ IQ Pluto / sim │      │ Decimator    │
+│  ×2¹⁴ scale │      │                │      │ stateful     │
 └─────────────┘      └────────────────┘      └──────┬───────┘
                                                     │
-                                            ┌───────▼──────┐
-                                            │  clutter.py  │
-                                            │ ClutterFilter│
-                                            └──────┬───────┘
-                                                   │
-                                            ┌──────▼───────┐
-                                            │spectrogramme │
-                                            │     .py      │
-                                            │compute_single│
-                                            │   _column    │
-                                            └──────┬───────┘
-                                                   │
-                                       ┌───────────▼────────────┐
-                                       │     detection.py        │
-                                       │ Fisher F-test  +  ACF   │
-                                       │ → score & alerte        │
-                                       └───────────┬─────────────┘
-                                                   │
-                                       ┌───────────▼─────────────┐
-                                       │    utils/display.py     │
-                                       │  Dashboard matplotlib   │
-                                       │  3 panneaux + encadré   │
-                                       └─────────────────────────┘
+                                            ┌───────▼────────┐
+                                            │   clutter.py   │
+                                            │ ClutterFilter  │
+                                            └───────┬────────┘
+                                                    │ buffer n_fft + hop
+                      ┌─────────────────────────────┼─────────────────────────┐
+                      │                             │                         │
+                      │                      ┌──────▼───────┐                  │
+                      │                      │ windowing.py │ ← config YAML    │
+                      │                      │  get_window  │                  │
+                      │                      └──────┬───────┘                  │
+                      │                             │ fenêtre × segment IQ    │
+                      │                      ┌──────▼───────┐                  │
+                      │                      │spectrogramme │                  │
+                      │                      │compute_single│                  │
+                      │                      │   _column    │ → col_db         │
+                      │                      └──────┬───────┘                  │
+                      └─────────────────────────────┼─────────────────────────┘
+                                                    │
+                                       ┌────────────▼─────────────┐
+                                       │      detection.py       │
+                                       │ Fisher F-test + ACF     │
+                                       │ → score (temps réel     │
+                                       │    uniquement, pas dans │
+                                       │    les .npz prod.)       │
+                                       └────────────┬─────────────┘
+                                                    │
+                                       ┌────────────▼─────────────┐
+                                       │    utils/display.py    │
+                                       │ Dashboard matplotlib   │
+                                       └────────────────────────┘
 ```
 
-Orchestration dans **`main.py`** :
-émission → acquisition → décimation streaming → clutter → fenêtrage + STFT
-colonne par colonne → détection Fisher × ACF → affichage temps réel.
+**Ordre logique dans `main.py`** : après décimation et clutter, un **anneau** de
+longueur `n_fft` avance par pas `hop`. Sur chaque fenêtre valide (hors warm-up)
+: **segment** → multiplication par la **fenêtre** → **STFT** (une colonne) → **détection**.
 
-### Arborescence
+---
+
+## Arborescence utile
 
 ```
 MicroDopplerDetection/
-├── main.py              # point d'entrée CLI streaming
-├── accueil.py           # interface (travail en cours, hors pipeline)
-├── configs/             # fichiers YAML de configuration
-│   └── config.yaml      # config par défaut
-├── logs/                # logs persistants des exécutions (radar_<ts>.log)
-├── pipeline/            # chaîne de traitement temps réel
-├── utils/               # dashboard matplotlib, record_acquisition, etc.
-└── legacy/              # code batch / hors-ligne (non appelé par main.py)
-
-Les enregistrements ``record_acquisition`` (train/test/val) vont par défaut sous
-``IoT_radar/AICalibration/data/`` (voir ``utils/repo_paths.py``).
+├── main.py                 # CLI streaming — point d’entrée principal
+├── accueil_pg.py           # interface utilisateur (hors chaîne temps réel)
+├── configs/
+│   └── config.yaml        # source de vérité pipeline + fenêtrage + STFT + détection
+├── logs/                  # radar_<timestamp>.log si activé dans la config
+├── pipeline/
+│   ├── emission.py
+│   ├── acquisition.py
+│   ├── decimation.py
+│   ├── clutter.py
+│   ├── windowing.py       # Hann / Hamming / rectangular …
+│   ├── spectrogramme.py   # colonne STFT (consomme la fenêtre)
+│   └── detection.py
+├── utils/
+│   ├── display.py         # Dashboard temps réel ou relecture sans panneau score
+│   ├── record_acquisition.py
+│   ├── record_visualization.py  # relecture .npz (+ label dans le titre si présent)
+│   ├── auto_record.py     # plusieurs prises d’affilée (--samples, --interval)
+│   ├── repo_paths.py      # défaut AICalibration/data
+│   └── migrate_data_root_in_recordings.py  # migration chemins (usage ponctuel)
+└── legacy/                # batch hors-ligne — non utilisé par main.py
 ```
 
-Le code historique en mode batch (acquisition complète, spectrogramme 2-D,
-détection sur matrice) est préservé sous **`legacy/`** pour l'analyse
-hors-ligne ; il n'est plus appelé par le pipeline.
+Les enregistrements **supervisés** (`record_acquisition`) sont par défaut sous le
+dépôt voisin **`../AICalibration/data/<train|test|val>/<index>.*`**. Voir
+**`utils/repo_paths.default_recording_data_root()`**.
 
 ---
 
@@ -90,10 +111,7 @@ hors-ligne ; il n'est plus appelé par le pipeline.
 ### Prérequis système
 
 ```bash
-# libiio — bibliothèque de communication avec le PlutoSDR
 sudo apt install libiio-dev libiio-utils
-
-# Vérifier que le PlutoSDR est détecté
 iio_info -s
 ```
 
@@ -103,129 +121,101 @@ iio_info -s
 pip install numpy scipy matplotlib pyyaml pyadi-iio
 ```
 
-| Paquet        | Rôle                                               |
-|---------------|-----------------------------------------------------|
-| `numpy`       | Calcul vectoriel, tableaux IQ                       |
-| `scipy`       | Décimation IIR, fenêtrage, STFT, ACF               |
-| `matplotlib`  | Dashboard temps réel (FuncAnimation)                |
-| `pyyaml`      | Lecture de `config.yaml`                             |
-| `pyadi-iio`   | Interface Python pour le PlutoSDR via libiio         |
-
-### Mise à jour firmware PlutoSDR (optionnel)
-
-Si le firmware du Pluto est ancien, le taux d'échantillonnage minimal peut
-être supérieur à 521 kHz. Consulter le
-[wiki Analog Devices](https://wiki.analog.com/university/tools/pluto/users/firmware)
-pour mettre à jour.
+| Paquet       | Rôle                                              |
+|--------------|---------------------------------------------------|
+| `numpy`      | IQ, tableaux                                       |
+| `scipy`      | décimation IIR, fenêtres via spectrogramme, STFT   |
+| `matplotlib` | dashboard                                          |
+| `pyyaml`     | configuration                                      |
+| `pyadi-iio`  | Pluto                                              |
 
 ---
 
 ## Utilisation
 
-### Mode matériel (PlutoSDR connecté)
+Depuis la racine du dépôt `IoT_radar` :
 
 ```bash
+export PYTHONPATH="$(pwd)"
 python -m MicroDopplerDetection.main
 ```
 
-### Mode simulation (sans matériel)
+Depuis ce dossier :
 
 ```bash
-python -m MicroDopplerDetection.main --simulation
+cd MicroDopplerDetection
+python main.py
 ```
 
-### Configuration alternative
+### Mode simulation
 
 ```bash
-python -m MicroDopplerDetection.main --config MicroDopplerDetection/configs/mon_setup.yaml
+python main.py --simulation
 ```
 
-Le flag `--simulation` force `simulation.enable: true` quel que soit le contenu
-du fichier de configuration.  Chaque exécution écrit en plus un journal
-dans `MicroDopplerDetection/logs/radar_<timestamp>.log` (désactivable via
-`logging.to_file: false` ou redirigeable via `--log-file`).
+### Configuration
 
-### Options CLI
+```bash
+python main.py --config configs/mon_setup.yaml
+```
 
-| Option         | Défaut                                              | Description                                |
-|----------------|-----------------------------------------------------|--------------------------------------------|
-| `--config`     | `MicroDopplerDetection/configs/config.yaml`         | Fichier de configuration YAML              |
-| `--simulation` | *(absent)*                                          | Forcer le mode simulation                  |
-| `--log-file`   | `MicroDopplerDetection/logs/radar_<timestamp>.log`  | Fichier de log (à défaut, auto-horodaté)   |
+`--simulation` force le mode simulé quel que soit le YAML.  
+Journal par défaut : `logs/radar_<timestamp>.log` — voir `logging` dans `config.yaml` et `--log-file`.
+
+### Options CLI (`main.py`)
+
+| Option         | Défaut                         | Description               |
+|----------------|-------------------------------|---------------------------|
+| `--config`     | `configs/config.yaml`         | Fichier YAML              |
+| `--simulation` | *(absent)*                    | Forcer la simulation      |
+| `--log-file`   | horodaté dans `logs/`         | Fichier de log explicite |
+
+---
+
+## Enregistrement & relecture (hors GUI)
+
+| Script | Rôle |
+|--------|------|
+| **`utils/record_acquisition.py`** | Une prise : spectrogramme + métadonnées + IQ optionnel sous `AICalibration/data/...` |
+| **`utils/auto_record.py`** | Plusieurs prises (`-n`, `--interval`) — mêmes options que ci-dessus |
+| **`utils/record_visualization.py`** | Replay d’un `.npz` avec dashboard (sans courbe de score) ; affiche le **label** dans le titre |
+
+Exemples :
+
+```bash
+cd MicroDopplerDetection
+python utils/record_acquisition.py --subset train --env salle --label 1 --duration 120
+python utils/record_visualization.py --subset train --index 5
+```
 
 ---
 
 ## Paramètres (`configs/config.yaml`)
 
-Le fichier `configs/config.yaml` est l'**unique source de vérité** pour le
-pipeline.  Pour tester d'autres réglages sans toucher au fichier de
-référence, dupliquez-le dans `configs/` et passez son chemin via `--config`.
+| Section         | Rôle |
+|-----------------|------|
+| `sdr`           | `f_c`, `f_s`, gains, `uri`, taille de buffer |
+| `emission`      | `cw` / `cw_offset`, `f_offset` |
+| `decimation`    | `D`, `f_max_utile`, anti-repliement |
+| `clutter`       | suppression énergie statique (DC / fond) |
+| `windowing`     | type de fenêtre sur le segment `n_fft` avant FFT |
+| `spectrogramme` | `n_fft`, `overlap`, `skip_warmup` |
+| `detection`     | bandes Fisher + ACF, `alpha`, fusion `w` |
+| `affichage`     | historique score, seuil (live) |
+| `bilan_liaison` | plage affichée / efficacité de bande |
+| `simulation`    | respiration synthétique, SNR, clutter |
 
-| Section          | Paramètres clés                       | Effet                                                                          |
-|------------------|----------------------------------------|--------------------------------------------------------------------------------|
-| `sdr`            | `f_c`, `f_s`, `rx_gain`, `tx_gain`    | Longueur d'onde, bande, dynamique ADC                                          |
-| `emission`       | `mode`, `f_offset`                    | Position du signal utile (loin du DC si `cw_offset`)                          |
-| `decimation`     | `D`, `f_max_utile`                    | Taux d'échantillonnage effectif, vérif Shannon (avec `f_offset` pris en compte) |
-| `clutter`        | `mode`, `alpha`, `butterworth_*`      | Suppression du retour statique à 0 Hz                                          |
-| `windowing`      | `mode`                                | Compromis résolution / fuite spectrale                                         |
-| `spectrogramme`  | `n_fft`, `overlap`, `skip_warmup`     | Résolution δf, lissage, warm-up clutter (auto si `null`)                       |
-| `detection`      | `bande_respiration`, `bande_reference`, `alpha`, `w` | Test Fisher F + ACF fusionnés                                                  |
-| `affichage`      | `N_historique`, `seuil_proba`         | Score history, seuil visuel                                                    |
-| `bilan_liaison`  | `optimiste`/`pessimiste`, `B_eff_hz`  | Portée min/max affichée                                                        |
-| `simulation`     | `fv`, `D_mm`, `snr_dB`, `clutter_amplitude` | Paramètres du signal respiratoire synthétique                                  |
-
-Voir les commentaires détaillés directement dans `configs/config.yaml`.
+Détails dans les commentaires du YAML.
 
 ---
 
-## Pièges courants
+## Pièges courants (résumé)
 
-### 1. Saturation de l'ADC
-
-**Symptômes** : signal IQ écrêté, harmoniques parasites dans le spectre.
-**Cause** : `rx_gain` trop élevé ou `tx_gain` insuffisamment atténué.
-**Correction** : réduire `rx_gain` ou rendre `tx_gain` plus négatif. Viser
-max(|IQ|) entre 50 % et 80 % de la pleine échelle (1024–1638 sur 2048).
-
-### 2. Pic DC (0 Hz) dominant
-
-**Origine** : couplage direct TX→RX (isolation finie), offset DC de l'ADC,
-réflexions sur les objets statiques environnants.
-**Solutions** :
-- Utiliser `emission.mode: "cw_offset"` pour décaler le signal utile.
-- Activer la suppression de clutter (par défaut `clutter.mode: "butterworth"`,
-  alternatives `"iir"` ou `"mean"`).
-
-### 3. TX absent du spectre alors que le pipeline tourne
-
-**Origine** : oubli du facteur `2**14` (échelle DAC PlutoSDR).
-**Correction** : déjà appliquée dans `pipeline/emission.py`. Si vous
-modifiez le buffer TX, conserver la mise à l'échelle ; sans elle, le DAC
-ne reçoit que ~1 LSB et n'émet rien d'observable à l'analyseur.
-
-### 4. Violation du critère de Shannon à la décimation
-
-**Symptôme** : repliement spectral, fausses raies.
-**Cause** : `D` trop grand → `f_s_new < 2.5 × max(f_max_utile, |f_offset| + bande_ref_max)`.
-**Correction** : réduire `D`, augmenter `f_s`, ou ajuster `f_max_utile`.
-Le pipeline lève une `ValueError` explicite si la condition n'est pas
-respectée.
-
-### 5. Bruit de phase sur longues acquisitions
-
-**Symptôme** : élargissement des raies spectrales au fil du temps.
-**Cause** : instabilité de l'oscillateur local du PlutoSDR (> ~10 s).
-**Atténuation** : la STFT en fenêtre glissante limite déjà l'effet ;
-sinon, raccourcir `n_fft` ou augmenter le recouvrement.
-
-### 6. Isolation TX/RX insuffisante
-
-**Symptôme** : clutter résiduel très puissant même après filtrage.
-**Cause** : le signal TX fuit directement dans le récepteur.
-**Solutions matérielles** : antennes séparées, circulateur, absorbant
-entre TX et RX.
-**Solutions logicielles** : `clutter.mode: "iir"` avec `alpha` élevé,
-ou `"butterworth"` avec coupure plus haute.
+1. **ADC saturé** — baisser `rx_gain` ou le `tx_gain`.
+2. **Pic DC** — `cw_offset`, clutter plus agressif.
+3. **Pas d’émission visible** — mise à l’échelle DAC `2**14` déjà dans `emission.py`.
+4. **Aliasing après décimation** — respecter Shannon ; message d’erreur explicite possible.
+5. **Module `utils` introuvable** en lançant `python utils/*.py` — exécuter depuis `MicroDopplerDetection/` ; les scripts insèrent la racine du paquet dans `sys.path` avant les imports internes.
 
 ---
 
