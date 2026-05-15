@@ -111,7 +111,7 @@ def record_session(
         Directory where the ``.npz`` file will be saved.
         Created automatically if it does not exist.
     duration_s : float, optional
-        Recording duration in seconds.  Default 300 s (5 min).
+        Recording duration in seconds.  Default 120 s (2 min).
     simulation : bool, optional
         Use ``stream_simulation`` instead of the PlutoSDR.  Default False.
 

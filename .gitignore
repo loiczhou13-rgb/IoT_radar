@@ -101,5 +101,5 @@ Thumbs.db
 docs/_build/
 /site
 
-# ===== MicroDoppler — enregistrements (partition train/test/val) =====
-MicroDopplerDetection/data/
+# ===== Micro-Doppler recordings (train/test/val) =====
+AICalibration/data/
