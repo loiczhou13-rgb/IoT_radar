@@ -6,15 +6,15 @@ Exemple — 2 minutes, jeu d’entraînement, prochain indice auto ::
     cd MicroDopplerDetection
     python utils/record_acquisition.py --subset train --env salle --label 1 --duration 120
 
-Échantillon explicite ``data/train/7.*`` (label 0 = vide, 1 = présence / respiration) ::
+Échantillon explicite ``AICalibration/data/train/7.*`` (label 0 = vide, 1 = présence / respiration) ::
 
     python utils/record_acquisition.py --subset train --env salle --label 0 --index 7 --duration 60
 
 ``--env`` doit être parmi les environnements reconnus (voir ``_VALID_ENVS`` dans ce module).
 
-Arborescence ::
+Arborescence (racine par défaut : ``AICalibration/data`` du dépôt) ::
 
-    data/<train|test|val>/<n>.npz|.json|.iq
+    AICalibration/data/<train|test|val>/<n>.npz|.json|.iq
 
 Les métadonnées utiles pour l’entraînement sont dans le ``.npz`` ; un fichier
 ``<n>.json`` est aussi écrit avec les mêmes infos (lecture humaine, inventaire).
@@ -38,6 +38,11 @@ from scipy.io import wavfile
 
 _UTILS_DIR = Path(__file__).resolve().parent
 _ROOT = _UTILS_DIR.parent
+
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
+from utils.repo_paths import default_recording_data_root  # noqa: E402
 
 # À étendre lorsque de nouveaux lieux de mesure sont supportés.
 _VALID_ENVS: tuple[str, ...] = ("salle",)
@@ -95,19 +100,26 @@ def _next_sample_index(split_dir: Path) -> int:
     return best + 1
 
 
-def _parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(
-        description=(
-            "Acquisition micro-Doppler : enregistrer spectrogramme, paramètres, "
-            "étiquettes, métadonnées et signal IQ décimé sous data/<train|test|val>/<index>.*"
-        ),
+_DEFAULT_DATA_HELP = str(default_recording_data_root())
+
+
+def build_record_argument_parser(
+    *,
+    description: str | None = None,
+) -> argparse.ArgumentParser:
+    """Construit le parser CLI (réutilisable par ``auto_record``)."""
+    desc = description or (
+        "Acquisition micro-Doppler : enregistrer spectrogramme, paramètres, "
+        "étiquettes, métadonnées et signal IQ décimé sous "
+        "AICalibration/data/<train|test|val>/<index>.*"
     )
+    p = argparse.ArgumentParser(description=desc)
     p.add_argument(
         "--subset",
         required=True,
         choices=("train", "test", "val"),
         metavar="SUBSET",
-        help="Sous-dossier de data (train, test ou val).",
+        help="Sous-dossier sous la racine données (train, test ou val).",
     )
     p.add_argument(
         "--env",
@@ -130,14 +142,18 @@ def _parse_args() -> argparse.Namespace:
         default=None,
         metavar="N",
         help=(
-            "Numéro d’échantillon (≥1). Omis : prochain indice disponible sous data/<subset>/."
+            "Numéro d’échantillon (≥1). Omis : prochain indice libre sous "
+            "<data-root>/<subset>/."
         ),
     )
     p.add_argument(
         "--data-root",
         type=Path,
         default=None,
-        help=f"Répertoire racine des données (défaut : {_ROOT / 'data'}).",
+        help=(
+            "Répertoire racine des données (défaut : "
+            f"{_DEFAULT_DATA_HELP})."
+        ),
     )
     p.add_argument(
         "--duration",
@@ -175,11 +191,16 @@ def _parse_args() -> argparse.Namespace:
         default=None,
         help="Fichier de log (voir main.py). Par défaut selon la config.",
     )
-    return p.parse_args()
+    return p
 
 
-def run() -> Path:
-    args = _parse_args()
+def parse_record_args(argv: list[str] | None = None) -> argparse.Namespace:
+    return build_record_argument_parser().parse_args(argv)
+
+
+def run(args: argparse.Namespace | None = None) -> Path:
+    if args is None:
+        args = parse_record_args()
     md = _load_main_module()
 
     cfg: dict[str, Any] = md._load_config(args.config)
@@ -193,7 +214,11 @@ def run() -> Path:
     if dur <= 0:
         raise SystemExit("--duration doit être > 0.")
 
-    data_root = Path(args.data_root).expanduser().resolve() if args.data_root else (_ROOT / "data").resolve()
+    data_root = (
+        Path(args.data_root).expanduser().resolve()
+        if args.data_root
+        else default_recording_data_root()
+    )
     split_dir = (data_root / args.subset).resolve()
     split_dir.mkdir(parents=True, exist_ok=True)
 

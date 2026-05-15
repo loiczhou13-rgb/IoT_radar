@@ -72,8 +72,11 @@ MicroDopplerDetection/
 │   └── config.yaml      # config par défaut
 ├── logs/                # logs persistants des exécutions (radar_<ts>.log)
 ├── pipeline/            # chaîne de traitement temps réel
-├── utils/               # dashboard matplotlib
+├── utils/               # dashboard matplotlib, record_acquisition, etc.
 └── legacy/              # code batch / hors-ligne (non appelé par main.py)
+
+Les enregistrements ``record_acquisition`` (train/test/val) vont par défaut sous
+``IoT_radar/AICalibration/data/`` (voir ``utils/repo_paths.py``).
 ```
 
 Le code historique en mode batch (acquisition complète, spectrogramme 2-D,

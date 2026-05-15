@@ -7,7 +7,7 @@ Exemples ::
     cd MicroDopplerDetection
     python utils/record_visualization.py --subset train --index 1
 
-    python utils/record_visualization.py --npz data/train/3.npz
+    python utils/record_visualization.py --npz ../AICalibration/data/train/3.npz
 
 Le ``.npz`` doit contenir ``spectrogram_db``. Chemin YAML : ``--config``, la
 clé ``config_path`` dans le ``.npz``, ou à défaut le ``.json`` du même indice.
@@ -29,6 +29,11 @@ from matplotlib.animation import FuncAnimation
 
 _UTILS_DIR = Path(__file__).resolve().parent
 _ROOT = _UTILS_DIR.parent
+
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
+from utils.repo_paths import default_recording_data_root  # noqa: E402
 
 
 def _ensure_root_on_path() -> None:
@@ -59,7 +64,7 @@ def _resolve_npz_path(args: argparse.Namespace) -> Path:
     data_root = (
         Path(args.data_root).expanduser().resolve()
         if args.data_root
-        else (_ROOT / "data").resolve()
+        else default_recording_data_root()
     )
     return (data_root / args.subset / f"{int(args.index)}.npz").resolve()
 
@@ -79,6 +84,20 @@ def _load_config_path_from_recording(npz_path: Path) -> str | None:
         return None
     p = meta.get("config_path")
     return str(p) if isinstance(p, str) and p else None
+
+
+def _label_from_json_sidecar(npz_path: Path) -> int | None:
+    """Lit ``label`` dans le ``.json`` voisin du ``.npz``."""
+    legacy = npz_path.with_suffix(".json")
+    if not legacy.is_file():
+        return None
+    try:
+        with open(legacy, encoding="utf-8") as fh:
+            meta = json.load(fh)
+        v = meta.get("label")
+        return int(v) if v is not None else None
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return None
 
 
 def _frames_from_npz(data: Any) -> tuple[list[dict[str, Any]], int]:
@@ -143,7 +162,7 @@ def main() -> None:
         "--data-root",
         type=Path,
         default=None,
-        help=f"Racine data (défaut : {_ROOT / 'data'}).",
+        help=f"Racine data (défaut : {default_recording_data_root()}).",
     )
     p.add_argument(
         "--config",
@@ -178,20 +197,31 @@ def main() -> None:
     context = md._build_context(cfg)
 
     with np.load(npz_path, allow_pickle=False) as data:
+        rec_label: int | None = None
+        if "label" in data.files:
+            rec_label = int(np.asarray(data["label"]).item())
         if "f_hz" in data:
             context = {**context, "f_hz": np.asarray(data["f_hz"], dtype=np.float64)}
         frames, n_tr = _frames_from_npz(data)
 
+    if rec_label is None:
+        rec_label = _label_from_json_sidecar(npz_path)
+
     logging.info(
-        "Relecture — %d trames — %s — config %s",
+        "Relecture — %d trames — label=%s — %s — config %s",
         n_tr,
+        rec_label if rec_label is not None else "?",
         npz_path,
         cfg_path,
     )
 
     dashboard = DashboardRadar(config=cfg, context=context, show_presence_score=False)
+    title = "Radar Micro-Doppler — Relecture enregistrement"
+    if rec_label is not None:
+        title = f"{title}    ·    label {rec_label}"
+
     dashboard._fig.suptitle(
-        "Radar Micro-Doppler — Relecture enregistrement",
+        title,
         fontsize=13,
         fontweight="bold",
     )
