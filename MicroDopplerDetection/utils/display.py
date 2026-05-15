@@ -17,17 +17,20 @@ logger = logging.getLogger(__name__)
 
 
 class DashboardRadar:
-    """Three-panel live dashboard with an info box for micro-Doppler monitoring.
+    """Matplotlib dashboard for micro-Doppler monitoring.
 
-    Layout (using GridSpec)::
+    Layout with GridSpec — default ``show_presence_score=True`` (temps réel)::
 
         Row 0 : TX spectrum (full width)
         Row 1 : RX spectrum (full width)
         Row 2 : Presence score curve (left 3/5) | Info box (right 2/5)
 
-    The presence score is the fused output of the Fisher band-power F-test
-    and the phase-autocorrelation peak.  The binary alert is driven by the
-    Fisher p-value vs. ``detection.alpha``.
+    With ``show_presence_score=False`` (relecture ``record_visualization``),
+    row 2 is only the info box spanning the full width — no score curve.
+
+    When the score panel is shown, the presence score is the fused output of
+    the Fisher band-power F-test and the phase-autocorrelation peak.  The binary
+    alert is driven by the Fisher p-value vs. ``detection.alpha``.
 
     Architecture
     ------------
@@ -48,7 +51,13 @@ class DashboardRadar:
       joins.
     """
 
-    def __init__(self, config: dict, context: dict) -> None:
+    def __init__(
+        self,
+        config: dict,
+        context: dict,
+        *,
+        show_presence_score: bool = True,
+    ) -> None:
         aff = config["affichage"]
         det_cfg = config.get("detection", {})
 
@@ -69,6 +78,8 @@ class DashboardRadar:
         self._bande_resp: list = context.get("bande_resp", [0.1, 1.0])
         self._B_eff_hz: float = context.get("B_eff_hz", 0.0)
 
+        self._show_presence_score: bool = show_presence_score
+
         self._score_history: list[float] = []
         self._frame_count: int = 0
         self._last_score: float = 0.0
@@ -82,8 +93,12 @@ class DashboardRadar:
 
         self._ax_tx = self._fig.add_subplot(gs[0, :])
         self._ax_rx = self._fig.add_subplot(gs[1, :])
-        self._ax_score = self._fig.add_subplot(gs[2, :3])
-        self._ax_info = self._fig.add_subplot(gs[2, 3:])
+        if self._show_presence_score:
+            self._ax_score = self._fig.add_subplot(gs[2, :3])
+            self._ax_info = self._fig.add_subplot(gs[2, 3:])
+        else:
+            self._ax_score = None
+            self._ax_info = self._fig.add_subplot(gs[2, :])
 
         self._fig.suptitle(
             "Radar Micro-Doppler — Détection de survivants",
@@ -102,8 +117,9 @@ class DashboardRadar:
                     pass
 
         logger.info(
-            "Dashboard initialisé — 3 panneaux + encadré info (backend=%s)",
+            "Dashboard initialisé — backend=%s, score=%s",
             matplotlib.get_backend(),
+            "oui" if self._show_presence_score else "non",
         )
 
     # ------------------------------------------------------------------
@@ -113,7 +129,6 @@ class DashboardRadar:
     def _init_panels(self) -> None:
         ax_tx = self._ax_tx
         ax_rx = self._ax_rx
-        ax_score = self._ax_score
         ax_info = self._ax_info
 
         # Panel 1 — TX spectrum (static)
@@ -151,23 +166,26 @@ class DashboardRadar:
                       facecolor="white", edgecolor="grey", alpha=0.8),
         )
 
-        # Panel 3a — Presence score (Fisher × ACF fusion)
-        ax_score.set_title("Score de présence")
-        ax_score.set_xlabel("Trame")
-        ax_score.set_ylabel("Score (Fisher × ACF)")
-        ax_score.set_ylim(-0.05, 1.05)
-        ax_score.set_xlim(0, max(self._N_hist, 1))
-        (self._line_score,) = ax_score.plot(
-            [], [], linewidth=1.2, color="tab:purple",
-        )
-        ax_score.axhline(
-            self._seuil_score,
-            color="grey",
-            linestyle="--",
-            linewidth=1.0,
-            label=f"Seuil score ({self._seuil_score})",
-        )
-        ax_score.legend(loc="upper left", fontsize=8)
+        if self._show_presence_score and self._ax_score is not None:
+            ax_score = self._ax_score
+            ax_score.set_title("Score de présence")
+            ax_score.set_xlabel("Trame")
+            ax_score.set_ylabel("Score (Fisher × ACF)")
+            ax_score.set_ylim(-0.05, 1.05)
+            ax_score.set_xlim(0, max(self._N_hist, 1))
+            (self._line_score,) = ax_score.plot(
+                [], [], linewidth=1.2, color="tab:purple",
+            )
+            ax_score.axhline(
+                self._seuil_score,
+                color="grey",
+                linestyle="--",
+                linewidth=1.0,
+                label=f"Seuil score ({self._seuil_score})",
+            )
+            ax_score.legend(loc="upper left", fontsize=8)
+        else:
+            self._line_score = None
 
         # Panel 3b — Info box (static structure, updated text)
         ax_info.set_axis_off()
@@ -191,31 +209,47 @@ class DashboardRadar:
     # ------------------------------------------------------------------
 
     def _update_info_box(self) -> None:
-        if self._last_fv_estimated is None:
-            fv_str = "  fv     = —"
-        else:
-            fv_str = f"  fv     = {self._last_fv_estimated:.3f} Hz"
+        if self._show_presence_score:
+            if self._last_fv_estimated is None:
+                fv_str = "  fv     = —"
+            else:
+                fv_str = f"  fv     = {self._last_fv_estimated:.3f} Hz"
 
-        lines = [
-            "╔══════════════════════╗",
-            "║   PARAMÈTRES RADAR   ║",
-            "╚══════════════════════╝",
-            "",
-            f"  δf     = {self._df_hz:.3f} Hz",
-            f"  δv     = {self._dv_mps * 100:.2f} cm/s",
-            f"  N_FFT  = {self._n_fft}",
-            f"  B_eff  = {self._B_eff_hz:.1f} Hz",
-            f"  Clutter: {self._clutter_mode}",
-            f"  Bande  : {self._bande_resp[0]}–{self._bande_resp[1]} Hz",
-            "",
-            f"  Portée : {self._R_min_m:.1f}–{self._R_max_m:.1f} m",
-            "",
-            "─────── LIVE ───────",
-            f"  p_F    = {self._last_p_value_f:.2e}  (α={self._alpha:.0e})",
-            f"  ACF    = {self._last_acf_peak:+.2f}",
-            fv_str,
-            f"  Score  = {self._last_score:.2f}",
-        ]
+            lines = [
+                "╔══════════════════════╗",
+                "║   PARAMÈTRES RADAR   ║",
+                "╚══════════════════════╝",
+                "",
+                f"  δf     = {self._df_hz:.3f} Hz",
+                f"  δv     = {self._dv_mps * 100:.2f} cm/s",
+                f"  N_FFT  = {self._n_fft}",
+                f"  B_eff  = {self._B_eff_hz:.1f} Hz",
+                f"  Clutter: {self._clutter_mode}",
+                f"  Bande  : {self._bande_resp[0]}–{self._bande_resp[1]} Hz",
+                "",
+                f"  Portée : {self._R_min_m:.1f}–{self._R_max_m:.1f} m",
+                "",
+                "─────── LIVE ───────",
+                f"  p_F    = {self._last_p_value_f:.2e}  (α={self._alpha:.0e})",
+                f"  ACF    = {self._last_acf_peak:+.2f}",
+                fv_str,
+                f"  Score  = {self._last_score:.2f}",
+            ]
+        else:
+            lines = [
+                "╔══════════════════════╗",
+                "║   PARAMÈTRES RADAR   ║",
+                "╚══════════════════════╝",
+                "",
+                f"  δf     = {self._df_hz:.3f} Hz",
+                f"  δv     = {self._dv_mps * 100:.2f} cm/s",
+                f"  N_FFT  = {self._n_fft}",
+                f"  B_eff  = {self._B_eff_hz:.1f} Hz",
+                f"  Clutter: {self._clutter_mode}",
+                f"  Bande  : {self._bande_resp[0]}–{self._bande_resp[1]} Hz",
+                "",
+                f"  Portée : {self._R_min_m:.1f}–{self._R_max_m:.1f} m",
+            ]
         self._info_text.set_text("\n".join(lines))
 
     # ------------------------------------------------------------------
@@ -228,31 +262,46 @@ class DashboardRadar:
         Returns the tuple of artists that may have changed.  This is
         what ``FuncAnimation`` redraws when ``blit=True``.
         """
-        artists = (
-            self._line_rx,
-            self._line_score,
-            self._info_text,
-            self._status_text,
-        )
+        if not self._show_presence_score:
+            artists_bs = (
+                self._line_rx,
+                self._info_text,
+                self._status_text,
+            )
+        else:
+            assert self._line_score is not None
+            artists_bs = (
+                self._line_rx,
+                self._line_score,
+                self._info_text,
+                self._status_text,
+            )
 
         if frame_data is None:
-            return artists
+            return artists_bs
 
         self._frame_count += 1
 
         col_db = frame_data["spectre_colonne"]
-        score = frame_data["score_presence"]
-        p_value_f = frame_data["p_value_f"]
-        acf_peak = frame_data["acf_peak"]
-        fv_estimated = frame_data["fv_estimated"]
-        n_trame = frame_data["n_trame"]
-        detected = frame_data["detection"]
+        n_trame = frame_data.get("n_trame", self._frame_count)
 
         # Panel 2 — RX spectrum
         self._line_rx.set_ydata(col_db)
         if not self._rx_limits_initialised:
             _auto_ylim(self._ax_rx, col_db)
             self._rx_limits_initialised = True
+
+        if not self._show_presence_score:
+            self._status_text.set_text(f"Trame {n_trame}")
+            self._status_text.set_color("dimgray")
+            return artists_bs
+
+        assert self._line_score is not None
+        score = frame_data["score_presence"]
+        p_value_f = frame_data["p_value_f"]
+        acf_peak = frame_data["acf_peak"]
+        fv_estimated = frame_data["fv_estimated"]
+        detected = frame_data["detection"]
 
         # Panel 3a — Presence score history
         self._score_history.append(score)
@@ -276,7 +325,7 @@ class DashboardRadar:
             self._status_text.set_text(f"Aucune détection — Trame {n_trame}")
             self._status_text.set_color("red")
 
-        return artists
+        return artists_bs
 
     # ------------------------------------------------------------------
     # Animation loop

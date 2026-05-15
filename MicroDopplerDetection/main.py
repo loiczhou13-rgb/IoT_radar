@@ -270,8 +270,19 @@ def _build_iq_stream(
 def _streaming_frame_generator(
     cfg: dict[str, Any],
     simulation: bool,
+    *,
+    decimated_iq_chunks: list[np.ndarray] | None = None,
 ) -> Generator[dict[str, Any], None, None]:
-    """Acquire → decimate → clutter → FFT → detect → yield, indefinitely."""
+    """Acquire → decimate → clutter → FFT → detect → yield, indefinitely.
+
+    Parameters
+    ----------
+    cfg, simulation
+        Identique aux autres appels du pipeline.
+    decimated_iq_chunks
+        Si fourni, chaque bloc ``iq`` après décimation et filtre clutter est
+        recopié dans cette liste (*debug / enregistrement .wav hors ligne*).
+    """
     sdr_cfg = cfg["sdr"]
     dec_cfg = cfg["decimation"]
     clu_cfg = cfg["clutter"]
@@ -351,6 +362,11 @@ def _streaming_frame_generator(
     for raw_buf in iq_stream:
         iq_dec = decimator(raw_buf)
         iq_filt = clutter_filter(iq_dec)
+
+        if decimated_iq_chunks is not None:
+            decimated_iq_chunks.append(
+                np.asarray(iq_filt, dtype=np.complex64).copy()
+            )
 
         ring.extend(iq_filt)
         samples_since_last_fft += len(iq_filt)

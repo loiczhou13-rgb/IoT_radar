@@ -100,3 +100,6 @@ Thumbs.db
 # ===== DOCS =====
 docs/_build/
 /site
+
+# ===== MicroDoppler — enregistrements (partition train/test/val) =====
+MicroDopplerDetection/data/

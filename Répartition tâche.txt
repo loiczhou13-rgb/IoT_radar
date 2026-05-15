@@ -1,6 +1,0 @@
-1. Modélisation 3D pour le support du radar (SolidWorks + imprimante 3D)
-2. Développement de l'interface graphique (logiciel desktop / application web)
-3. Développement de la pipeline :
-    - traitement des signaux : débruitage (!!!), FFT, fenêtrage, amplification...,
-    - visualisation des données d'intérêt : signaux émis/reçus, range profile,
-    - intégration de l'IA : RNN/LSTM
