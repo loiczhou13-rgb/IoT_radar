@@ -5,7 +5,7 @@ import pygame
 import pygame.freetype
 import numpy as np
 import matplotlib.pyplot as plt
-from main import main
+#from main import main
 
 # =========================================================
 # INIT
@@ -219,49 +219,195 @@ def courbe_temps_reel():
 
     fig = plt.figure(
         "Courbe Temps Réel",
+        figsize=(13, 5),
         facecolor=np.array(theme["bg"]) / 255
     )
 
-    ax = fig.add_subplot(111)
-
-    ax.set_facecolor(np.array(theme["bg"]) / 255)
-
-    color = np.array(theme["accent"]) / 255
+    ax = fig.add_subplot(121)
+    ax_status = fig.add_subplot(122)
 
     x_data = []
     y_data = []
 
-    for i in range(220):
+    for i in range(520):
+
+        valeur = np.sin(i * 0.1)
 
         x_data.append(i)
-        y_data.append(np.sin(i * 0.1))
+        y_data.append(valeur)
+
+        # ==================================================
+        # COURBE
+        # ==================================================
 
         ax.clear()
+
+        ax.set_facecolor(np.array(theme["card"]) / 255)
 
         ax.plot(
             x_data,
             y_data,
-            color=color,
-            linewidth=2.8
+            color=np.array(theme["accent"]) / 255,
+            linewidth=3
+        )
+
+        ax.axhline(
+            y=0,
+            linestyle="--",
+            linewidth=1,
+            color=np.array(theme["text_secondary"]) / 255
         )
 
         ax.set_ylim(-1.5, 1.5)
 
-        ax.set_title(
-            "Signal Temps Réel",
-            color=color,
-            fontsize=16
+        ax.grid(
+            alpha=0.25,
+            color=np.array(theme["border"]) / 255
         )
 
-        ax.grid(alpha=0.25)
+        ax.set_title(
+            "Signal Temps Réel",
+            color=np.array(theme["text"]) / 255,
+            fontsize=16,
+            pad=15
+        )
+
+        # ==================================================
+        # PANNEAU ETAT
+        # ==================================================
+
+        ax_status.clear()
+
+        ax_status.set_facecolor(
+            np.array(theme["card"]) / 255
+        )
+
+        ax_status.set_xlim(0, 1)
+        ax_status.set_ylim(0, 1)
+
+        ax_status.axis("off")
+
+        if valeur >= 0:
+            couleur = "#22c55e"
+            statut = "NORMAL"
+        else:
+            couleur = "#ef4444"
+            statut = "ALERTE"
+
+        # Titre
+        ax_status.text(
+            0.5,
+            0.92,
+            "SUPERVISION",
+            ha="center",
+            fontsize=16,
+            fontweight="bold",
+            color=np.array(theme["text"]) / 255
+        )
+
+        # ==================================================
+        # JAUGE
+        # ==================================================
+
+        gauge_x = 0.35
+        gauge_y = 0.18
+        gauge_w = 0.12
+        gauge_h = 0.55
+
+        # Cadre
+        ax_status.add_patch(
+            plt.Rectangle(
+                (gauge_x, gauge_y),
+                gauge_w,
+                gauge_h,
+                fill=False,
+                linewidth=2,
+                edgecolor=np.array(theme["border"]) / 255
+            )
+        )
+
+        # Position normalisée
+        normalized = (valeur + 1.5) / 3.0
+        normalized = max(0, min(1, normalized))
+
+        # Barre
+        ax_status.add_patch(
+            plt.Rectangle(
+                (gauge_x, gauge_y),
+                gauge_w,
+                gauge_h * normalized,
+                color=couleur
+            )
+        )
+
+        # Ligne du zéro
+        zero_pos = gauge_y + gauge_h * 0.5
+
+        ax_status.plot(
+            [gauge_x - 0.03, gauge_x + gauge_w + 0.03],
+            [zero_pos, zero_pos],
+            color=np.array(theme["text_secondary"]) / 255,
+            linewidth=2
+        )
+
+        ax_status.text(
+            gauge_x + gauge_w + 0.08,
+            zero_pos,
+            "0",
+            va="center",
+            color=np.array(theme["text_secondary"]) / 255
+        )
+
+        # ==================================================
+        # INFOS
+        # ==================================================
+
+        ax_status.text(
+            0.72,
+            0.65,
+            statut,
+            ha="center",
+            fontsize=20,
+            fontweight="bold",
+            color=couleur
+        )
+
+        ax_status.text(
+            0.72,
+            0.48,
+            "Valeur",
+            ha="center",
+            fontsize=11,
+            color=np.array(theme["text_secondary"]) / 255
+        )
+
+        ax_status.text(
+            0.72,
+            0.38,
+            f"{valeur:.3f}",
+            ha="center",
+            fontsize=28,
+            fontweight="bold",
+            color=np.array(theme["text"]) / 255
+        )
+
+        ax_status.text(
+            0.72,
+            0.22,
+            "Signal en temps réel",
+            ha="center",
+            fontsize=10,
+            color=np.array(theme["text_secondary"]) / 255
+        )
+
+        plt.tight_layout()
 
         plt.pause(0.03)
 
-        if not plt.fignum_exists("Courbe Temps Réel"):
+        if not plt.fignum_exists(fig.number):
             break
 
-    plt.close()
-
+    plt.close(fig)
 # =========================================================
 # BUTTONS
 # =========================================================
@@ -311,7 +457,7 @@ while running:
 
                 if btn_graph.collidepoint(mouse_pos):
                     threading.Thread(
-                        target=main,
+                        target=courbe_temps_reel,
                         daemon=True
                     ).start()
 
