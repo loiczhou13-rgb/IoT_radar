@@ -94,10 +94,13 @@ MicroDopplerDetection/
 │   ├── display.py         # Dashboard temps réel ou relecture sans panneau score
 │   ├── record_acquisition.py
 │   ├── record_visualization.py  # relecture .npz (+ label dans le titre si présent)
-│   ├── auto_record.py     # plusieurs prises d’affilée (--samples, --interval)
-│   ├── repo_paths.py      # défaut AICalibration/data
-│   └── migrate_data_root_in_recordings.py  # migration chemins (usage ponctuel)
+│   ├── auto_record.py     # plusieurs prises d’affilée (-n / --samples, --interval)
+│   └── repo_paths.py      # défaut AICalibration/data
 └── legacy/                # batch hors-ligne — non utilisé par main.py
+    ├── acquisition_batch.py
+    ├── decimation_batch.py    # decimate_iq (API offline)
+    ├── detection_batch.py     # detect_presence (offline)
+    └── spectrogramme_batch.py
 ```
 
 Les enregistrements **supervisés** (`record_acquisition`) sont par défaut sous le
@@ -124,7 +127,7 @@ pip install numpy scipy matplotlib pyyaml pyadi-iio
 | Paquet       | Rôle                                              |
 |--------------|---------------------------------------------------|
 | `numpy`      | IQ, tableaux                                       |
-| `scipy`      | décimation IIR, fenêtres via spectrogramme, STFT   |
+| `scipy`      | décimation IIR, fenêtres (`signal.windows`), Butterworth clutter |
 | `matplotlib` | dashboard                                          |
 | `pyyaml`     | configuration                                      |
 | `pyadi-iio`  | Pluto                                              |
@@ -196,13 +199,13 @@ python utils/record_visualization.py --subset train --index 5
 |-----------------|------|
 | `sdr`           | `f_c`, `f_s`, gains, `uri`, taille de buffer |
 | `emission`      | `cw` / `cw_offset`, `f_offset` |
-| `decimation`    | `D`, `f_max_utile`, anti-repliement |
-| `clutter`       | suppression énergie statique (DC / fond) |
-| `windowing`     | type de fenêtre sur le segment `n_fft` avant FFT |
+| `decimation`    | `enable`, `D`, `f_max_utile`, anti-repliement |
+| `clutter`       | `mode` (`mean`/`iir`/`butterworth`), `alpha`, `butterworth_order`, `butterworth_cutoff` |
+| `windowing`     | `mode` : fenêtre appliquée au segment `n_fft` avant FFT |
 | `spectrogramme` | `n_fft`, `overlap`, `skip_warmup` |
-| `detection`     | bandes Fisher + ACF, `alpha`, fusion `w` |
-| `affichage`     | historique score, seuil (live) |
-| `bilan_liaison` | plage affichée / efficacité de bande |
+| `detection`     | `bande_respiration` / `bande_reference` (relatives à la porteuse), `alpha`, fusion `w`, `p_value_decades`, `acf_floor`, `acf_good` |
+| `affichage`     | `N_historique`, `seuil_proba`, `plein_ecran` |
+| `bilan_liaison` | scénarios `optimiste`/`pessimiste`, `B_eff_hz` → portée affichée |
 | `simulation`    | respiration synthétique, SNR, clutter |
 
 Détails dans les commentaires du YAML.
