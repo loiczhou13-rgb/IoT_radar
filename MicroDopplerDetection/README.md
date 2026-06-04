@@ -203,7 +203,7 @@ python utils/record_visualization.py --subset train --index 5
 | `clutter`       | `mode` (`mean`/`iir`/`butterworth`), `alpha`, `butterworth_order`, `butterworth_cutoff` |
 | `windowing`     | `mode` : fenêtre appliquée au segment `n_fft` avant FFT |
 | `spectrogramme` | `n_fft`, `overlap`, `skip_warmup` |
-| `detection`     | `bande_respiration` / `bande_reference` (relatives à la porteuse), `alpha`, fusion `w`, `p_value_decades`, `acf_floor`, `acf_good` |
+| `detection`     | `bande_respiration` / `bande_reference` (relatives à la porteuse), `alpha`, fusion `w`, `p_value_decades`, `acf_floor`, `acf_good`, `acf_buffer_seconds` |
 | `affichage`     | `N_historique`, `seuil_proba`, `plein_ecran` |
 | `bilan_liaison` | scénarios `optimiste`/`pessimiste`, `B_eff_hz` → portée affichée |
 | `simulation`    | respiration synthétique, SNR, clutter |

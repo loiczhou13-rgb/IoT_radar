@@ -131,7 +131,8 @@ def _acf_peak(
     if lag_max <= lag_min:
         return 0.0, None
 
-    segment = R_pos[lag_min: lag_max + 1]
+    lags = np.arange(lag_min, lag_max + 1)
+    segment = R_pos[lag_min: lag_max + 1] * (n / (n - lags))
     idx_local = int(np.argmax(segment))
     tau_max = lag_min + idx_local
     acf_peak = float(segment[idx_local])

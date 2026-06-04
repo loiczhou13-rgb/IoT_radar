@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""Relecture hors ligne d’un enregistrement — même tableau RX/TX que ``display.py``,
-sans panneau « score de présence » (les .npz n’embarquent plus ces séries).
+"""Offline replay of a recording — same RX/TX dashboard as ``display.py``,
+without the "presence score" panel (the .npz no longer carries those series).
 
-Exemples ::
+Examples ::
 
     cd MicroDopplerDetection
     python utils/record_visualization.py --subset train --index 1
 
     python utils/record_visualization.py --npz ../AICalibration/data/train/3.npz
 
-Le ``.npz`` doit contenir ``spectrogram_db``. Chemin YAML : ``--config``, la
-clé ``config_path`` dans le ``.npz``, ou à défaut le ``.json`` du même indice.
+The ``.npz`` must contain ``spectrogram_db``. YAML path: ``--config``, the
+``config_path`` key inside the ``.npz``, or otherwise the ``.json`` of the same index.
 """
 
 from __future__ import annotations
@@ -29,30 +29,37 @@ from matplotlib.animation import FuncAnimation
 
 _UTILS_DIR = Path(__file__).resolve().parent
 _ROOT = _UTILS_DIR.parent
-
-if str(_ROOT) not in sys.path:
-    sys.path.insert(0, str(_ROOT))
-
-from utils.repo_paths import default_recording_data_root  # noqa: E402
+_REPO_ROOT = _ROOT.parent
 
 
-def _ensure_root_on_path() -> None:
-    if str(_ROOT) not in sys.path:
-        sys.path.insert(0, str(_ROOT))
+def _ensure_paths() -> None:
+    """Make both ``utils.*`` (via the package dir) and ``MicroDopplerDetection.*``
+    (via the repo root, required by ``main.py``) importable, regardless of the
+    directory the script is launched from."""
+    for p in (_REPO_ROOT, _ROOT):
+        if str(p) not in sys.path:
+            sys.path.insert(0, str(p))
+
+
+_ensure_paths()
+
+from utils.repo_paths import default_recording_data_root
 
 
 def _load_main_module():
+    """Load the package's ``main.py`` unambiguously w.r.t. a third-party ``main`` module."""
     path = _ROOT / "main.py"
     spec = importlib.util.spec_from_file_location("microdoppler_main", path)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"Impossible de charger {path}")
     mod = importlib.util.module_from_spec(spec)
-    _ensure_root_on_path()
+    _ensure_paths()
     spec.loader.exec_module(mod)
     return mod
 
 
 def _resolve_npz_path(args: argparse.Namespace) -> Path:
+    """Resolve the ``.npz`` path from ``--npz`` or ``--subset``/``--index``."""
     if args.npz is not None:
         return Path(args.npz).expanduser().resolve()
     if args.subset is None or args.index is None:
@@ -70,6 +77,7 @@ def _resolve_npz_path(args: argparse.Namespace) -> Path:
 
 
 def _load_config_path_from_recording(npz_path: Path) -> str | None:
+    """Return the config path stored in the ``.npz`` (or its ``.json`` sidecar), if any."""
     with np.load(npz_path, allow_pickle=False) as z:
         if "config_path" in z.files:
             return str(np.asarray(z["config_path"]).item())
@@ -87,7 +95,7 @@ def _load_config_path_from_recording(npz_path: Path) -> str | None:
 
 
 def _label_from_json_sidecar(npz_path: Path) -> int | None:
-    """Lit ``label`` dans le ``.json`` voisin du ``.npz``."""
+    """Read ``label`` from the ``.json`` sidecar next to the ``.npz``."""
     legacy = npz_path.with_suffix(".json")
     if not legacy.is_file():
         return None
@@ -101,6 +109,10 @@ def _label_from_json_sidecar(npz_path: Path) -> int | None:
 
 
 def _frames_from_npz(data: Any) -> tuple[list[dict[str, Any]], int]:
+    """Build replay frames from a recording's ``spectrogram_db`` array.
+
+    Returns ``(frames, n_frames)``.
+    """
     if "spectrogram_db" not in data:
         raise SystemExit(
             "Ce .npz ne contient pas « spectrogram_db » — "
@@ -131,7 +143,8 @@ def _frames_from_npz(data: Any) -> tuple[list[dict[str, Any]], int]:
 
 
 def main() -> None:
-    _ensure_root_on_path()
+    """CLI entry point: replay a recorded ``.npz`` in the dashboard."""
+    _ensure_paths()
     from utils.display import DashboardRadar
 
     logging.basicConfig(

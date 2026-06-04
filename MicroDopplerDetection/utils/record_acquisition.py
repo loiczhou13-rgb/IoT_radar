@@ -1,23 +1,23 @@
 #!/usr/bin/env python3
-"""Enregistre les sorties du pipeline micro-Doppler pendant une durée fixe (sans GUI).
+"""Record the micro-Doppler pipeline outputs for a fixed duration (no GUI).
 
-Exemple — 2 minutes, jeu d’entraînement, prochain indice auto ::
+Example — 2 minutes, training set, next auto index ::
 
     cd MicroDopplerDetection
     python utils/record_acquisition.py --subset train --env salle --label 1 --duration 120
 
-Échantillon explicite ``AICalibration/data/train/7.*`` (label 0 = vide, 1 = présence / respiration) ::
+Explicit sample ``AICalibration/data/train/7.*`` (label 0 = empty, 1 = presence / breathing) ::
 
     python utils/record_acquisition.py --subset train --env salle --label 0 --index 7 --duration 60
 
-``--env`` doit être parmi les environnements reconnus (voir ``_VALID_ENVS`` dans ce module).
+``--env`` must be one of the recognised environments (see ``_VALID_ENVS`` in this module).
 
-Arborescence (racine par défaut : ``AICalibration/data`` du dépôt) ::
+Layout (default root: ``AICalibration/data`` in the repo) ::
 
     AICalibration/data/<train|test|val>/<n>.npz|.json|.iq
 
-Les métadonnées utiles pour l’entraînement sont dans le ``.npz`` ; un fichier
-``<n>.json`` est aussi écrit avec les mêmes infos (lecture humaine, inventaire).
+The metadata useful for training lives in the ``.npz``; a ``<n>.json`` file is
+also written with the same information (human-readable, inventory).
 """
 
 from __future__ import annotations
@@ -38,23 +38,27 @@ from scipy.io import wavfile
 
 _UTILS_DIR = Path(__file__).resolve().parent
 _ROOT = _UTILS_DIR.parent
+_REPO_ROOT = _ROOT.parent
 
-if str(_ROOT) not in sys.path:
-    sys.path.insert(0, str(_ROOT))
 
-from utils.repo_paths import default_recording_data_root  # noqa: E402
+def _ensure_paths() -> None:
+    """Make both ``utils.*`` (via the package dir) and ``MicroDopplerDetection.*``
+    (via the repo root, required by ``main.py``) importable, regardless of the
+    directory the script is launched from."""
+    for p in (_REPO_ROOT, _ROOT):
+        if str(p) not in sys.path:
+            sys.path.insert(0, str(p))
 
-# À étendre lorsque de nouveaux lieux de mesure sont supportés.
+
+_ensure_paths()
+
+from utils.repo_paths import default_recording_data_root
+
 _VALID_ENVS: tuple[str, ...] = ("salle",)
 
 
-def _ensure_root_on_path() -> None:
-    if str(_ROOT) not in sys.path:
-        sys.path.insert(0, str(_ROOT))
-
-
 def _write_iq_complex64(path: Path, iq: np.ndarray) -> None:
-    """Écrit des échantillons IQ en fichier ``.iq`` brut (dtype complex64 / float32×2)."""
+    """Write IQ samples to a raw ``.iq`` file (dtype complex64 / float32×2)."""
     if iq.size == 0:
         raise ValueError("Signal IQ vide — impossible d'écrire le .iq.")
     z = np.asarray(iq, dtype=np.complex64)
@@ -62,7 +66,7 @@ def _write_iq_complex64(path: Path, iq: np.ndarray) -> None:
 
 
 def _write_iq_stereo_wav(path: Path, iq: np.ndarray, sample_rate_hz: float) -> None:
-    """Écrit le complexe IQ en WAV stéréo float32 (I = canal 0, Q = canal 1)."""
+    """Write complex IQ to a stereo float32 WAV (I = channel 0, Q = channel 1)."""
     if iq.size == 0:
         raise ValueError("Signal IQ vide — impossible d'écrire le WAV.")
     i = np.asarray(iq.real, dtype=np.float32)
@@ -72,19 +76,19 @@ def _write_iq_stereo_wav(path: Path, iq: np.ndarray, sample_rate_hz: float) -> N
 
 
 def _load_main_module():
-    """Charge ``main.py`` du paquet sans ambiguïté avec un module ``main`` tiers."""
+    """Load the package's ``main.py`` unambiguously w.r.t. a third-party ``main`` module."""
     path = _ROOT / "main.py"
     spec = importlib.util.spec_from_file_location("microdoppler_main", path)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"Impossible de charger {path}")
     mod = importlib.util.module_from_spec(spec)
-    _ensure_root_on_path()
+    _ensure_paths()
     spec.loader.exec_module(mod)
     return mod
 
 
 def _next_sample_index(split_dir: Path) -> int:
-    """Plus grand indice ``n`` présent (fichiers ``n.npz``) + 1, ou 1 si vide."""
+    """Largest existing index ``n`` (``n.npz`` files) + 1, or 1 if empty."""
     if not split_dir.is_dir():
         return 1
     best = 0
@@ -107,7 +111,7 @@ def build_record_argument_parser(
     *,
     description: str | None = None,
 ) -> argparse.ArgumentParser:
-    """Construit le parser CLI (réutilisable par ``auto_record``)."""
+    """Build the CLI parser (reusable by ``auto_record``)."""
     desc = description or (
         "Acquisition micro-Doppler : enregistrer spectrogramme, paramètres, "
         "étiquettes, métadonnées et signal IQ décimé sous "
@@ -195,10 +199,15 @@ def build_record_argument_parser(
 
 
 def parse_record_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Parse the recording CLI arguments (defaults to ``sys.argv``)."""
     return build_record_argument_parser().parse_args(argv)
 
 
 def run(args: argparse.Namespace | None = None) -> Path:
+    """Run one acquisition and write the ``.npz``/``.json`` (+ optional IQ/WAV).
+
+    Returns the path to the written ``.npz``.
+    """
     if args is None:
         args = parse_record_args()
     md = _load_main_module()
@@ -462,7 +471,8 @@ def run(args: argparse.Namespace | None = None) -> Path:
 
 
 def main() -> None:
-    _ensure_root_on_path()
+    """CLI entry point: run a single acquisition."""
+    _ensure_paths()
     run()
 
 

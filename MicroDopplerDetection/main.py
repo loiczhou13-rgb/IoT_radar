@@ -22,6 +22,11 @@ import sys
 from pathlib import Path
 from typing import Any, Generator
 
+_PACKAGE_ROOT = Path(__file__).resolve().parent
+_REPO_ROOT = _PACKAGE_ROOT.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
 import yaml
 import numpy as np
 
@@ -303,6 +308,9 @@ def _streaming_frame_generator(
     acf_floor = float(det_cfg["acf_floor"])
     acf_good = float(det_cfg["acf_good"])
 
+    acf_buffer_seconds = float(det_cfg["acf_buffer_seconds"])
+    acf_len = max(1, int(round(acf_buffer_seconds * f_s_dec)))
+
     user_warmup = spec_cfg.get("skip_warmup")
     auto_warmup = _auto_skip_warmup(clu_cfg, f_s_dec, hop)
     skip_warmup = int(user_warmup) if user_warmup is not None else auto_warmup
@@ -330,11 +338,8 @@ def _streaming_frame_generator(
         f_off,
     )
 
-    if f_off != 0.0:
-        t_seg = np.arange(n_fft, dtype=np.float64) / f_s_dec
-        demod_lo = np.exp(-1j * 2.0 * np.pi * f_off * t_seg)
-    else:
-        demod_lo = None
+    phi_iq_hist = np.empty(0, dtype=np.complex128)
+    n_dec_seen = 0
 
     frame_counter = 0
 
@@ -347,9 +352,20 @@ def _streaming_frame_generator(
                 np.asarray(iq_filt, dtype=np.complex64).copy()
             )
 
+        n_chunk = len(iq_filt)
+        if f_off != 0.0:
+            k = np.arange(n_chunk, dtype=np.float64) + n_dec_seen
+            demod = np.exp(-1j * 2.0 * np.pi * f_off * k / f_s_dec)
+            iq_demod = iq_filt.astype(np.complex128) * demod
+        else:
+            iq_demod = iq_filt.astype(np.complex128)
+        n_dec_seen += n_chunk
+        phi_iq_hist = np.concatenate((phi_iq_hist, iq_demod))
+        if len(phi_iq_hist) > acf_len:
+            phi_iq_hist = phi_iq_hist[-acf_len:]
+
         buf = np.concatenate((buf, np.asarray(iq_filt, dtype=np.complex64)))
 
-        # Slide an n_fft window forward by ``hop`` samples per STFT column.
         while len(buf) >= n_fft:
             segment = buf[:n_fft].copy()
             buf = buf[hop:]
@@ -363,17 +379,13 @@ def _streaming_frame_generator(
 
             col = compute_single_column(segment, f_s_dec, f_c, window)
 
-            if demod_lo is not None:
-                segment_demod = segment.astype(np.complex128) * demod_lo
-            else:
-                segment_demod = segment.astype(np.complex128)
-            phi_seg = np.unwrap(np.angle(segment_demod))
+            phi_hist = np.unwrap(np.angle(phi_iq_hist))
 
             score_presence, p_value_f, acf_peak, fv_estimated = (
                 detect_presence_column(
                     col_db=col.col_db,
                     f_hz=col.f_hz,
-                    phi_buffer=phi_seg,
+                    phi_buffer=phi_hist,
                     f_s=f_s_dec,
                     bande_respiration=bande_resp_bb,
                     bande_reference=bande_ref_bb,
@@ -439,8 +451,7 @@ def _build_context(cfg: dict[str, Any]) -> dict[str, Any]:
     dv_mps = df_hz * wavelength / 2.0
 
     clutter_mode = cfg["clutter"]["mode"]
-    # Baseband respiration band, relative to the carrier.  Detection looks at
-    # both sidebands (|f - f_offset| in this band), hence displayed as ``±``.
+    
     bande_resp_bb = list(det_cfg["bande_respiration"])
     B_eff_hz = float(cfg["bilan_liaison"]["B_eff_hz"])
 

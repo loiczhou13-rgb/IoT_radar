@@ -29,8 +29,8 @@ class DashboardRadar:
     row 2 is only the info box spanning the full width — no score curve.
 
     When the score panel is shown, the presence score is the fused output of
-    the Fisher band-power F-test and the phase-autocorrelation peak.  The binary
-    alert is driven by the Fisher p-value vs. ``detection.alpha``.
+    the Fisher band-power F-test and the phase-autocorrelation peak.  The
+    dashboard status is driven by the fused score vs. ``affichage.seuil_proba``.
 
     Architecture
     ------------
@@ -301,7 +301,7 @@ class DashboardRadar:
         p_value_f = frame_data["p_value_f"]
         acf_peak = frame_data["acf_peak"]
         fv_estimated = frame_data["fv_estimated"]
-        detected = frame_data["detection"]
+        score_detected = score >= self._seuil_score
 
         # Panel 3a — Presence score history
         self._score_history.append(score)
@@ -317,8 +317,10 @@ class DashboardRadar:
         self._last_fv_estimated = fv_estimated
         self._update_info_box()
 
-        # Status feedback (driven by Fisher alert)
-        if detected:
+        # Status feedback follows the same fused-score threshold drawn on the
+        # score panel.  The raw Fisher alert remains available in frame_data for
+        # diagnostics, but it should not override the user-visible score.
+        if score_detected:
             self._status_text.set_text(f"RESPIRATION DÉTECTÉE — Trame {n_trame}")
             self._status_text.set_color("green")
         else:

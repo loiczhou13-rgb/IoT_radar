@@ -1,17 +1,16 @@
 #!/usr/bin/env python3
-"""Enchaîne plusieurs acquisitions ``record_acquisition`` avec la même configuration.
+"""Chain several ``record_acquisition`` captures with the same configuration.
 
-Exemple — 5 échantillons train, salle, label 1, 60 s chacun, 2 min de pause entre deux ::
+Example — 5 train samples, salle, label 1, 60 s each, 2 min pause in between ::
 
     cd MicroDopplerDetection
     python utils/auto_record.py -n 5 --interval 120 \\
         --subset train --env salle --label 1 --duration 60
 
-``--interval`` : secondes d’attente **après la fin** d’un enregistrement avant
-de lancer le suivant (0 par défaut).
+``--interval`` : seconds to wait **after a recording finishes** before starting
+the next one (0 by default).
 
-Les indices d’échantillon sont toujours auto (« prochain libre ») : ne pas
-passer ``--index``.
+Sample indices are always automatic ("next free"): do not pass ``--index``.
 """
 
 from __future__ import annotations
@@ -24,15 +23,21 @@ from pathlib import Path
 
 _UTILS_DIR = Path(__file__).resolve().parent
 _ROOT = _UTILS_DIR.parent
+_REPO_ROOT = _ROOT.parent
 
 
-def _ensure_root_on_path() -> None:
-    if str(_ROOT) not in sys.path:
-        sys.path.insert(0, str(_ROOT))
+def _ensure_paths() -> None:
+    """Make both ``utils.*`` (via the package dir) and ``MicroDopplerDetection.*``
+    (via the repo root, required by ``main.py``) importable, regardless of the
+    directory the script is launched from."""
+    for p in (_REPO_ROOT, _ROOT):
+        if str(p) not in sys.path:
+            sys.path.insert(0, str(p))
 
 
 def main() -> None:
-    _ensure_root_on_path()
+    """Parse CLI arguments and run ``record_acquisition`` ``--samples`` times."""
+    _ensure_paths()
     from utils.record_acquisition import build_record_argument_parser, run as record_run
 
     p = build_record_argument_parser(

@@ -190,6 +190,14 @@ detection:
   acf_floor: 0.2
   acf_good: 0.7
 
+  # Durée (s) de l'historique de phase utilisé par l'ACF, indépendante de
+  # n_fft.  Doit couvrir PLUSIEURS périodes respiratoires : la période la plus
+  # longue détectable est 1 / bande_respiration[0] (ex. 1/0.1 = 10 s), donc
+  # viser ≥ 3–5× cette valeur évite que l'effet de bord n'écrase le pic.
+  # Compromis : plus la fenêtre est longue, plus la latence d'établissement
+  # (remplissage initial) est grande.  20 s ≈ 6 cycles à 0.3 Hz.
+  acf_buffer_seconds: 20.0
+
 
 # ---------------------------------------------------------------------------
 # Affichage (Dashboard matplotlib — 3 panneaux + encadré info)
