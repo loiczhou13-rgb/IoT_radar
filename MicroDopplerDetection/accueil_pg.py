@@ -4,7 +4,7 @@ import pygame
 import pygame.freetype
 import numpy as np
 import matplotlib.pyplot as plt
-from main import main
+#from main import main
 
 # =========================================================
 # INIT
@@ -230,7 +230,7 @@ def courbe_temps_reel():
     x_data = []
     y_data = []
 
-    for i in range(220):
+    for i in range(2220):
 
         x_data.append(i)
         y_data.append(np.sin(i * 0.1))
@@ -254,7 +254,7 @@ def courbe_temps_reel():
 
         ax.grid(alpha=0.25)
 
-        plt.pause(0.03)
+        plt.pause(0.001)
 
         if not plt.fignum_exists("Courbe Temps Réel"):
             break
@@ -310,7 +310,7 @@ while running:
 
                 if btn_graph.collidepoint(mouse_pos):
                     threading.Thread(
-                        target=main,
+                        target=courbe_temps_reel,
                         daemon=True
                     ).start()
 

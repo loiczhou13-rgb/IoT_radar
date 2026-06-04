@@ -5,6 +5,7 @@ import matplotlib
 matplotlib.use("TkAgg")
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
+#from main import main
 
 # ================= CONFIG =================
 WIDTH, HEIGHT = 1000, 700
