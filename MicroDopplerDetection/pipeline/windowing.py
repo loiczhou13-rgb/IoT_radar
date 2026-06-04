@@ -5,16 +5,11 @@ from __future__ import annotations
 import logging
 
 import numpy as np
-from scipy.signal import windows as _win
+from scipy.signal import windows
 
 logger = logging.getLogger(__name__)
 
-_WINDOW_REGISTRY: dict[str, str] = {
-    "hann": "hann",
-    "hamming": "hamming",
-    "blackman": "blackman",
-    "flattop": "flattop",
-}
+_VALID_WINDOWS = ("hann", "hamming", "blackman", "flattop")
 
 
 def get_window(mode: str, n: int) -> np.ndarray:
@@ -61,12 +56,12 @@ def get_window(mode: str, n: int) -> np.ndarray:
         logger.debug("Fenêtre rectangulaire (none) — %d points", n)
         return np.ones(n, dtype=np.float64)
 
-    if mode not in _WINDOW_REGISTRY:
+    if mode not in _VALID_WINDOWS:
         raise ValueError(
             f"Fenêtre inconnue : '{mode}'. "
-            f"Utiliser 'hann', 'hamming', 'blackman', 'flattop' ou 'none'."
+            f"Utiliser {', '.join(repr(m) for m in _VALID_WINDOWS)} ou 'none'."
         )
 
-    w = getattr(_win, _WINDOW_REGISTRY[mode])(n)
+    w = getattr(windows, mode)(n)
     logger.debug("Fenêtre '%s' — %d points", mode, n)
     return np.asarray(w, dtype=np.float64)

@@ -10,7 +10,7 @@ import logging
 
 import numpy as np
 from scipy.signal import correlate
-from scipy.stats import f as _scipy_f
+from scipy.stats import f
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +30,7 @@ def _fisher_pvalue(
     Parameters
     ----------
     S_lin : numpy.ndarray
-        Linear-scale power spectrum (1-D column or 2-D spectrogram).
+        Linear-scale power spectrum (1-D column or 2-D spectrogram in batch mode).
     f_hz : numpy.ndarray
         Centred frequency axis (Hz).
     bande_respiration, bande_reference : tuple[float, float]
@@ -45,8 +45,7 @@ def _fisher_pvalue(
     -----
     Under H₀ of complex white Gaussian noise, the FFT-bin powers are
     proportional to χ²(2) variables, so the ratio of band means follows
-    F(n_sig, n_ref).  The p-value is the false-alarm probability of the
-    observed ratio under H₀.
+    F(2*n_sig, 2*n_ref).
     """
     f_lo_sig, f_hi_sig = bande_respiration
     f_lo_ref, f_hi_ref = bande_reference
@@ -72,7 +71,7 @@ def _fisher_pvalue(
 
     eps = 1e-30
     ratio = p_sig / (p_ref + eps)
-    p_value = float(_scipy_f.sf(ratio, dfn=n_sig, dfd=n_ref))
+    p_value = float(f.sf(ratio, dfn=2*n_sig, dfd=2*n_ref))
     return p_value, ratio
 
 
@@ -137,22 +136,53 @@ def _fusion_score(
     p_value_f: float,
     acf_peak: float,
     w: float = 0.5,
+    *,
+    p_value_decades: float = 3.0,
+    acf_floor: float = 0.2,
+    acf_good: float = 0.7,
 ) -> float:
     """Fuse the Fisher and ACF scores into a presence score in [0, 1].
+
+    Each raw indicator is mapped to ``[0, 1]`` through an explicit transform
+    before the weighted sum, rather than being clipped as-is:
+
+    * spectral — the F-test p-value is mapped on a log scale, so that a
+      p-value of ``10**(-p_value_decades)`` (or smaller) saturates to 1 and a
+      p-value of 1 maps to 0.  This reflects that confidence grows by orders
+      of magnitude, not linearly with ``1 - p``.
+    * temporal — the ACF peak is ramped linearly between a noise floor
+      (``acf_floor`` → 0) and a "strong periodicity" level (``acf_good`` → 1),
+      which is more meaningful than treating the raw peak as a score.
 
     Parameters
     ----------
     p_value_f : float
         P-value of the Fisher F-test.
     acf_peak : float
-        Normalised autocorrelation peak (clipped to [0, 1]).
+        Normalised autocorrelation peak (may be negative).
     w : float, optional
-        Weight of the Fisher score.  ``w=1`` → purely spectral,
+        Weight of the spectral score.  ``w=1`` → purely spectral,
         ``w=0`` → purely time-domain.  Default 0.5.
+    p_value_decades : float, optional
+        Number of decades below 1 at which the spectral score saturates to 1
+        (e.g. ``3.0`` → ``p ≤ 1e-3`` gives score 1).  Default 3.0.
+    acf_floor, acf_good : float, optional
+        ACF peak values mapped to 0 and 1 respectively.  Default 0.2 / 0.7.
     """
-    score_F = float(np.clip(1.0 - p_value_f, 0.0, 1.0))
-    score_acf = float(np.clip(acf_peak, 0.0, 1.0))
-    w = float(np.clip(w, 0.0, 1.0))
+    if p_value_decades <= 0:
+        raise ValueError("p_value_decades doit être > 0.")
+    if acf_good <= acf_floor:
+        raise ValueError("acf_good doit être > acf_floor.")
+    if w < 0 or w > 1:
+        raise ValueError("w doit être entre 0 et 1.")
+
+    eps = 1e-30
+    score_F = float(
+        np.clip(-np.log10(p_value_f + eps) / p_value_decades, 0.0, 1.0)
+    )
+    score_acf = float(
+        np.clip((acf_peak - acf_floor) / (acf_good - acf_floor), 0.0, 1.0)
+    )
     return float(w * score_F + (1.0 - w) * score_acf)
 
 

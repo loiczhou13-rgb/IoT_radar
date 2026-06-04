@@ -17,8 +17,7 @@ The ``adi.Pluto.tx()`` API casts ``complex64`` samples directly to
 ``pyadi-iio`` aligns its samples to the upper bits of the ``int16`` word,
 so unit-amplitude IQ has to be multiplied by ``2**14`` to reach DAC
 full-scale.  Without this scaling the carrier sits at ~1 LSB
-(≈ −84 dBFS) and is invisible on a spectrum analyser, which is exactly
-what is observed when the radar appears to "transmit only at startup".
+(≈ −84 dBFS) and is invisible on a spectrum analyser.
 """
 
 
