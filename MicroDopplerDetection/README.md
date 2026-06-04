@@ -1,38 +1,32 @@
 # Radar Micro-Doppler — Détection de survivants ensevelis
 
-Système radar portable à onde continue (CW) pour détecter la respiration de
-personnes ensevelies sous des décombres (séisme, avalanche, effondrement).
+Système radar portable à onde continue (CW) pour détecter la respiration de personnes ensevelies sous des décombres (séisme, avalanche, effondrement).
 
-Matériel visé : **PlutoSDR** (ADALM-PLUTO, AD9363).  
+Matériel visé : **PlutoSDR** (ADALM-PLUTO, AD9363).
 Orchestration **streaming** dans **`main.py`**.
 
 ---
 
 ## Contexte physique
 
-Un signal CW à **f_c ≈ 2.4 GHz** (λ ≈ 12.5 cm) illumine la scène. Le mouvement
-thoracique (**f_v ≈ 0,2–0,5 Hz**, amplitude **D ≈ 5–15 mm**) module la phase du
-signal reçu. En bande de base :
+Un signal CW à **f_c ≈ 2.4 GHz** (λ ≈ 12.5 cm) illumine la scène. Le mouvement thoracique (**f_v ≈ 0,2–0,5 Hz**, amplitude **D ≈ 5–15 mm**) module la phase du signal reçu. En bande de base :
 
-```
-x(t) = exp(j·φ(t))     avec  φ(t) = φ₀ − (4πD/λ)·sin(2π·f_v·t)
-```
+$$x(t) = e^{j\varphi(t)}, \qquad \varphi(t) = \varphi_0 - \frac{4\pi D}{\lambda}\sin(2\pi f_v t)$$
 
-Les raies micro-Doppler autour de **±f_v** sont analysées après STFT.
+Les raies micro-Doppler autour de **±f_v** sont analysées après STFT (Short-Time Fourier Transform).
 
 ---
 
 ## Architecture du pipeline (streaming)
 
-La fenêtre FFT utilisée pour la colonne spectrale est choisie dans
-**`configs/config.yaml`** (`windowing.mode`) et instanciée par **`pipeline/windowing.py`** (`get_window`), puis passée à **`spectrogramme.compute_single_column`** — ce n’est pas une étape “disque” séparée, mais un bloc fonctionnel distinct entre le segment IQ et la FFT.
+La fenêtre FFT utilisée pour la colonne spectrale est choisie dans **`configs/config.yaml`** (`windowing.mode`) et instanciée par **`pipeline/windowing.py`** (`get_window`), puis passée à **`spectrogramme.compute_single_column`**.
 
 ```
-┌─────────────┐      ┌────────────────┐      ┌──────────────┐
+┌─────────────┐      ┌────────────────┐      ┌───────────────┐
 │ emission.py │─────▶│ acquisition.py │─────▶│decimation.py │
-│  buffer TX  │      │ IQ Pluto / sim │      │ Decimator    │
-│  ×2¹⁴ scale │      │                │      │ stateful     │
-└─────────────┘      └────────────────┘      └──────┬───────┘
+│  buffer TX  │      │ IQ Pluto / sim │      │ Decimator     │
+│  ×2¹⁴ scale │      │                │      │ stateful      │
+└─────────────┘      └────────────────┘      └──────┬────────┘
                                                     │
                                             ┌───────▼────────┐
                                             │   clutter.py   │
@@ -41,35 +35,33 @@ La fenêtre FFT utilisée pour la colonne spectrale est choisie dans
                                                     │ buffer n_fft + hop
                       ┌─────────────────────────────┼─────────────────────────┐
                       │                             │                         │
-                      │                      ┌──────▼───────┐                  │
-                      │                      │ windowing.py │ ← config YAML    │
-                      │                      │  get_window  │                  │
-                      │                      └──────┬───────┘                  │
+                      │                      ┌──────▼───────┐                 │
+                      │                      │ windowing.py │ ← config YAML   │
+                      │                      │  get_window  │                 │
+                      │                      └──────┬───────┘                 │
                       │                             │ fenêtre × segment IQ    │
-                      │                      ┌──────▼───────┐                  │
-                      │                      │spectrogramme │                  │
-                      │                      │compute_single│                  │
-                      │                      │   _column    │ → col_db         │
-                      │                      └──────┬───────┘                  │
+                      │                      ┌──────▼───────┐                 │
+                      │                      │spectrogramme │                 │
+                      │                      │compute_single│                 │
+                      │                      │   _column    │ → col_db        │
+                      │                      └──────┬───────┘                 │
                       └─────────────────────────────┼─────────────────────────┘
                                                     │
-                                       ┌────────────▼─────────────┐
+                                       ┌────────────▼────────────┐
                                        │      detection.py       │
                                        │ Fisher F-test + ACF     │
                                        │ → score (temps réel     │
                                        │    uniquement, pas dans │
-                                       │    les .npz prod.)       │
-                                       └────────────┬─────────────┘
+                                       │    les .npz prod.)      │
+                                       └────────────┬────────────┘
                                                     │
-                                       ┌────────────▼─────────────┐
+                                       ┌────────────▼───────────┐
                                        │    utils/display.py    │
                                        │ Dashboard matplotlib   │
                                        └────────────────────────┘
 ```
 
-**Ordre logique dans `main.py`** : après décimation et clutter, un **anneau** de
-longueur `n_fft` avance par pas `hop`. Sur chaque fenêtre valide (hors warm-up)
-: **segment** → multiplication par la **fenêtre** → **STFT** (une colonne) → **détection**.
+**Ordre logique dans `main.py`** : après décimation et clutter, un **anneau** de longueur `n_fft` avance par pas `hop`. Sur chaque fenêtre valide (hors warm-up) : **segment** → multiplication par la **fenêtre** → **STFT** (une colonne) → **détection**.
 
 ---
 
@@ -77,8 +69,7 @@ longueur `n_fft` avance par pas `hop`. Sur chaque fenêtre valide (hors warm-up)
 
 ```
 MicroDopplerDetection/
-├── main.py                 # CLI streaming — point d’entrée principal
-├── accueil_pg.py           # interface utilisateur (hors chaîne temps réel)
+├── main.py                # CLI streaming — point d’entrée principal
 ├── configs/
 │   └── config.yaml        # source de vérité pipeline + fenêtrage + STFT + détection
 ├── logs/                  # radar_<timestamp>.log si activé dans la config
@@ -93,8 +84,8 @@ MicroDopplerDetection/
 ├── utils/
 │   ├── display.py         # Dashboard temps réel ou relecture sans panneau score
 │   ├── record_acquisition.py
-│   ├── record_visualization.py  # relecture .npz (+ label dans le titre si présent)
-│   ├── auto_record.py     # plusieurs prises d’affilée (-n / --samples, --interval)
+│   ├── record_visualization.py
+│   ├── auto_record.py
 │   └── repo_paths.py      # défaut AICalibration/data
 └── legacy/                # batch hors-ligne — non utilisé par main.py
     ├── acquisition_batch.py
@@ -103,9 +94,7 @@ MicroDopplerDetection/
     └── spectrogramme_batch.py
 ```
 
-Les enregistrements **supervisés** (`record_acquisition`) sont par défaut sous le
-dépôt voisin **`../AICalibration/data/<train|test|val>/<index>.*`**. Voir
-**`utils/repo_paths.default_recording_data_root()`**.
+Les enregistrements **supervisés** (`record_acquisition`) sont par défaut sous le dépôt voisin **`../AICalibration/data/<train|test|val>/<index>.*`**. Voir **`utils/repo_paths.default_recording_data_root()`**.
 
 ---
 
@@ -209,16 +198,6 @@ python utils/record_visualization.py --subset train --index 5
 | `simulation`    | respiration synthétique, SNR, clutter |
 
 Détails dans les commentaires du YAML.
-
----
-
-## Pièges courants (résumé)
-
-1. **ADC saturé** — baisser `rx_gain` ou le `tx_gain`.
-2. **Pic DC** — `cw_offset`, clutter plus agressif.
-3. **Pas d’émission visible** — mise à l’échelle DAC `2**14` déjà dans `emission.py`.
-4. **Aliasing après décimation** — respecter Shannon ; message d’erreur explicite possible.
-5. **Module `utils` introuvable** en lançant `python utils/*.py` — exécuter depuis `MicroDopplerDetection/` ; les scripts insèrent la racine du paquet dans `sys.path` avant les imports internes.
 
 ---
 
