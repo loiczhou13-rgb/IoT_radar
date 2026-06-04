@@ -178,6 +178,18 @@ detection:
   # 0.5 → équilibre entre les deux tests (recommandé).
   w: 0.5
 
+  # --- Transformation des indices bruts en scores [0, 1] avant fusion ---
+  # Score spectral : échelle log de la p-value du test de Fisher.
+  # p_value ≤ 10^(-p_value_decades) → score 1 ; p_value = 1 → score 0.
+  # 3.0 → une p-value de 1e-3 (ou moins) sature le score spectral à 1.
+  p_value_decades: 3.0
+
+  # Score temporel : rampe linéaire du pic d'autocorrélation (phase).
+  # acf_peak ≤ acf_floor → score 0 ; acf_peak ≥ acf_good → score 1.
+  # acf_floor = plancher de bruit ACF, acf_good = périodicité franche.
+  acf_floor: 0.2
+  acf_good: 0.7
+
 
 # ---------------------------------------------------------------------------
 # Affichage (Dashboard matplotlib — 3 panneaux + encadré info)

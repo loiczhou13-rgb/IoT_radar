@@ -3,15 +3,12 @@
 Usage
 -----
 Hardware mode (continuous, default config)::
-
     python -m MicroDopplerDetection.main
 
 Simulation mode (continuous)::
-
     python -m MicroDopplerDetection.main --simulation
 
 Custom config file::
-
     python -m MicroDopplerDetection.main --config MicroDopplerDetection/configs/my.yaml
 """
 
@@ -22,7 +19,6 @@ import datetime as _dt
 import logging
 import math
 import sys
-from collections import deque
 from pathlib import Path
 from typing import Any, Generator
 
@@ -112,31 +108,15 @@ def _radar_range(
     return float((numerator / denominator) ** 0.25)
 
 
-def _compute_range(
-    cfg: dict[str, Any],
-    f_s_dec: float,
-    n_fft: int,
-) -> tuple[float, float]:
+def _compute_range(cfg: dict[str, Any]) -> tuple[float, float]:
     """Return ``(R_min, R_max)`` — pessimistic and optimistic ranges (m)."""
-    bl = cfg.get("bilan_liaison", {})
-    f_c = cfg["sdr"]["f_c"]
+    bl = cfg["bilan_liaison"]
+    f_c = float(cfg["sdr"]["f_c"])
     wavelength = _SPEED_OF_LIGHT / f_c
-    B_hz = bl.get("B_eff_hz", f_s_dec / n_fft)
+    B_hz = float(bl["B_eff_hz"])
 
-    defaults_opt = {
-        "P_tx_dBm": -13, "G_tx_dBi": 2, "G_rx_dBi": 2,
-        "sigma_m2": 0.5, "NF_dB": 4, "L_sys_dB": 3, "SNR_min_dB": 3,
-    }
-    defaults_pes = {
-        "P_tx_dBm": -13, "G_tx_dBi": 0, "G_rx_dBi": 0,
-        "sigma_m2": 0.05, "NF_dB": 6, "L_sys_dB": 25, "SNR_min_dB": 3,
-    }
-
-    params_opt = {k: bl.get("optimiste", {}).get(k, v) for k, v in defaults_opt.items()}
-    params_pes = {k: bl.get("pessimiste", {}).get(k, v) for k, v in defaults_pes.items()}
-
-    R_max = _radar_range(params_opt, wavelength, B_hz)
-    R_min = _radar_range(params_pes, wavelength, B_hz)
+    R_max = _radar_range(bl["optimiste"], wavelength, B_hz)
+    R_min = _radar_range(bl["pessimiste"], wavelength, B_hz)
 
     logger.info(
         "Portée effective — R_min = %.1f m (pire-cas) / R_max = %.1f m (optimiste) "
@@ -298,7 +278,7 @@ def _streaming_frame_generator(
 
     do_decimate = dec_cfg.get("enable", True)
     D = int(dec_cfg["D"]) if do_decimate else 1
-    f_max_utile = float(dec_cfg.get("f_max_utile", 10.0))
+    f_max_utile = float(dec_cfg["f_max_utile"])
 
     f_off = _resolve_f_offset(cfg)
     bande_resp_bb = tuple(det_cfg["bande_respiration"])
@@ -311,22 +291,23 @@ def _streaming_frame_generator(
     clutter_filter = ClutterFilter(
         mode=clu_cfg["mode"],
         fs=f_s_dec,
-        alpha=clu_cfg.get("alpha", 0.9999),
-        butterworth_order=clu_cfg.get("butterworth_order", 2),
-        butterworth_cutoff=clu_cfg.get("butterworth_cutoff", 0.05),
+        alpha=float(clu_cfg["alpha"]),
+        butterworth_order=int(clu_cfg["butterworth_order"]),
+        butterworth_cutoff=float(clu_cfg["butterworth_cutoff"]),
     )
     window = get_window(win_cfg["mode"], n_fft)
 
-    bande_resp_spec = (bande_resp_bb[0] + f_off, bande_resp_bb[1] + f_off)
-    bande_ref_spec = (bande_ref_bb[0] + f_off, bande_ref_bb[1] + f_off)
-    w = float(det_cfg.get("w", 0.5))
-    alpha_alert = float(det_cfg.get("alpha", 0.01))
+    w = float(det_cfg["w"])
+    alpha_alert = float(det_cfg["alpha"])
+    p_value_decades = float(det_cfg["p_value_decades"])
+    acf_floor = float(det_cfg["acf_floor"])
+    acf_good = float(det_cfg["acf_good"])
 
     user_warmup = spec_cfg.get("skip_warmup")
     auto_warmup = _auto_skip_warmup(clu_cfg, f_s_dec, hop)
     skip_warmup = int(user_warmup) if user_warmup is not None else auto_warmup
 
-    ring: deque[np.complex64] = deque(maxlen=n_fft)
+    buf = np.empty(0, dtype=np.complex64)
     iq_stream = _build_iq_stream(cfg, simulation)
 
     logger.info(
@@ -340,14 +321,13 @@ def _streaming_frame_generator(
         f_off,
     )
     logger.info(
-        "Bandes spectrales — respiration=%.1f–%.1f Hz, référence=%.1f–%.1f Hz "
-        "(baseband respiration=%.2f–%.2f Hz pour ACF)",
-        bande_resp_spec[0],
-        bande_resp_spec[1],
-        bande_ref_spec[0],
-        bande_ref_spec[1],
+        "Bandes (relatives à la porteuse) — respiration=%.2f–%.2f Hz, "
+        "référence=%.2f–%.2f Hz, centre spectral f_offset=%.1f Hz",
         bande_resp_bb[0],
         bande_resp_bb[1],
+        bande_ref_bb[0],
+        bande_ref_bb[1],
+        f_off,
     )
 
     if f_off != 0.0:
@@ -357,7 +337,6 @@ def _streaming_frame_generator(
         demod_lo = None
 
     frame_counter = 0
-    samples_since_last_fft = 0
 
     for raw_buf in iq_stream:
         iq_dec = decimator(raw_buf)
@@ -368,11 +347,12 @@ def _streaming_frame_generator(
                 np.asarray(iq_filt, dtype=np.complex64).copy()
             )
 
-        ring.extend(iq_filt)
-        samples_since_last_fft += len(iq_filt)
+        buf = np.concatenate((buf, np.asarray(iq_filt, dtype=np.complex64)))
 
-        while len(ring) == n_fft and samples_since_last_fft >= hop:
-            samples_since_last_fft -= hop
+        # Slide an n_fft window forward by ``hop`` samples per STFT column.
+        while len(buf) >= n_fft:
+            segment = buf[:n_fft].copy()
+            buf = buf[hop:]
             frame_counter += 1
 
             if frame_counter <= skip_warmup:
@@ -380,8 +360,6 @@ def _streaming_frame_generator(
                     "Warm-up : trame %d/%d ignorée", frame_counter, skip_warmup,
                 )
                 continue
-
-            segment = np.fromiter(ring, dtype=np.complex64, count=n_fft)
 
             col = compute_single_column(segment, f_s_dec, f_c, window)
 
@@ -397,10 +375,13 @@ def _streaming_frame_generator(
                     f_hz=col.f_hz,
                     phi_buffer=phi_seg,
                     f_s=f_s_dec,
-                    bande_respiration_spectral=bande_resp_spec,
-                    bande_reference_spectral=bande_ref_spec,
-                    bande_respiration_baseband=bande_resp_bb,
+                    bande_respiration=bande_resp_bb,
+                    bande_reference=bande_ref_bb,
+                    f_center=f_off,
                     w=w,
+                    p_value_decades=p_value_decades,
+                    acf_floor=acf_floor,
+                    acf_good=acf_good,
                 )
             )
             alert = bool(p_value_f < alpha_alert)
@@ -451,22 +432,21 @@ def _build_context(cfg: dict[str, Any]) -> dict[str, Any]:
         np.fft.fftfreq(len(tx_buffer), d=1.0 / f_s)
     ).astype(np.float64)
 
-    R_min, R_max = _compute_range(cfg, f_s_dec, n_fft)
+    R_min, R_max = _compute_range(cfg)
 
     df_hz = f_s_dec / n_fft
     wavelength = _SPEED_OF_LIGHT / f_c
     dv_mps = df_hz * wavelength / 2.0
 
-    clutter_mode = cfg.get("clutter", {}).get("mode", "butterworth")
-    bande_resp_bb = list(det_cfg.get("bande_respiration", [0.1, 0.8]))
-    bande_resp_disp = [bande_resp_bb[0] + f_off, bande_resp_bb[1] + f_off]
-    bl = cfg.get("bilan_liaison", {})
-    B_eff_hz = bl.get("B_eff_hz", df_hz)
+    clutter_mode = cfg["clutter"]["mode"]
+    # Baseband respiration band, relative to the carrier.  Detection looks at
+    # both sidebands (|f - f_offset| in this band), hence displayed as ``±``.
+    bande_resp_bb = list(det_cfg["bande_respiration"])
+    B_eff_hz = float(cfg["bilan_liaison"]["B_eff_hz"])
 
     return {
         "f_hz": f_hz,
         "f_s_dec": f_s_dec,
-        "f_c": f_c,
         "spectre_tx_db": spectre_tx_db,
         "f_hz_tx": f_hz_tx,
         "R_min_m": R_min,
@@ -475,7 +455,7 @@ def _build_context(cfg: dict[str, Any]) -> dict[str, Any]:
         "dv_mps": dv_mps,
         "n_fft": n_fft,
         "clutter_mode": clutter_mode,
-        "bande_resp": bande_resp_disp,
+        "bande_resp": bande_resp_bb,
         "B_eff_hz": B_eff_hz,
     }
 

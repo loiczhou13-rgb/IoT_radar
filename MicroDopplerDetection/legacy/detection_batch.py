@@ -131,12 +131,22 @@ def detect_presence(
     bande_reference: tuple[float, float],
     alpha: float,
     w: float = 0.5,
+    p_value_decades: float = 3.0,
+    acf_floor: float = 0.2,
+    acf_good: float = 0.7,
 ) -> DetectionResult:
     """Fused Fisher / ACF detection on a full 2-D spectrogram (legacy)."""
     S_lin = 10.0 ** (S_db / 10.0)
     p_value_f, _ = _fisher_pvalue(S_lin, f_hz, bande_respiration, bande_reference)
     acf_peak, fv_estimated = _acf_peak(phi, f_s, bande_respiration)
-    score_presence = _fusion_score(p_value_f, acf_peak, w=w)
+    score_presence = _fusion_score(
+        p_value_f,
+        acf_peak,
+        w=w,
+        p_value_decades=p_value_decades,
+        acf_floor=acf_floor,
+        acf_good=acf_good,
+    )
 
     f_lo_sig, f_hi_sig = bande_respiration
     f_lo_ref, f_hi_ref = bande_reference

@@ -225,7 +225,7 @@ class DashboardRadar:
                 f"  N_FFT  = {self._n_fft}",
                 f"  B_eff  = {self._B_eff_hz:.1f} Hz",
                 f"  Clutter: {self._clutter_mode}",
-                f"  Bande  : {self._bande_resp[0]}–{self._bande_resp[1]} Hz",
+                f"  Bande  : ±{self._bande_resp[0]}–{self._bande_resp[1]} Hz",
                 "",
                 f"  Portée : {self._R_min_m:.1f}–{self._R_max_m:.1f} m",
                 "",
@@ -246,7 +246,7 @@ class DashboardRadar:
                 f"  N_FFT  = {self._n_fft}",
                 f"  B_eff  = {self._B_eff_hz:.1f} Hz",
                 f"  Clutter: {self._clutter_mode}",
-                f"  Bande  : {self._bande_resp[0]}–{self._bande_resp[1]} Hz",
+                f"  Bande  : ±{self._bande_resp[0]}–{self._bande_resp[1]} Hz",
                 "",
                 f"  Portée : {self._R_min_m:.1f}–{self._R_max_m:.1f} m",
             ]

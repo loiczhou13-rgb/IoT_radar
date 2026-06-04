@@ -24,6 +24,7 @@ def _fisher_pvalue(
     f_hz: np.ndarray,
     bande_respiration: tuple[float, float],
     bande_reference: tuple[float, float],
+    f_center: float = 0.0,
 ) -> tuple[float, float]:
     """Fisher F-test on the band-power ratio.
 
@@ -34,7 +35,13 @@ def _fisher_pvalue(
     f_hz : numpy.ndarray
         Centred frequency axis (Hz).
     bande_respiration, bande_reference : tuple[float, float]
-        Signal and reference bands (Hz), as in ``config.yaml``.
+        Signal and reference bands (Hz), expressed **relative to the carrier**
+        (i.e. as baseband offsets), as in ``config.yaml``.
+    f_center : float, optional
+        Spectral location of the carrier (Hz).  Both bands are taken on the
+        two sidebands around *f_center*, i.e. on ``|f_hz - f_center|``.  In
+        CW-offset mode this is ``f_offset``; in baseband mode it is 0
+        (default), which reduces to ``|f_hz|``.
 
     Returns
     -------
@@ -50,9 +57,9 @@ def _fisher_pvalue(
     f_lo_sig, f_hi_sig = bande_respiration
     f_lo_ref, f_hi_ref = bande_reference
 
-    abs_f = np.abs(f_hz)
-    mask_sig = (abs_f >= f_lo_sig) & (abs_f <= f_hi_sig)
-    mask_ref = (abs_f >= f_lo_ref) & (abs_f <= f_hi_ref)
+    df = np.abs(f_hz - f_center)
+    mask_sig = (df >= f_lo_sig) & (df <= f_hi_sig)
+    mask_ref = (df >= f_lo_ref) & (df <= f_hi_ref)
 
     n_sig = int(np.sum(mask_sig))
     n_ref = int(np.sum(mask_ref))
@@ -135,11 +142,10 @@ def _acf_peak(
 def _fusion_score(
     p_value_f: float,
     acf_peak: float,
-    w: float = 0.5,
-    *,
-    p_value_decades: float = 3.0,
-    acf_floor: float = 0.2,
-    acf_good: float = 0.7,
+    w: float,
+    p_value_decades: float,
+    acf_floor: float,
+    acf_good: float,
 ) -> float:
     """Fuse the Fisher and ACF scores into a presence score in [0, 1].
 
@@ -160,14 +166,14 @@ def _fusion_score(
         P-value of the Fisher F-test.
     acf_peak : float
         Normalised autocorrelation peak (may be negative).
-    w : float, optional
+    w : float
         Weight of the spectral score.  ``w=1`` → purely spectral,
-        ``w=0`` → purely time-domain.  Default 0.5.
-    p_value_decades : float, optional
+        ``w=0`` → purely time-domain.
+    p_value_decades : float
         Number of decades below 1 at which the spectral score saturates to 1
-        (e.g. ``3.0`` → ``p ≤ 1e-3`` gives score 1).  Default 3.0.
-    acf_floor, acf_good : float, optional
-        ACF peak values mapped to 0 and 1 respectively.  Default 0.2 / 0.7.
+        (e.g. ``3.0`` → ``p ≤ 1e-3`` gives score 1).
+    acf_floor, acf_good : float
+        ACF peak values mapped to 0 and 1 respectively.
     """
     if p_value_decades <= 0:
         raise ValueError("p_value_decades doit être > 0.")
@@ -195,10 +201,13 @@ def detect_presence_column(
     f_hz: np.ndarray,
     phi_buffer: np.ndarray,
     f_s: float,
-    bande_respiration_spectral: tuple[float, float],
-    bande_reference_spectral: tuple[float, float],
-    bande_respiration_baseband: tuple[float, float],
-    w: float = 0.5,
+    bande_respiration: tuple[float, float],
+    bande_reference: tuple[float, float],
+    f_center: float,
+    w: float,
+    p_value_decades: float,
+    acf_floor: float,
+    acf_good: float,
 ) -> tuple[float, float, float, float | None]:
     """Streaming detection on a single STFT column + matching phase segment.
 
@@ -211,18 +220,21 @@ def detect_presence_column(
     phi_buffer : numpy.ndarray
         Unwrapped phase of the **same time window** as *col_db*, after
         clutter suppression and (in cw_offset mode) carrier demodulation.
-        Length should be ≥ ``f_s / bande_respiration_baseband[0]``.
+        Length should be ≥ ``f_s / bande_respiration[0]``.
     f_s : float
         Sampling rate of *phi_buffer* (Hz), i.e. the decimated rate.
-    bande_respiration_spectral, bande_reference_spectral : tuple[float, float]
-        Signal and reference bands **on the STFT axis** (Hz).  Already
-        shifted by *f_offset* in CW-offset mode.
-    bande_respiration_baseband : tuple[float, float]
-        Respiration band **relative to the carrier** (Hz), e.g.
-        ``(0.1, 0.8)``.  Used for the time-domain ACF test on the
-        demodulated phase signal.
-    w : float, optional
-        Fusion weight (see :func:`_fusion_score`).  Default 0.5.
+    bande_respiration, bande_reference : tuple[float, float]
+        Signal and reference bands **relative to the carrier** (Hz), e.g.
+        ``(0.1, 0.8)`` and ``(2.0, 5.0)``.  Used both for the spectral
+        F-test (on the two sidebands around *f_center*) and, for the
+        respiration band, for the time-domain ACF on the demodulated phase.
+    f_center : float
+        Spectral location of the carrier (Hz): ``f_offset`` in CW-offset
+        mode, 0 in baseband mode.  Forwarded to :func:`_fisher_pvalue`.
+    w : float
+        Fusion weight (see :func:`_fusion_score`).
+    p_value_decades, acf_floor, acf_good : float
+        Score-mapping parameters forwarded to :func:`_fusion_score`.
 
     Returns
     -------
@@ -231,13 +243,20 @@ def detect_presence_column(
     """
     col_lin = 10.0 ** (col_db / 10.0)
     p_value_f, _ = _fisher_pvalue(
-        col_lin, f_hz, bande_respiration_spectral, bande_reference_spectral,
+        col_lin, f_hz, bande_respiration, bande_reference, f_center=f_center,
     )
 
     acf_peak, fv_estimated = _acf_peak(
-        phi_buffer, f_s, bande_respiration_baseband,
+        phi_buffer, f_s, bande_respiration,
     )
-    score_presence = _fusion_score(p_value_f, acf_peak, w=w)
+    score_presence = _fusion_score(
+        p_value_f,
+        acf_peak,
+        w=w,
+        p_value_decades=p_value_decades,
+        acf_floor=acf_floor,
+        acf_good=acf_good,
+    )
 
     logger.debug(
         "Détection — p_F=%.2e, ACF=%.2f @ fv=%s Hz, score=%.2f",

@@ -455,7 +455,7 @@ def run(args: argparse.Namespace | None = None) -> Path:
     logger.info(
         "%d trames sauvegardées — wall time dernière trame ≈ %.2f s",
         n_frames,
-        t_wall[-1],
+        recorded_wall,
     )
     logger.info("Fichiers : %s, %s", npz_path, json_path)
     return npz_path
