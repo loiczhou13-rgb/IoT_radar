@@ -9,11 +9,11 @@ Orchestration **streaming** dans **`main.py`**.
 
 ## Contexte physique
 
-Un signal CW à **f_c ≈ 2.4 GHz** (λ ≈ 12.5 cm) illumine la scène. Le mouvement thoracique (**f_v ≈ 0,2–0,5 Hz**, amplitude **D ≈ 5–15 mm**) module la phase du signal reçu. En bande de base :
+Un signal CW à **f_c ≈ 2.4 GHz** ($$\lambda$$ ≈ 12.5 cm) illumine la scène. Le mouvement thoracique (**f_v ≈ 0,2–0,5 Hz**, amplitude **D ≈ 5–15 mm**) module la phase du signal reçu. En bande de base :
 
 $$x(t) = e^{j\varphi(t)}, \qquad \varphi(t) = \varphi_0 - \frac{4\pi D}{\lambda}\sin(2\pi f_v t)$$
 
-Les raies micro-Doppler autour de **±f_v** sont analysées après STFT (Short-Time Fourier Transform).
+Les raies micro-Doppler autour de **$$±f_v$$** sont analysées après STFT (Short-Time Fourier Transform).
 
 ---
 
