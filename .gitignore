@@ -103,3 +103,8 @@ docs/_build/
 
 # ===== Micro-Doppler recordings (train/test/val) =====
 AICalibration/data/
+
+# ===== Micro-Doppler logs =====
+# *.log est déjà ignoré globalement ; on conserve le dossier via .gitkeep.
+MicroDopplerDetection/logs/*
+!MicroDopplerDetection/logs/.gitkeep
