@@ -1,40 +1,40 @@
 """Calibration dataset for the supervised autoencoder.
 
-Source de vérité pour les enregistrements
------------------------------------------
-Les fichiers ``.npz`` sont produits par
-``MicroDopplerDetection/utils/record_acquisition.py`` (et son lanceur
-``auto_record.py``).  Arborescence typique ::
+Source of truth for recordings
+------------------------------
+``.npz`` files are produced by
+``MicroDopplerDetection/utils/record_acquisition.py`` (and its launcher
+``auto_record.py``). Typical layout ::
 
     AICalibration/data/
     ├── train/<n>.npz
     ├── test/<n>.npz
     └── val/<n>.npz
 
-Chaque ``.npz`` contient au minimum :
+Each ``.npz`` contains at minimum:
 
-    - ``spectrogram_db`` : float64, forme ``(N_frames, n_fft)``
-                            — colonnes STFT successives (en dB)
-    - ``label``          : scalaire ``int8`` (0 = vide, 1 = respiration)
-    - ``env``            : str        (étiquette d'environnement)
-    - ``n_fft``          : int        (largeur fréquentielle)
+    - ``spectrogram_db`` : float64, shape ``(N_frames, n_fft)``
+                            — successive STFT columns (in dB)
+    - ``label``          : scalar ``int8`` (0 = empty, 1 = breathing)
+    - ``env``            : str        (environment tag)
+    - ``n_fft``          : int        (frequency width)
     - ``f_s_dec_hz``     : float      (Hz)
-    - métadonnées : ``subset``, ``sample_index``, ``config_path``,
+    - metadata: ``subset``, ``sample_index``, ``config_path``,
       ``data_root``, ``utc_finished``, ``n_trame``, ``t_wall_s``, etc.
 
 CalibrationDataset
 ------------------
-``Dataset`` PyTorch qui :
+PyTorch ``Dataset`` that:
 
-1. Charge récursivement tous les ``.npz`` sous ``data_dir``.
-2. Découpe chaque enregistrement en fenêtres glissantes de ``N_COLS``
-   colonnes STFT (le long de l'axe temporel).
-3. Optionnellement normalise chaque fenêtre (zéro-mean / unit-var).
-4. Renvoie ``(tensor[1, n_fft, N_COLS], label)`` — convention PyTorch
-   ``(C, H, W)`` avec ``H = n_fft`` (fréquence) et ``W = N_COLS`` (temps).
+1. Recursively loads all ``.npz`` files under ``data_dir``.
+2. Splits each recording into sliding windows of ``N_COLS`` STFT columns
+   (along the time axis).
+3. Optionally normalises each window (zero-mean / unit-variance).
+4. Returns ``(tensor[1, n_fft, N_COLS], label)`` — PyTorch convention
+   ``(C, H, W)`` with ``H = n_fft`` (frequency) and ``W = N_COLS`` (time).
 
-Le format ``(1, n_fft, N_COLS)`` est conçu pour un autoencodeur **Conv2D**
-(encoder + decoder), qui exploite la localité spectro-temporelle.
+The ``(1, n_fft, N_COLS)`` format is designed for a **Conv2D** autoencoder
+(encoder + decoder), which exploits spectro-temporal locality.
 """
 
 from __future__ import annotations
@@ -51,15 +51,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-
-#: Nombre de colonnes STFT par fenêtre d'entrée.
-#: Avec la config par défaut (n_fft=8192, overlap=0.5, f_s_dec≈2 kHz),
-#: une colonne ≈ 0.45 s, donc 32 colonnes ≈ 14 s — couvre plusieurs
-#: cycles respiratoires (~0.1–0.5 Hz).
 N_COLS: int = 32
-
-#: Avertissement si un enregistrement fournit moins de fenêtres que cela.
-MIN_WINDOWS: int = 10
 
 
 # ---------------------------------------------------------------------------
@@ -72,30 +64,29 @@ class CalibrationDataset(Dataset):
     Parameters
     ----------
     data_dir : str or Path
-        Répertoire scanné récursivement (``rglob("*.npz")``).  Pointer
-        sur ``AICalibration/data`` pour tout charger, ou sur
-        ``AICalibration/data/train`` pour un seul split.
+        Directory scanned recursively (``rglob("*.npz")``). Point to
+        ``AICalibration/data`` to load everything, or to
+        ``AICalibration/data/train`` for a single split.
     n_cols : int, optional
-        Nombre de colonnes STFT par fenêtre.  Défaut :data:`N_COLS`.
+        Number of STFT columns per window. Default :data:`N_COLS`.
     stride : int, optional
-        Pas entre deux fenêtres successives extraites d'un même
-        enregistrement.  Par défaut ``n_cols`` (fenêtres disjointes).
-        Un ``stride`` plus petit augmente la quantité d'exemples au prix
-        d'une forte corrélation entre fenêtres voisines.
+        Step between successive windows extracted from the same recording.
+        Defaults to ``n_cols`` (non-overlapping windows). A smaller
+        ``stride`` increases the number of examples at the cost of strong
+        correlation between neighbouring windows.
     normalise : bool, optional
-        Si ``True`` (défaut) chaque fenêtre est ramenée à moyenne nulle
-        et écart-type unité (sur l'ensemble ``n_fft × n_cols``).  Cela
-        retire la dépendance au niveau absolu de puissance (distance, RX
-        gain).
+        If ``True`` (default), each window is zero-mean and unit-variance
+        (over the full ``n_fft × n_cols`` array). This removes dependence
+        on absolute power level (distance, RX gain).
 
     Notes
     -----
-    Tous les enregistrements sous ``data_dir`` doivent partager le même
-    ``n_fft`` ; une ``ValueError`` est levée sinon.
+    All recordings under ``data_dir`` must share the same ``n_fft``; a
+    ``ValueError`` is raised otherwise.
 
-    Le jeu est entièrement chargé en RAM à la construction.  Pour des
-    enregistrements de 2 min avec ``n_fft=8192`` (~16 Mio par fichier),
-    quelques dizaines de prises tiennent sans difficulté.
+    The dataset is fully loaded into RAM at construction time. For 2-minute
+    recordings with ``n_fft=8192`` (~16 MB per file), a few dozen takes
+    fit comfortably.
     """
 
     def __init__(
@@ -115,7 +106,7 @@ class CalibrationDataset(Dataset):
         if self.stride <= 0:
             raise ValueError("stride doit être > 0.")
 
-        self._windows: list[np.ndarray] = []  # chaque entrée : (n_fft, n_cols) float32
+        self._windows: list[np.ndarray] = []   # (n_fft, n_cols) float32
         self._labels: list[int] = []
 
         self._load_all()
@@ -167,8 +158,6 @@ class CalibrationDataset(Dataset):
                 )
                 continue
 
-            # spectrogram_db : (N_frames, n_fft) — on transpose pour découper
-            # le long de l'axe temporel.
             spec_t = spec.T  # (n_fft, N_frames)
             n_fft_file, n_total = spec_t.shape
 
@@ -193,13 +182,6 @@ class CalibrationDataset(Dataset):
                 self._windows.append(window)
                 self._labels.append(label)
                 windows_in_file += 1
-
-            if windows_in_file < MIN_WINDOWS:
-                logger.warning(
-                    "%s — seulement %d fenêtres extraites (MIN_WINDOWS=%d). "
-                    "Envisager un enregistrement plus long.",
-                    path.name, windows_in_file, MIN_WINDOWS,
-                )
 
             total_windows += windows_in_file
             logger.info(
@@ -234,8 +216,8 @@ class CalibrationDataset(Dataset):
         Returns
         -------
         tuple[Tensor, Tensor]
-            ``(x, y)`` avec ``x`` de forme ``(1, n_fft, n_cols)`` (float32)
-            et ``y`` scalaire ``int64`` (0 ou 1).
+            ``(x, y)`` with ``x`` of shape ``(1, n_fft, n_cols)`` (float32)
+            and scalar ``y`` as ``int64`` (0 or 1).
         """
         window = self._windows[idx].astype(np.float32, copy=True)  # (n_fft, n_cols)
 
@@ -248,7 +230,7 @@ class CalibrationDataset(Dataset):
                 window = window - mu
 
         x = torch.from_numpy(window).unsqueeze(0)              # (1, n_fft, n_cols)
-        y = torch.tensor(self._labels[idx], dtype=torch.long)  # scalaire
+        y = torch.tensor(self._labels[idx], dtype=torch.long)
         return x, y
 
     # ------------------------------------------------------------------
@@ -257,15 +239,15 @@ class CalibrationDataset(Dataset):
 
     @property
     def n_fft(self) -> int:
-        """Dimension fréquentielle (``H``) commune à toutes les fenêtres."""
+        """Common frequency dimension (``H``) across all windows."""
         return self._windows[0].shape[0]
 
     @property
     def class_weights(self) -> torch.Tensor:
-        """Poids ``[w0, w1]`` inverse-fréquence pour ``CrossEntropyLoss``.
+        """Inverse-frequency weights ``[w0, w1]`` for ``CrossEntropyLoss``.
 
-        À passer à ``torch.nn.CrossEntropyLoss(weight=dataset.class_weights)``
-        si les classes sont déséquilibrées.
+        Pass to ``torch.nn.CrossEntropyLoss(weight=dataset.class_weights)``
+        when classes are imbalanced.
         """
         n_total = len(self._labels)
         n1 = sum(self._labels)
@@ -275,7 +257,7 @@ class CalibrationDataset(Dataset):
         return torch.tensor([w0, w1], dtype=torch.float32)
 
     def summary(self) -> str:
-        """Résumé lisible du dataset."""
+        """Human-readable dataset summary."""
         n1 = sum(self._labels)
         n0 = len(self._labels) - n1
         return (

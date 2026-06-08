@@ -1,22 +1,23 @@
 #!/usr/bin/env python3
-"""Entraînement de l'autoencodeur supervisé micro-Doppler.
+"""Supervised micro-Doppler autoencoder training.
 
-Aucun hyperparamètre n'est codé en dur dans ce script : tout est lu dans
-``AICalibration/config.yaml`` (ou un autre YAML passé via ``--config``).
+No hyperparameters are hard-coded in this script: everything is read from
+``AICalibration/config.yaml`` (or another YAML passed via ``--config``).
 
-Lance ::
+Run ::
 
-    cd AICalibration                   # ou depuis la racine du dépôt
+    cd AICalibration                   # or from the repository root
     python train.py
     python train.py --config config.yaml --epochs 100
 
-L'option ``--epochs`` (et quelques autres) **surcharge** la valeur YAML
-pour des essais rapides.
+The ``--epochs`` option (and a few others) **overrides** the YAML value
+for quick experiments.
 """
 
 from __future__ import annotations
 
 import argparse
+import csv
 import logging
 import random
 import sys
@@ -28,6 +29,7 @@ import torch
 import torch.nn as nn
 import yaml
 from torch.utils.data import DataLoader, Subset, random_split
+from tqdm import tqdm
 
 _THIS_DIR = Path(__file__).resolve().parent
 _REPO_ROOT = _THIS_DIR.parent
@@ -53,7 +55,7 @@ def _load_yaml(path: Path) -> dict[str, Any]:
 
 
 def _resolve_repo_path(p: str | Path) -> Path:
-    """Chemin relatif → résolu par rapport à la racine du dépôt."""
+    """Resolve a relative path against the repository root."""
     pth = Path(p).expanduser()
     if pth.is_absolute():
         return pth.resolve()
@@ -81,10 +83,12 @@ def _pick_device(spec: str) -> torch.device:
 
 def _setup_logging(log_file: Path | None) -> None:
     logging.basicConfig(
-        level=logging.INFO,
+        level=logging.WARNING,
         format="%(asctime)s [%(levelname)s] %(message)s",
         datefmt="%H:%M:%S",
     )
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
     if log_file is not None:
         log_file.parent.mkdir(parents=True, exist_ok=True)
         fh = logging.FileHandler(log_file, mode="a", encoding="utf-8")
@@ -92,7 +96,67 @@ def _setup_logging(log_file: Path | None) -> None:
             "%(asctime)s [%(levelname)s] %(name)s — %(message)s",
             datefmt="%Y-%m-%d %H:%M:%S",
         ))
-        logging.getLogger().addHandler(fh)
+        fh.setLevel(logging.INFO)
+        logger.addHandler(fh)
+
+
+def _print_table(title: str, rows: list[tuple[str, str]]) -> None:
+    """Print a simple ASCII table to stdout."""
+    if not rows:
+        return
+    key_w = max(len(k) for k, _ in rows)
+    val_w = max(len(v) for _, v in rows)
+    rule = f"+-{'-' * key_w}-+-{'-' * val_w}-+"
+    print()
+    print(title)
+    print(rule)
+    for key, val in rows:
+        print(f"| {key:<{key_w}} | {val:<{val_w}} |")
+    print(rule)
+
+
+# ---------------------------------------------------------------------------
+# Metrics history (CSV)
+# ---------------------------------------------------------------------------
+
+_METRICS_FIELDS = (
+    "epoch", "lr",
+    "train_total", "train_recon", "train_bce", "train_acc",
+    "val_total", "val_recon", "val_bce", "val_acc",
+)
+
+
+class MetricsHistory:
+    """Append-only CSV writer for per-epoch train/val metrics."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        if not self.path.exists():
+            with open(self.path, "w", newline="", encoding="utf-8") as fh:
+                csv.DictWriter(fh, fieldnames=_METRICS_FIELDS).writeheader()
+
+    def append(
+        self,
+        epoch: int,
+        lr: float,
+        train_m: dict[str, float],
+        val_m: dict[str, float],
+    ) -> None:
+        row = {
+            "epoch": epoch,
+            "lr": f"{lr:.6e}",
+            "train_total": f"{train_m['total']:.6f}",
+            "train_recon": f"{train_m['recon']:.6f}",
+            "train_bce": f"{train_m['bce']:.6f}",
+            "train_acc": f"{train_m['acc']:.6f}",
+            "val_total": f"{val_m['total']:.6f}",
+            "val_recon": f"{val_m['recon']:.6f}",
+            "val_bce": f"{val_m['bce']:.6f}",
+            "val_acc": f"{val_m['acc']:.6f}",
+        }
+        with open(self.path, "a", newline="", encoding="utf-8") as fh:
+            csv.DictWriter(fh, fieldnames=_METRICS_FIELDS).writerow(row)
 
 
 # ---------------------------------------------------------------------------
@@ -106,13 +170,15 @@ def _has_npz(directory: Path) -> bool:
 def build_loaders(
     cfg: dict[str, Any],
     generator: torch.Generator,
-) -> tuple[DataLoader, DataLoader]:
-    """Crée les DataLoaders train / val à partir de la config.
+) -> tuple[DataLoader, DataLoader, dict[str, Any]]:
+    """Build train / val DataLoaders from the config.
 
-    - Si ``data.val_subdir`` existe et contient des ``.npz``, il sert de
-      validation.
-    - Sinon, on découpe aléatoirement ``data.train_subdir`` selon
+    - If ``data.val_subdir`` exists and contains ``.npz`` files, it is used
+      for validation.
+    - Otherwise, ``data.train_subdir`` is split randomly according to
       ``data.val_split``.
+
+    Returns loaders and a metadata dict (sample counts, split description).
     """
     data_cfg = cfg["data"]
     dl_cfg = cfg["dataloader"]
@@ -130,6 +196,7 @@ def build_loaders(
     if _has_npz(val_dir):
         train_ds: torch.utils.data.Dataset = CalibrationDataset(train_dir, **ds_kwargs)
         val_ds: torch.utils.data.Dataset = CalibrationDataset(val_dir, **ds_kwargs)
+        split_desc = f"train={train_dir.name}/  val={val_dir.name}/"
         logger.info("Validation depuis %s — train depuis %s", val_dir, train_dir)
     else:
         full = CalibrationDataset(train_dir, **ds_kwargs)
@@ -144,6 +211,7 @@ def build_loaders(
                 f"Pas assez de fenêtres ({n_total}) pour split {val_split}."
             )
         train_ds, val_ds = random_split(full, [n_train, n_val], generator=generator)
+        split_desc = f"auto split {1 - val_split:.0%}/{val_split:.0%} from {train_dir.name}/"
         logger.info(
             "Split auto depuis %s — train=%d / val=%d (val_split=%.2f)",
             train_dir, n_train, n_val, val_split,
@@ -156,7 +224,15 @@ def build_loaders(
     )
     train_loader = DataLoader(train_ds, shuffle=True, drop_last=False, **common)
     val_loader = DataLoader(val_ds, shuffle=False, drop_last=False, **common)
-    return train_loader, val_loader
+    meta = {
+        "split": split_desc,
+        "train_samples": len(train_ds),
+        "val_samples": len(val_ds),
+        "train_batches": len(train_loader),
+        "val_batches": len(val_loader),
+        "batch_size": int(dl_cfg["batch_size"]),
+    }
+    return train_loader, val_loader, meta
 
 
 # ---------------------------------------------------------------------------
@@ -221,6 +297,9 @@ def _run_epoch(
     bce_loss_fn: nn.BCEWithLogitsLoss,
     alpha: float,
     optimizer: torch.optim.Optimizer | None,
+    show_progress: bool = False,
+    epoch: int | None = None,
+    n_epochs: int | None = None,
 ) -> dict[str, float]:
     is_train = optimizer is not None
     model.train(is_train)
@@ -229,7 +308,14 @@ def _run_epoch(
     n_samples = 0
     n_correct = 0
 
-    for x, y in loader:
+    batch_iter: Iterable = loader
+    pbar: tqdm | None = None
+    if show_progress:
+        desc = f"Epoch {epoch}/{n_epochs}" if epoch is not None else "Train"
+        pbar = tqdm(loader, desc=desc, leave=True)
+        batch_iter = pbar
+
+    for x, y in batch_iter:
         x = x.to(device, non_blocking=True)
         y = y.to(device, non_blocking=True)
 
@@ -256,12 +342,32 @@ def _run_epoch(
             pred = (torch.sigmoid(logits) >= 0.5).long()
             n_correct += int((pred == y).sum().item())
 
+        if pbar is not None:
+            pbar.set_postfix(
+                loss=f"{running['total'] / n_samples:.4f}",
+                acc=f"{n_correct / n_samples:.3f}",
+                refresh=False,
+            )
+
+    if pbar is not None:
+        pbar.set_postfix(
+            loss=f"{running['total'] / max(n_samples, 1):.4f}",
+            acc=f"{n_correct / max(n_samples, 1):.3f}",
+        )
+        pbar.close()
+
     return {
         "total": running["total"] / max(n_samples, 1),
         "recon": running["recon"] / max(n_samples, 1),
         "bce": running["bce"] / max(n_samples, 1),
         "acc": n_correct / max(n_samples, 1),
     }
+
+
+def _should_display_epoch(epoch: int, n_epochs: int, interval: int) -> bool:
+    if interval <= 1:
+        return True
+    return epoch % interval == 0 or epoch == n_epochs
 
 
 # ---------------------------------------------------------------------------
@@ -318,29 +424,15 @@ def main() -> None:
     _setup_logging(log_file)
 
     device = _pick_device(cfg.get("device", "auto"))
-    logger.info("Device sélectionné : %s", device)
-    logger.info("Config : %s", args.config)
-    logger.info("Seed   : %d", seed)
+    logging.getLogger("AICalibration.dataset").setLevel(logging.WARNING)
 
-    # Data
-    train_loader, val_loader = build_loaders(cfg, generator=generator)
-    logger.info(
-        "Loaders prêts — train batches: %d, val batches: %d, batch_size=%d",
-        len(train_loader), len(val_loader),
-        int(cfg["dataloader"]["batch_size"]),
-    )
+    print("Loading data...", flush=True)
+    train_loader, val_loader, data_meta = build_loaders(cfg, generator=generator)
+    print("Loading complete.", flush=True)
 
-    # Model
     model = SpectrogramAutoencoder.from_config(cfg).to(device)
     n_params = sum(p.numel() for p in model.parameters())
-    logger.info(
-        "Modèle prêt — paramètres=%s, expected_input=%s, latent=%s",
-        f"{n_params:,}",
-        model.expected_input_shape,
-        model.latent_shape,
-    )
 
-    # Loss / optim / sched
     loss_cfg = cfg["training"]["loss"]
     alpha = float(loss_cfg["alpha"])
     if not 0.0 <= alpha <= 1.0:
@@ -361,19 +453,66 @@ def main() -> None:
     ckpt_path = results_dir / out_cfg["checkpoint_name"]
     best_value = float("inf")
     n_epochs = int(cfg["training"]["epochs"])
+    progress_interval = max(1, int(cfg["training"].get("progress_interval", 10)))
+
+    save_metrics = bool(out_cfg.get("save_metrics", False))
+    metrics_history: MetricsHistory | None = None
+    metrics_path: Path | None = None
+    if save_metrics:
+        metrics_path = _resolve_repo_path(out_cfg["metrics_file"])
+        metrics_history = MetricsHistory(metrics_path)
+
+    opt_cfg = cfg["training"]["optimizer"]
+    sch_cfg = cfg["training"]["scheduler"]
+    recon_name = loss_cfg["reconstruction"].upper()
+
+    _print_table("Run configuration", [
+        ("Device", str(device)),
+        ("Seed", str(seed)),
+        ("Config", str(args.config)),
+        ("Data split", data_meta["split"]),
+        ("Train windows", str(data_meta["train_samples"])),
+        ("Val windows", str(data_meta["val_samples"])),
+        ("Batch size", str(data_meta["batch_size"])),
+        ("Train batches", str(data_meta["train_batches"])),
+        ("Val batches", str(data_meta["val_batches"])),
+        ("Model params", f"{n_params:,}"),
+        ("Input shape", str(model.expected_input_shape)),
+        ("Latent shape", str(model.latent_shape)),
+        ("Loss", f"{alpha:.2f}·{recon_name} + {1 - alpha:.2f}·BCE"),
+        ("Optimizer", f"AdamW  lr={opt_cfg['lr']}  wd={opt_cfg['weight_decay']}"),
+        ("Scheduler", f"StepLR  step={sch_cfg['step_size']}  γ={sch_cfg['gamma']}"),
+        ("Epochs", str(n_epochs)),
+        ("Best metric", best_metric_key),
+        ("Progress bar", f"every {progress_interval} epoch(s)"),
+        ("Metrics CSV", str(metrics_path) if metrics_path else "disabled"),
+        ("Checkpoint", str(ckpt_path)),
+    ])
 
     logger.info(
-        "Loss : alpha·%s + (1-alpha)·BCE avec alpha=%.2f, recon=%s",
-        loss_cfg["reconstruction"].upper(),
-        alpha,
-        loss_cfg["reconstruction"].upper(),
+        "Device=%s | train=%d val=%d windows | batch=%d",
+        device, data_meta["train_samples"], data_meta["val_samples"],
+        data_meta["batch_size"],
     )
+    logger.info(
+        "Model: %s params | input=%s latent=%s",
+        f"{n_params:,}", model.expected_input_shape, model.latent_shape,
+    )
+    if metrics_path is not None:
+        logger.info("Metrics CSV → %s", metrics_path)
+
+    print("\nTraining started.", flush=True)
 
     for epoch in range(1, n_epochs + 1):
+        show = _should_display_epoch(epoch, n_epochs, progress_interval)
+
         train_m = _run_epoch(
             model=model, loader=train_loader, device=device,
             recon_loss_fn=recon_loss_fn, bce_loss_fn=bce_loss_fn,
             alpha=alpha, optimizer=optimizer,
+            show_progress=show,
+            epoch=epoch,
+            n_epochs=n_epochs,
         )
         val_m = _run_epoch(
             model=model, loader=val_loader, device=device,
@@ -383,14 +522,15 @@ def main() -> None:
         scheduler.step()
 
         current_lr = optimizer.param_groups[0]["lr"]
-        logger.info(
-            "Epoch %02d/%02d  lr=%.2e  "
-            "train: total=%.4f recon=%.4f bce=%.4f acc=%.3f  |  "
-            "val: total=%.4f recon=%.4f bce=%.4f acc=%.3f",
-            epoch, n_epochs, current_lr,
-            train_m["total"], train_m["recon"], train_m["bce"], train_m["acc"],
-            val_m["total"], val_m["recon"], val_m["bce"], val_m["acc"],
-        )
+
+        if metrics_history is not None:
+            metrics_history.append(epoch, current_lr, train_m, val_m)
+
+        if show:
+            print(
+                f"Epoch {epoch}/{n_epochs}  val  "
+                f"loss={val_m['total']:.4f}  acc={val_m['acc']:.3f}"
+            )
 
         current = val_m[metric_field]
         if current < best_value:
@@ -408,13 +548,15 @@ def main() -> None:
                 },
                 ckpt_path,
             )
+            if show:
+                print(f"  ↳ checkpoint ({best_metric_key}={best_value:.4f})")
             logger.info(
-                "↳ checkpoint sauvegardé (%s=%.4f) → %s",
+                "Checkpoint saved (%s=%.4f) → %s",
                 best_metric_key, best_value, ckpt_path,
             )
 
-    logger.info("Entraînement terminé. Meilleur %s = %.4f", best_metric_key, best_value)
-    logger.info("Checkpoint : %s", ckpt_path)
+    print(f"\nTraining finished. Best {best_metric_key} = {best_value:.4f} → {ckpt_path}")
+    logger.info("Training finished. Best %s = %.4f", best_metric_key, best_value)
 
 
 if __name__ == "__main__":

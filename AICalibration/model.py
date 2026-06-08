@@ -1,26 +1,26 @@
-"""Autoencodeur Conv2D pour spectrogrammes micro-Doppler, avec tête de classification.
+"""Conv2D autoencoder for micro-Doppler spectrograms with a classification head.
 
-L'architecture est **entièrement paramétrée** par le constructeur (et donc
-par ``AICalibration/config.yaml``).  Aucun choix géométrique n'est codé
-en dur : canaux, facteurs de downsampling, noyaux et tailles d'entrée
-viennent tous des arguments.
+The architecture is **fully parameterized** by the constructor (and thus
+by ``AICalibration/config.yaml``). Hyperparameters such as channels,
+downsampling factors, kernels, and input sizes must be supplied as
+constructor arguments.
 
-Forme d'entrée (par défaut, alignée sur le dataset)
----------------------------------------------------
-``(B, 1, n_fft, n_cols)``   ex.   ``(B, 1, 8192, 32)``
+Input shape (default, aligned with the dataset)
+-----------------------------------------------
+``(B, 1, n_fft, n_cols)``   e.g.   ``(B, 1, 8192, 32)``
               ↑       ↑
-              fréquence (H)   temps (W)
+    frequency (H)   time (W)
 
-Sorties du forward
-------------------
-- ``x_hat``  : reconstruction, **même forme** que l'entrée.
-- ``logits`` : ``(B, 1)`` — logits *avant* sigmoïde, à utiliser avec
-  ``nn.BCEWithLogitsLoss`` (label 1 = présence / respiration).
+Forward outputs
+---------------
+- ``x_hat``  : reconstruction, **same shape** as the input.
+- ``logits`` : ``(B, 1)`` — logits *before* sigmoid, to use with
+  ``nn.BCEWithLogitsLoss`` (label 1 = presence / breathing).
 
-Géométrie latente
------------------
-Pour les valeurs par défaut (entrée 8192×32, 4 stages de downsampling
-``(4, 2)``) → latent ``(128, 32, 2)``.  Taux de compression 32×.
+Latent geometry
+---------------
+For default values (8192×32 input, 4 downsampling stages of ``(4, 2)``)
+→ latent ``(128, 32, 2)``. Compression ratio 32×.
 """
 
 from __future__ import annotations
@@ -42,13 +42,13 @@ __all__ = [
 # ---------------------------------------------------------------------------
 
 def _padding_same(kernel: Sequence[int]) -> Tuple[int, int]:
-    """Padding « same » pour un kernel 2D (k impair)."""
+    """Same padding for a 2D kernel (odd k)."""
     kh, kw = int(kernel[0]), int(kernel[1])
     return (kh // 2, kw // 2)
 
 
 class _ConvBNAct(nn.Module):
-    """Conv2d + BatchNorm2d + ReLU (padding « same »)."""
+    """Conv2d + BatchNorm2d + ReLU ("same" padding)."""
 
     def __init__(
         self,
@@ -73,7 +73,7 @@ class _ConvBNAct(nn.Module):
 
 
 class _DownBlock(nn.Module):
-    """Conv stridée (``kernel = stride`` → division exacte) + refine 3×3."""
+    """Strided conv (``kernel = stride`` → exact division) + 3×3 refine."""
 
     def __init__(
         self,
@@ -100,7 +100,7 @@ class _DownBlock(nn.Module):
 
 
 class _UpBlock(nn.Module):
-    """ConvTranspose2d (``kernel = stride`` → upsampling exact) + refine 3×3."""
+    """ConvTranspose2d (``kernel = stride`` → exact upsampling) + 3×3 refine."""
 
     def __init__(
         self,
@@ -131,7 +131,7 @@ class _UpBlock(nn.Module):
 # ---------------------------------------------------------------------------
 
 class Encoder(nn.Module):
-    """Encodeur Conv2D : ``(B, in_c, H, W)`` → ``(B, latent_c, H', W')``."""
+    """Conv2D encoder: ``(B, in_c, H, W)`` → ``(B, latent_c, H', W')``."""
 
     def __init__(
         self,
@@ -171,7 +171,7 @@ class Encoder(nn.Module):
 # ---------------------------------------------------------------------------
 
 class Decoder(nn.Module):
-    """Décodeur Conv2D, symétrique de l'Encoder."""
+    """Conv2D decoder, symmetric to the Encoder."""
 
     def __init__(
         self,
@@ -216,9 +216,9 @@ class Decoder(nn.Module):
 # ---------------------------------------------------------------------------
 
 class ClassifierHead(nn.Module):
-    """MLP léger : latent → logit binaire (avant sigmoïde).
+    """Lightweight MLP: latent → binary logit (before sigmoid).
 
-    Pipeline : ``AdaptiveAvgPool2d(1) → Flatten → Dropout → Linear →
+    Pipeline: ``AdaptiveAvgPool2d(1) → Flatten → Dropout → Linear →
     ReLU → Dropout → Linear(1)``.
     """
 
@@ -243,10 +243,10 @@ class ClassifierHead(nn.Module):
 # ---------------------------------------------------------------------------
 
 class SpectrogramAutoencoder(nn.Module):
-    """Autoencodeur Conv2D + tête de classification binaire.
+    """Conv2D autoencoder + binary classification head.
 
-    Tous les paramètres viennent du constructeur (et donc de ``config.yaml``
-    via :meth:`from_config`).  Le ``forward`` renvoie un **tuple** :
+    All parameters come from the constructor (and thus from ``config.yaml``
+    via :meth:`from_config`). ``forward`` returns a **tuple**:
     ``(x_hat, logits)``.
     """
 
@@ -317,7 +317,7 @@ class SpectrogramAutoencoder(nn.Module):
 
     @classmethod
     def from_config(cls, cfg: dict[str, Any]) -> "SpectrogramAutoencoder":
-        """Construit le modèle à partir du dict de config (clé ``model``)."""
+        """Build the model from the config dict (``model`` key)."""
         m = cfg["model"]
         cls_cfg = m["classifier"]
         return cls(
@@ -355,7 +355,7 @@ class SpectrogramAutoencoder(nn.Module):
         return self.decoder(z)
 
     def classify(self, z: torch.Tensor) -> torch.Tensor:
-        """Renvoie les logits ``(B, 1)`` à partir d'un latent."""
+        """Return logits ``(B, 1)`` from a latent tensor."""
         return self.head(z)
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -370,7 +370,7 @@ class SpectrogramAutoencoder(nn.Module):
 # ---------------------------------------------------------------------------
 
 def _smoke_test() -> None:
-    """Vérifie le passage avant + cohérence des formes (sans config externe)."""
+    """Smoke-test forward pass and shape consistency (no external config)."""
     model = SpectrogramAutoencoder()
     batch_size = 2
     x = torch.randn(batch_size, *model.expected_input_shape)

@@ -41,7 +41,6 @@ cover/
 *.mo
 *.pot
 *.log
-.ipynb_checkpoints
 profile_default/
 ipython_config.py
 __pypackages__/
@@ -80,8 +79,8 @@ venv.bak/
 *.dat
 
 # ===== JUPYTER =====
+# Notebooks (*.ipynb) are versioned ; only checkpoints stay local.
 .ipynb_checkpoints/
-*.ipynb
 
 # ===== IDE =====
 .vscode/
@@ -103,6 +102,11 @@ docs/_build/
 
 # ===== Micro-Doppler recordings (train/test/val) =====
 AICalibration/data/
+
+# ===== AICalibration training outputs (checkpoints, metrics, logs) =====
+# *.log is already ignored globally.
+AICalibration/results/*
+!AICalibration/results/.gitkeep
 
 # ===== Micro-Doppler logs =====
 # *.log est déjà ignoré globalement ; on conserve le dossier via .gitkeep.

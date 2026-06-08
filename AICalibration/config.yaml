@@ -93,6 +93,10 @@ training:
   # "val_total" (défaut) ou "val_bce" ou "val_recon".
   best_metric: val_total
 
+  # Progress bar (train batches) + val summary every N epochs.
+  # Val is still evaluated every epoch when save_metrics is enabled.
+  progress_interval: 10
+
 
 # ---------------------------------------------------------------------------
 # Sorties
@@ -101,3 +105,7 @@ output:
   results_dir: AICalibration/results
   checkpoint_name: best.pt
   log_file: AICalibration/results/train.log
+
+  # Per-epoch metrics history (CSV) for plotting in inference.ipynb.
+  save_metrics: true
+  metrics_file: AICalibration/results/history.csv
