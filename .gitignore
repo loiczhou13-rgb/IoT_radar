@@ -79,7 +79,7 @@ venv.bak/
 *.dat
 
 # ===== JUPYTER =====
-# Notebooks (*.ipynb) are versioned ; only checkpoints stay local.
+*.ipynb
 .ipynb_checkpoints/
 
 # ===== IDE =====
