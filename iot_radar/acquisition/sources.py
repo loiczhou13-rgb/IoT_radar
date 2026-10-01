@@ -2,8 +2,9 @@
 
 Place in the chain: first step.  The pipeline reads consecutive
 :class:`Block` objects from a *source* and does not know whether they come
-from the PlutoSDR (:class:`PlutoSource`) or from the numerical simulation
-(:class:`CWSimulationSource`).
+from the PlutoSDR (:class:`PlutoSource`), from the numerical simulation
+(:class:`CWSimulationSource`) or from a recorded session
+(:class:`ReplaySource`).
 
 A block carries what is needed to detect a discontinuity of the stream: the
 index of its first sample, the host clock when it was received and an
@@ -28,6 +29,7 @@ from iot_radar.acquisition.pluto import (
     open_pluto,
     read_and_clear_rx_overflow,
 )
+from iot_radar.acquisition.recording import SessionReader
 from iot_radar.physics import SPEED_OF_LIGHT
 
 logger = logging.getLogger(__name__)
@@ -66,6 +68,12 @@ class Source(Protocol):
     n_channels: int
     """Number of receive channels (rows of ``Block.samples``)."""
 
+    kind: str
+    """``"pluto"``, ``"simulation"`` or ``"replay"`` (stored in the sessions)."""
+
+    firmware_version: str
+    """Firmware of the receiver (``"simulation"`` for the simulated source)."""
+
     def read_block(self) -> Block | None:
         """Next block, or ``None`` when there is no more data."""
 
@@ -93,6 +101,7 @@ class PlutoSource:
     """
 
     n_channels: int = 1
+    kind: str = "pluto"
 
     def __init__(
         self,
@@ -106,6 +115,7 @@ class PlutoSource:
     ) -> None:
         self._sdr = open_pluto(uri, f_c_hz, f_s_hz, rx_gain_db, tx_gain_db, buffer_size, tx_buffer)
         self.sample_rate_hz = float(f_s_hz)
+        self.firmware_version = _pluto_firmware_version(self._sdr)
         self._n_blocks = 0
         self._n_samples = 0
         self._overflow_check_available = True
@@ -154,6 +164,14 @@ class PlutoSource:
     def _disable_overflow_check(self, exc: Exception) -> None:
         self._overflow_check_available = False
         logger.warning("RX loss detection unavailable (%s) — overflow always False", exc)
+
+
+def _pluto_firmware_version(sdr) -> str:
+    """Firmware version reported by the libiio context (``""`` if unknown)."""
+    try:
+        return str(sdr._ctx.attrs.get("fw_version", ""))
+    except Exception:
+        return ""
 
 
 # ---------------------------------------------------------------------------
@@ -218,6 +236,8 @@ class CWSimulationSource:
     """
 
     n_channels: int = 1
+    kind: str = "simulation"
+    firmware_version: str = "simulation"
 
     def __init__(
         self,
@@ -303,6 +323,91 @@ class CWSimulationSource:
         i = np.clip(np.round(x.real), -ADC_FULL_SCALE, ADC_FULL_SCALE - 1)
         q = np.clip(np.round(x.imag), -ADC_FULL_SCALE, ADC_FULL_SCALE - 1)
         return (i + 1j * q).astype(np.complex64)
+
+
+# ---------------------------------------------------------------------------
+# Replay of a recorded session
+# ---------------------------------------------------------------------------
+
+class ReplaySource:
+    """Blocks of a recorded HDF5 session, delivered as during the acquisition.
+
+    The blocks follow the ``/blocks`` table of the session: same boundaries,
+    same ``overflow`` flags and host times, so the pipeline sees exactly
+    what it saw live (and detects the same discontinuities).  Blocks longer
+    than *max_block_samples* (e.g. converted legacy recordings, stored as one
+    block) are cut into consecutive pieces.
+
+    Parameters
+    ----------
+    path : pathlib.Path
+        Session file written by :class:`iot_radar.acquisition.recording.SessionWriter`.
+    speed : float or None, optional
+        ``None`` delivers the blocks as fast as possible; ``1.0`` at the real
+        sampling rate, ``2.0`` twice as fast...
+    max_block_samples : int, optional
+        Longest block delivered (samples).
+    """
+
+    kind: str = "replay"
+
+    def __init__(self, path, speed: float | None = None, max_block_samples: int = 65536) -> None:
+        self._reader = SessionReader(path)
+        self.path = self._reader.path
+        self.attributes = self._reader.attributes
+        self.sample_rate_hz = self._reader.sample_rate_hz
+        self.n_channels = self._reader.n_channels
+        self.firmware_version = str(self.attributes.get("firmware_version", ""))
+        self._speed = speed
+        self._pieces = _replay_pieces(self._reader.blocks(), self._reader.n_samples,
+                                      self.sample_rate_hz, max_block_samples)
+        self._next_piece = 0
+        self._next_delivery_s = time.monotonic()
+        logger.info(
+            "Replaying %s — %d samples at %.0f Hz in %d blocks",
+            self.path.name, self._reader.n_samples, self.sample_rate_hz, len(self._pieces),
+        )
+
+    def read_block(self) -> Block | None:
+        """Next block of the session, or ``None`` at the end."""
+        if self._next_piece >= len(self._pieces):
+            return None
+        start, stop, host_time_s, overflow = self._pieces[self._next_piece]
+        self._next_piece += 1
+        samples = self._reader.read_iq(start, stop)
+        if self._speed:
+            self._next_delivery_s += (stop - start) / self.sample_rate_hz / self._speed
+            time.sleep(max(0.0, self._next_delivery_s - time.monotonic()))
+        return Block(samples, start, host_time_s, overflow)
+
+    def close(self) -> None:
+        """Close the session file."""
+        self._reader.close()
+
+
+def _replay_pieces(
+    blocks: np.ndarray,
+    n_samples: int,
+    sample_rate_hz: float,
+    max_block_samples: int,
+) -> list[tuple[int, int, float, bool]]:
+    """``(start, stop, host_time_s, overflow)`` of every block to deliver.
+
+    Each row of the ``/blocks`` table spans the samples up to the next row
+    (the last one up to the end of ``/iq``).  Rows longer than
+    *max_block_samples* are cut; the pieces after the first one get the
+    host time of their first sample and no overflow.
+    """
+    starts = [int(s) for s in blocks["sample_start"]]
+    stops = starts[1:] + [n_samples]
+    pieces: list[tuple[int, int, float, bool]] = []
+    for row, start, stop in zip(blocks, starts, stops):
+        for piece_start in range(start, stop, max_block_samples):
+            piece_stop = min(piece_start + max_block_samples, stop)
+            host_time_s = float(row["host_time_s"]) + (piece_start - start) / sample_rate_hz
+            overflow = bool(row["overflow"]) and piece_start == start
+            pieces.append((piece_start, piece_stop, host_time_s, overflow))
+    return pieces
 
 
 # ---------------------------------------------------------------------------
