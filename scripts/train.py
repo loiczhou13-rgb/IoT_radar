@@ -2,7 +2,7 @@
 """Supervised micro-Doppler autoencoder training.
 
 No hyperparameters are hard-coded: everything is read from the training
-configuration (``AICalibration/config.yaml`` by default, or another YAML
+configuration (``configs/training.yaml`` by default, or another YAML
 passed via ``--config``).
 
 Run (from the repository root) ::
@@ -30,7 +30,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--config",
         type=Path,
         default=DEFAULT_TRAINING_CONFIG,
-        help="Fichier YAML (défaut : AICalibration/config.yaml)",
+        help="Fichier YAML (défaut : configs/training.yaml)",
     )
     p.add_argument("--epochs", type=int, default=None,
                    help="Surcharge training.epochs.")

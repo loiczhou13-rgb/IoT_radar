@@ -27,6 +27,3 @@ include = ["iot_radar*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# Temporary: lets the tests import the former top-level folders until all the
-# code lives in the installable iot_radar package (see REFACTOR_PLAN.md).
-pythonpath = ["."]

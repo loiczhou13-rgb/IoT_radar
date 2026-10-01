@@ -18,7 +18,7 @@ logging:
   # DEBUG affiche chaque colonne STFT et chaque étape du pipeline.
   level: "INFO"
 
-  # Écrire les logs dans un fichier MicroDopplerDetection/logs/radar_<ts>.log
+  # Écrire les logs dans un fichier logs/radar_<ts>.log
   # en plus de la sortie console.  Mettre à false pour désactiver.
   # Le chemin peut aussi être forcé via l'option CLI --log-file.
   to_file: true

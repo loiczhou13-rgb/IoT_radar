@@ -40,7 +40,7 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help=(
             "Chemin explicite du fichier de log.  Par défaut, "
-            "MicroDopplerDetection/logs/radar_<timestamp>.log."
+            "logs/radar_<timestamp>.log."
         ),
     )
     return parser.parse_args()

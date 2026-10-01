@@ -1,7 +1,7 @@
 """Supervised micro-Doppler autoencoder training (library part).
 
 No hyperparameters are hard-coded here: everything is read from the training
-configuration (``AICalibration/config.yaml`` by default).  The command-line
+configuration (``configs/training.yaml`` by default).  The command-line
 entry point is ``scripts/train.py``, whose options (``--epochs``…) override
 the YAML values for quick experiments.
 """

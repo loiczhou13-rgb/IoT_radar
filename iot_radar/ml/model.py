@@ -1,7 +1,7 @@
 """Conv2D autoencoder for micro-Doppler spectrograms with a classification head.
 
 The architecture is **fully parameterized** by the constructor (and thus
-by the training configuration, ``AICalibration/config.yaml``). Hyperparameters such as channels,
+by the training configuration, ``configs/training.yaml``). Hyperparameters such as channels,
 downsampling factors, kernels, and input sizes must be supplied as
 constructor arguments.
 

@@ -20,13 +20,13 @@ logger = logging.getLogger(__name__)
 REPO_ROOT: Path = Path(__file__).resolve().parent.parent
 """Root of the IoT_radar repository."""
 
-DEFAULT_RADAR_CONFIG: Path = REPO_ROOT / "MicroDopplerDetection" / "configs" / "config.yaml"
+DEFAULT_RADAR_CONFIG: Path = REPO_ROOT / "configs" / "radar.yaml"
 """Default YAML configuration of the radar."""
 
-LOGS_DIR: Path = REPO_ROOT / "MicroDopplerDetection" / "logs"
+LOGS_DIR: Path = REPO_ROOT / "logs"
 """Folder of the timestamped run logs."""
 
-DEFAULT_TRAINING_CONFIG: Path = REPO_ROOT / "AICalibration" / "config.yaml"
+DEFAULT_TRAINING_CONFIG: Path = REPO_ROOT / "configs" / "training.yaml"
 """Default YAML configuration of the training."""
 
 RECORDING_DATA_DIR: Path = REPO_ROOT / "AICalibration" / "data"

@@ -108,10 +108,10 @@ AICalibration/data/
 AICalibration/results/*
 !AICalibration/results/.gitkeep
 
-# ===== Micro-Doppler logs =====
-# *.log est déjà ignoré globalement ; on conserve le dossier via .gitkeep.
-MicroDopplerDetection/logs/*
-!MicroDopplerDetection/logs/.gitkeep
+# ===== Run logs =====
+# *.log is already ignored globally; the folder is kept through .gitkeep.
+logs/*
+!logs/.gitkeep
 
 # ===== Claude Code (local settings and worktrees, never committed) =====
 .claude/
