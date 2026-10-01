@@ -159,96 +159,136 @@ class PlutoSource:
 # ---------------------------------------------------------------------------
 
 class CWSimulationSource:
-    """Simulated IQ buffers with continuous phase, one per :meth:`read_block`.
+    """Simulated PlutoSDR reception of a CW / CW-offset radar, block by block.
+
+    Physical model (baseband, in ADC units), for the TX tone
+    ``s(t) = exp(j·2π·f_offset·t)`` (``f_offset = 0`` in pure CW)::
+
+        r(t) = C_rx                                  receiver DC offset, at 0 Hz
+             + C_static · s(t)                       TX→RX leakage and static clutter
+             + A · exp(−j·4π·(R0 + d(t))/λ) · s(t)   echo of the breathing person
+             + w(t)                                  complex white noise
+
+    where the echoes are multiplied by ``exp(j·2π·δf·t)`` for a residual
+    TX/RX local-oscillator offset ``δf``.  Every echo — leakage and walls
+    included — is a delayed copy of the TX tone, hence sits at ``+f_offset``
+    (bug B2: the former model put the static clutter at 0 Hz, where the
+    clutter high-pass removed it perfectly, which never happens on the
+    hardware).  The chest displacement is ``d(t) = D·sin(2π·f_b·t)``.
+
+    The samples are finally rounded to the integer levels of the 12-bit ADC
+    and clipped to ``[-2048, 2047]``, as delivered by the Pluto.
 
     Parameters
     ----------
     f_c, f_s : float
         Carrier frequency (Hz) and sampling rate (Hz).
     buffer_size : int
-        Samples per buffer.
-    fv : float
-        Simulated breathing frequency (Hz).
-    D_mm : float
-        Chest displacement amplitude (mm).
-    snr_dB : float
-        Target micro-Doppler SNR (dB).
-    f_offset : float, optional
-        Baseband frequency offset (Hz).  Default is 0.
-    clutter_amplitude : float, optional
-        Amplitude of the static-clutter component relative to the signal.
-        Default 100.0 (40 dB above signal — typical CW radar isolation).
+        Samples per block.
+    f_offset : float
+        Effective baseband TX offset (Hz); 0 in pure CW.
+    breath_rate_hz : float
+        Breathing frequency ``f_b`` (Hz).
+    breath_amplitude_mm : float
+        Peak chest displacement ``D`` (mm).
+    presence : bool, optional
+        ``False`` simulates an empty scene (no echo of a person).
+    target_range_m : float, optional
+        Distance ``R0`` of the person (m); sets the phase of its echo.
+    target_amplitude : float, optional
+        Amplitude ``A`` of the echo of the person (ADC units).
+    static_clutter_amplitude : float, optional
+        Amplitude of the leakage and static clutter ``|C_static|`` (ADC units).
+    receiver_dc_amplitude : float, optional
+        Amplitude of the receiver DC offset ``|C_rx|`` (ADC units).
+    lo_offset_hz : float, optional
+        Residual TX/RX local-oscillator offset ``δf`` (Hz).
+    snr_db : float, optional
+        Ratio ``A² / noise power`` per sample (dB), before any processing gain.
     seed : int or None, optional
         Seed of the noise generator (``None``: different noise at each run).
-
-    Notes
-    -----
-    Each call produces the *next* ``buffer_size`` samples of the same
-    continuous waveform, maintaining phase continuity across buffers.
-    This mimics the real PlutoSDR streaming behaviour.
     """
 
     n_channels: int = 1
+
+    _ADC_MIN: int = -2048
+    _ADC_MAX: int = 2047
 
     def __init__(
         self,
         f_c: float,
         f_s: float,
         buffer_size: int,
-        fv: float,
-        D_mm: float,
-        snr_dB: float,
-        f_offset: float = 0.0,
-        clutter_amplitude: float = 100.0,
+        f_offset: float,
+        breath_rate_hz: float,
+        breath_amplitude_mm: float,
+        presence: bool = True,
+        target_range_m: float = 3.0,
+        target_amplitude: float = 1.0,
+        static_clutter_amplitude: float = 30.0,
+        receiver_dc_amplitude: float = 50.0,
+        lo_offset_hz: float = 0.0,
+        snr_db: float = -25.0,
         seed: int | None = None,
     ) -> None:
         self.sample_rate_hz = float(f_s)
-        self._f_s = f_s
-        self._buffer_size = buffer_size
-        self._fv = fv
-        self._f_offset = f_offset
-        self._clutter_amplitude = clutter_amplitude
-
-        wavelength = SPEED_OF_LIGHT / f_c
-        D_m = D_mm * 1e-3
-        self._mod_index = 4.0 * np.pi * D_m / wavelength
-
-        noise_power = 10.0 ** (-snr_dB / 10.0)
-        self._noise_std = np.sqrt(noise_power / 2.0)
+        self._f_s = float(f_s)
+        self._buffer_size = int(buffer_size)
+        self._f_offset = float(f_offset)
+        self._wavelength = SPEED_OF_LIGHT / f_c
+        self._breath_rate_hz = float(breath_rate_hz)
+        self._breath_amplitude_m = float(breath_amplitude_mm) * 1e-3
+        self._presence = bool(presence)
+        self._target_range_m = float(target_range_m)
+        self._target_amplitude = float(target_amplitude)
+        # Fixed, arbitrary phases: only the geometry of the IQ arc matters.
+        self._static_clutter = float(static_clutter_amplitude) * np.exp(1j * 0.7)
+        self._receiver_dc = float(receiver_dc_amplitude) * np.exp(-1j * 2.1)
+        self._lo_offset_hz = float(lo_offset_hz)
+        self._noise_std = self._target_amplitude * 10.0 ** (-float(snr_db) / 20.0) / np.sqrt(2.0)
         self._rng = np.random.default_rng(seed)
         self._sample_idx = 0
 
         logger.info(
-            "Streaming simulation — fv=%.2f Hz, D=%.1f mm, SNR=%.0f dB (continu)",
-            fv,
-            D_mm,
-            snr_dB,
+            "Streaming simulation — f_b=%.2f Hz, D=%.1f mm, présence=%s, "
+            "SNR/échantillon=%.0f dB, f_offset=%.2f Hz, dérive LO=%.3f Hz",
+            breath_rate_hz,
+            breath_amplitude_mm,
+            self._presence,
+            snr_db,
+            self._f_offset,
+            self._lo_offset_hz,
         )
 
     def read_block(self) -> Block:
-        """Generate the next buffer of the simulated signal."""
-        buffer_size = self._buffer_size
-        t = (np.arange(buffer_size, dtype=np.float64) + self._sample_idx) / self._f_s
+        """Generate the next block of the simulated reception."""
+        n = self._buffer_size
+        t = (np.arange(n, dtype=np.float64) + self._sample_idx) / self._f_s
 
-        phase_mod = self._mod_index * np.sin(2.0 * np.pi * self._fv * t)
-        carrier = (
-            2.0 * np.pi * self._f_offset * t if self._f_offset != 0.0 else np.zeros_like(t)
-        )
-        signal = np.exp(1j * (carrier - phase_mod))
+        tx_tone = np.exp(2j * np.pi * self._f_offset * t)
+        displacement_m = self._breath_amplitude_m * np.sin(2.0 * np.pi * self._breath_rate_hz * t)
+        target_phase = -4.0 * np.pi * (self._target_range_m + displacement_m) / self._wavelength
+        target_echo = self._target_amplitude * np.exp(1j * target_phase) if self._presence else 0.0
+        echoes = (self._static_clutter + target_echo) * tx_tone
+        if self._lo_offset_hz != 0.0:
+            echoes = echoes * np.exp(2j * np.pi * self._lo_offset_hz * t)
 
-        clutter = self._clutter_amplitude * np.ones(buffer_size, dtype=np.complex128)
-        noise = self._noise_std * (
-            self._rng.standard_normal(buffer_size)
-            + 1j * self._rng.standard_normal(buffer_size)
-        )
+        noise = self._noise_std * (self._rng.standard_normal(n) + 1j * self._rng.standard_normal(n))
+        received = self._receiver_dc + echoes + noise
 
-        buf = (clutter + signal + noise).astype(np.complex64)
-        block = Block(buf[np.newaxis, :], self._sample_idx, time.monotonic(), False)
-        self._sample_idx += buffer_size
+        samples = self._quantize(received)
+        block = Block(samples[np.newaxis, :], self._sample_idx, time.monotonic(), False)
+        self._sample_idx += n
         return block
 
     def close(self) -> None:
         """Nothing to release."""
+
+    def _quantize(self, x: np.ndarray) -> np.ndarray:
+        """Round I and Q to the integer ADC levels and clip them (complex64)."""
+        i = np.clip(np.round(x.real), self._ADC_MIN, self._ADC_MAX)
+        q = np.clip(np.round(x.imag), self._ADC_MIN, self._ADC_MAX)
+        return (i + 1j * q).astype(np.complex64)
 
 
 # ---------------------------------------------------------------------------
@@ -272,11 +312,16 @@ def open_source(cfg: dict[str, Any], simulation: bool) -> PlutoSource | CWSimula
             f_c=sdr["f_c"],
             f_s=sdr["f_s"],
             buffer_size=sdr["buffer_size"],
-            fv=sim["fv"],
-            D_mm=sim["D_mm"],
-            snr_dB=sim["snr_dB"],
             f_offset=f_off,
-            clutter_amplitude=sim.get("clutter_amplitude", 100.0),
+            breath_rate_hz=sim["breath_rate_hz"],
+            breath_amplitude_mm=sim["breath_amplitude_mm"],
+            presence=sim.get("presence", True),
+            target_range_m=sim.get("target_range_m", 3.0),
+            target_amplitude=sim.get("target_amplitude", 1.0),
+            static_clutter_amplitude=sim.get("static_clutter_amplitude", 30.0),
+            receiver_dc_amplitude=sim.get("receiver_dc_amplitude", 50.0),
+            lo_offset_hz=sim.get("lo_offset_hz", 0.0),
+            snr_db=sim.get("snr_db", -25.0),
             seed=sim.get("seed"),
         )
 

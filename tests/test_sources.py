@@ -12,11 +12,13 @@ from iot_radar.acquisition.pluto import RX_OVERFLOW_BIT, RX_STATUS_REGISTER
 from iot_radar.acquisition.sources import CWSimulationSource, PlutoSource
 
 
-def _simulation(seed: int | None = 7) -> CWSimulationSource:
-    return CWSimulationSource(
-        f_c=3.5e9, f_s=100e3, buffer_size=1024, fv=0.3, D_mm=10, snr_dB=20,
-        f_offset=244.140625, clutter_amplitude=100.0, seed=seed,
+def _simulation(seed: int | None = 7, **scene) -> CWSimulationSource:
+    parameters = dict(
+        f_c=3.5e9, f_s=100e3, buffer_size=1024, f_offset=244.140625,
+        breath_rate_hz=0.3, breath_amplitude_mm=10, seed=seed,
     )
+    parameters.update(scene)
+    return CWSimulationSource(**parameters)
 
 
 def test_simulation_blocks_are_contiguous() -> None:
@@ -27,6 +29,36 @@ def test_simulation_blocks_are_contiguous() -> None:
     assert (first.sample_start, second.sample_start) == (0, 1024)
     assert not first.overflow and not second.overflow
     assert second.host_time_s >= first.host_time_s
+
+
+def test_simulation_delivers_adc_integers() -> None:
+    samples = _simulation().read_block().samples
+    assert np.array_equal(samples.real, np.round(samples.real))
+    assert np.array_equal(samples.imag, np.round(samples.imag))
+    loud = _simulation(static_clutter_amplitude=5000.0).read_block().samples
+    assert loud.real.max() <= 2047 and loud.real.min() >= -2048
+
+
+def test_simulated_echoes_sit_at_the_tx_frequency() -> None:
+    """Bug B2: leakage and static clutter are copies of the TX tone."""
+    f_offset = 244.140625
+    source = _simulation(
+        f_offset=f_offset, presence=False, receiver_dc_amplitude=400.0,
+        static_clutter_amplitude=800.0, snr_db=40.0,
+    )
+    x = np.concatenate([source.read_block().samples[0] for _ in range(8)])
+    spectrum = np.abs(np.fft.fft(x)) / x.size
+    f_hz = np.fft.fftfreq(x.size, d=1.0 / 100e3)
+    assert spectrum[np.argmin(np.abs(f_hz - f_offset))] == pytest.approx(800.0, rel=1e-3)
+    assert spectrum[0] == pytest.approx(400.0, rel=1e-3)
+
+
+def test_empty_scene_has_no_breathing_echo() -> None:
+    quiet = dict(snr_db=200.0, static_clutter_amplitude=0.0, receiver_dc_amplitude=0.0, target_amplitude=500.0)
+    present = _simulation(**quiet).read_block().samples
+    empty = _simulation(presence=False, **quiet).read_block().samples
+    assert np.abs(present).mean() == pytest.approx(500.0, rel=1e-2)
+    assert np.abs(empty).max() == 0.0
 
 
 def test_simulation_seed_makes_it_reproducible() -> None:

@@ -83,10 +83,15 @@ PIPELINE_CONFIG: dict[str, Any] = {
     },
     "simulation": {
         "enable": True,
-        "fv": 0.3,
-        "D_mm": 10,
-        "snr_dB": 20,
-        "clutter_amplitude": 100.0,
+        "presence": True,
+        "breath_rate_hz": 0.3,
+        "breath_amplitude_mm": 10,
+        "target_range_m": 3.0,
+        "target_amplitude": 1.0,
+        "static_clutter_amplitude": 30.0,
+        "receiver_dc_amplitude": 50.0,
+        "lo_offset_hz": 0.0,
+        "snr_db": -25.0,
     },
 }
 

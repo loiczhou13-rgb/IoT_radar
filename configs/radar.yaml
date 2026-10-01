@@ -250,20 +250,33 @@ bilan_liaison:
 # Mode simulation (sans matériel PlutoSDR)
 # ---------------------------------------------------------------------------
 simulation:
-  # Activer le mode simulation (true) ou matériel réel (false).
+  # Use the simulated source (true) or the PlutoSDR (false).
   enable: false
 
-  # Fréquence de respiration simulée (Hz).
-  # 0.3 Hz ≈ 18 cycles/min (rythme normal au repos).
-  fv: 0.3
+  # Person in front of the radar (false = empty scene).
+  presence: true
 
-  # Amplitude du déplacement thoracique simulé (mm).
-  # 10 mm est typique pour une respiration normale (m = 4πD/λ ≈ 1.0).
-  D_mm: 10
+  # Breathing: frequency (Hz, 0.3 Hz = 18 breaths/min) and peak chest
+  # displacement (mm).
+  breath_rate_hz: 0.3
+  breath_amplitude_mm: 10
 
-  # Rapport signal-sur-bruit cible (dB) du micro-Doppler vs. bruit blanc.
-  snr_dB: 20
+  # Distance of the person (m): only sets the phase of its echo.
+  target_range_m: 3.0
 
-  # Amplitude du clutter statique par rapport au signal (ratio linéaire).
-  # 100 ↔ clutter 40 dB au-dessus du signal utile (isolation TX/RX modérée).
-  clutter_amplitude: 100.0
+  # Amplitudes in ADC units (the Pluto ADC delivers integers in [-2048, 2047]):
+  # echo of the person, TX->RX leakage + static clutter (at the TX frequency,
+  # like every echo) and receiver DC offset (at 0 Hz).
+  target_amplitude: 1.0
+  static_clutter_amplitude: 30.0
+  receiver_dc_amplitude: 50.0
+
+  # Residual TX/RX local-oscillator offset (Hz); ~0 on a Pluto.
+  lo_offset_hz: 0.0
+
+  # Ratio (echo of the person)^2 / noise power per ADC sample (dB), before the
+  # processing gain of the decimation (+30 dB for D = 1000).
+  snr_db: -25.0
+
+  # Seed of the noise generator (null = different noise at each run).
+  seed: null
