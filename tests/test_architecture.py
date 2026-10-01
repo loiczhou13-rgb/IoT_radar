@@ -8,6 +8,7 @@ only used by type checkers.  The rules are those of REFACTOR_PLAN.md:
   from, how they are displayed, nor the machine-learning code;
 * ``ui`` never touches the acquisition hardware, even indirectly;
 * ``ml`` does not depend on the acquisition;
+* ``pipeline`` neither knows the display nor where the blocks come from;
 * ``config`` and ``physics`` are leaves.
 """
 
@@ -23,7 +24,7 @@ PACKAGE_DIR = Path(__file__).resolve().parents[1] / "iot_radar"
 FORBIDDEN: dict[str, set[str]] = {
     "dsp": {"acquisition", "ui", "ml", "pipeline"},
     "ml": {"acquisition"},
-    "pipeline": {"ui", "ml"},
+    "pipeline": {"ui", "ml", "acquisition"},
     "config": {"acquisition", "dsp", "ml", "pipeline", "ui", "physics"},
     "physics": {"acquisition", "dsp", "ml", "pipeline", "ui", "config"},
 }

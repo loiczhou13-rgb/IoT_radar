@@ -30,3 +30,21 @@ def test_replay_uses_the_stored_configuration(tmp_path: Path) -> None:
     source = ReplaySource(without_config)
     assert replay.replay_config(source, None) == load_config(DEFAULT_RADAR_CONFIG)
     source.close()
+
+
+def test_replay_runs_the_phase_pipeline(tmp_path: Path) -> None:
+    from characterization_cases import pipeline_config
+
+    cfg = pipeline_config()
+    cfg["recording"]["sessions_dir"] = str(tmp_path)
+    cfg["logging"] = {"level": "INFO", "to_file": True}
+    config_path = tmp_path / "radar.yaml"
+    config_path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
+    (session,) = load_script("record").main(["--simulation", "--duration-s", "22", "--config", str(config_path),
+                                             "--log-file", str(tmp_path / "record.log")])
+
+    log_file = tmp_path / "replay.log"
+    load_script("replay").main([str(session), "--speed", "0", "--log-file", str(log_file)])
+    lines = [line for line in log_file.read_text(encoding="utf-8").splitlines() if "confidence=" in line]
+    assert len(lines) > 30 and "WARMUP" in lines[0]
+    assert "WARMUP" not in lines[-1]  # the 20 s window is full at the end

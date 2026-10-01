@@ -12,7 +12,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from characterization_cases import CASES, seeded_default_rng
+from characterization_cases import CASES
 
 REFERENCE_FILE = Path(__file__).resolve().parent / "data" / "references.npz"
 
@@ -27,8 +27,7 @@ def references() -> dict[str, np.ndarray]:
 def test_outputs_match_references(case_name: str, references: dict[str, np.ndarray]) -> None:
     logging.disable(logging.WARNING)
     try:
-        with seeded_default_rng():
-            outputs = CASES[case_name]()
+        outputs = CASES[case_name]()
     finally:
         logging.disable(logging.NOTSET)
     expected_keys = sorted(k.split("/", 1)[1] for k in references if k.startswith(f"{case_name}/"))

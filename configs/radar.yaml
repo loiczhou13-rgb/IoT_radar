@@ -2,8 +2,9 @@
 # Radar configuration — CW radar for detecting the breathing of buried people
 # =============================================================================
 #
-# Single settings file of the streaming pipeline.  Every parameter comes with
-# a comment explaining its physical or algorithmic effect.
+# Single settings file of the radar (acquisition, phase-demodulation chain,
+# display, recording, simulation).  Every parameter comes with a comment
+# explaining its physical or algorithmic effect.
 #
 # Units are given by the key suffix: _hz (Hz), _s (seconds), _m / _mm
 # (metres / millimetres), _db / _dbm / _dbi (decibels), _m2 (square metres).
@@ -15,7 +16,7 @@
 # ---------------------------------------------------------------------------
 logging:
   # Global log level: DEBUG, INFO, WARNING.
-  # DEBUG prints every STFT column and every pipeline step.
+  # DEBUG prints the metrics of every analysis window.
   level: "INFO"
 
   # Also write the logs to logs/radar_<timestamp>.log (in addition to the
@@ -73,116 +74,6 @@ tx:
   # (122.07 Hz here) so that the cyclic TX buffer holds a whole number of
   # periods: 500 Hz requested -> 488.28 Hz transmitted and used by the receiver.
   offset_hz: 500
-
-
-# ---------------------------------------------------------------------------
-# Decimation (sample-rate reduction)
-# ---------------------------------------------------------------------------
-decimation:
-  # Enable / disable the decimation.
-  enabled: true
-
-  # Decimation factor D: output rate = sample_rate_hz / D.
-  # With 2 MS/s and D = 1000 -> 2 kHz.  D must factor into primes <= 13.
-  factor: 1000
-
-  # Highest useful frequency (Hz), used by the Shannon check:
-  # output rate > 2.5 x max(max_useful_frequency_hz, |offset_hz| + reference band top).
-  # In cw_offset mode the code widens it automatically.
-  max_useful_frequency_hz: 10
-
-
-# ---------------------------------------------------------------------------
-# Clutter suppression (static component / 0 Hz)
-# ---------------------------------------------------------------------------
-clutter:
-  # Clutter-removal method:
-  #   "mean"        — subtraction of a running EMA mean (Python loop).
-  #   "iir"         — vectorised EMA high-pass IIR filter.
-  #   "butterworth" — Butterworth high-pass, configurable order and cut-off.
-  #   "mti"         — DEPRECATED (attenuates the breathing frequencies).
-  mode: "butterworth"
-
-  # EMA memory factor ("iir" and "mean" modes).  Close to 1 -> long memory,
-  # low cut-off.  Approximate cut-off: (1 - alpha) * f_s / (2 pi).
-  alpha: 0.9999
-
-  # Order of the Butterworth high-pass ("butterworth" mode only).
-  butterworth_order: 2
-
-  # Cut-off of the Butterworth high-pass (Hz).
-  # Must stay well below the breathing frequencies (0.1 Hz).
-  butterworth_cutoff_hz: 0.05
-
-
-# ---------------------------------------------------------------------------
-# Spectrogram (STFT computed column by column while streaming)
-# ---------------------------------------------------------------------------
-spectrogram:
-  # Window applied to each STFT segment before the FFT:
-  #   "hann"     — good resolution / leakage trade-off (-31 dB sidelobes).
-  #   "hamming"  — lower sidelobes (-43 dB), wider main lobe.
-  #   "blackman" — very low sidelobes (-58 dB).
-  #   "flattop"  — best amplitude accuracy, very wide main lobe.
-  #   "none"     — rectangular window (best resolution, most leakage).
-  window: "hann"
-
-  # FFT size (number of frequency points).  Resolution = f_s_dec / n_fft:
-  # with f_s_dec = 2 kHz and n_fft = 8192 -> 0.24 Hz.  One STFT column covers
-  # n_fft / f_s_dec = 4.1 s of signal.
-  n_fft: 8192
-
-  # Overlap between successive STFT segments (ratio, 0 to < 1).
-  # 0.90 -> hop of int(8192 x 0.1) = 819 samples (0.41 s): smooth in time but
-  # 10x more FFTs.
-  overlap: 0.90
-
-  # Number of STFT columns dropped at start-up (clutter-filter warm-up).
-  # null = computed automatically from the clutter mode and f_s_dec / hop:
-  # about 3 x tau_filter / T_hop, i.e. 24 columns for a 0.05 Hz order-2
-  # Butterworth with a 0.41 s hop.
-  skip_warmup_frames: null
-
-
-# ---------------------------------------------------------------------------
-# Breathing detection (Fisher F-test fused with the phase ACF)
-# ---------------------------------------------------------------------------
-detection:
-  # Doppler band where breathing is searched (Hz), RELATIVE to the carrier
-  # (around 0 Hz).  0.1–0.8 Hz covers human breathing (6–48 breaths/min).
-  # In cw_offset mode the code shifts this band by the TX offset for the
-  # spectral test and keeps it in baseband for the ACF (which works on the
-  # demodulated phase).
-  breathing_band_hz: [0.1, 0.8]
-
-  # Reference band used to estimate the noise floor (Hz), RELATIVE to the
-  # carrier.  Must stay away from breathing and from the residual DC.
-  reference_band_hz: [2.0, 5.0]
-
-  # p-value threshold of the alert (Fisher test): 0.01 -> 1 % false alarms.
-  # alert = True if p_value < false_alarm_probability.
-  false_alarm_probability: 0.01
-
-  # Weight of the Fisher score in the fusion (the ACF score weighs 1 - w).
-  # 1 -> purely spectral decision; 0 -> purely autocorrelation; 0.5 -> balanced.
-  spectral_weight: 0.5
-
-  # --- Mapping of the raw indicators to scores in [0, 1] before fusion ---
-  # Spectral score: log scale of the Fisher p-value.
-  # p_value <= 10^(-p_value_decades) -> score 1; p_value = 1 -> score 0.
-  p_value_decades: 3.0
-
-  # Temporal score: linear ramp of the phase autocorrelation peak.
-  # acf_peak <= acf_floor -> score 0; acf_peak >= acf_good -> score 1.
-  acf_floor: 0.2
-  acf_good: 0.7
-
-  # Length (s) of the phase history used by the ACF, independent of n_fft.
-  # It must cover SEVERAL breathing periods: the longest detectable period is
-  # 1 / breathing_band_hz[0] (1 / 0.1 = 10 s), so 3–5x that value keeps the
-  # edge effect from crushing the peak.  Longer -> longer start-up latency.
-  # 20 s ~ 6 cycles at 0.3 Hz.
-  acf_buffer_s: 20.0
 
 
 # ---------------------------------------------------------------------------
@@ -259,21 +150,6 @@ micro_doppler_view:
 
 
 # ---------------------------------------------------------------------------
-# Dashboard (matplotlib)
-# ---------------------------------------------------------------------------
-display:
-  # Length of the history of the presence-score curve (columns).
-  score_history_length: 100
-
-  # Visual threshold drawn on the score curve (dashed line); the status
-  # turns to "breathing detected" above it.
-  score_threshold: 0.6
-
-  # Start the dashboard in full screen.
-  full_screen: false
-
-
-# ---------------------------------------------------------------------------
 # Radar link budget (range shown on the dashboard)
 # ---------------------------------------------------------------------------
 link_budget:
@@ -297,9 +173,10 @@ link_budget:
     system_losses_db: 25          # 3 dB cables + about 20 dB through rubble.
     min_snr_db: 3
 
-  # Effective noise bandwidth (Hz).  In theory the bin width f_s_dec / n_fft
-  # (0.24 Hz), but the phase noise of the Pluto oscillator raises the floor to
-  # about 30–100 Hz in practice.
+  # Effective noise bandwidth (Hz).  In theory about 1 / analysis window
+  # (0.05 Hz), but the phase noise of the Pluto oscillator and the clutter
+  # residue raise the floor; 50 Hz is the empirical value of the former
+  # calibration.
   noise_bandwidth_hz: 50
 
 
@@ -357,7 +234,7 @@ simulation:
   lo_offset_hz: 0.0
 
   # Ratio (echo of the person)^2 / noise power per ADC sample (dB), before the
-  # processing gain of the decimation (+30 dB for D = 1000).
+  # processing gain of the decimation to slow time (+50 dB for 2 MS/s -> 20 Hz).
   snr_db: -25.0
 
   # Seed of the noise generator (null = different noise at each run).

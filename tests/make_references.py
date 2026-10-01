@@ -16,7 +16,7 @@ from pathlib import Path
 
 import numpy as np
 
-from characterization_cases import CASES, seeded_default_rng
+from characterization_cases import CASES
 
 REFERENCE_FILE = Path(__file__).resolve().parent / "data" / "references.npz"
 
@@ -25,10 +25,9 @@ def main() -> None:
     """Run every characterization case and store its outputs."""
     logging.disable(logging.WARNING)
     arrays: dict[str, np.ndarray] = {}
-    with seeded_default_rng():
-        for name, case in CASES.items():
-            for key, value in case().items():
-                arrays[f"{name}/{key}"] = np.asarray(value)
+    for name, case in CASES.items():
+        for key, value in case().items():
+            arrays[f"{name}/{key}"] = np.asarray(value)
     REFERENCE_FILE.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(REFERENCE_FILE, **arrays)
     print(f"{len(arrays)} reference arrays written to {REFERENCE_FILE}")

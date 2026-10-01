@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Replay a recorded HDF5 session through the pipeline, with the dashboard.
+"""Replay a recorded HDF5 session through the phase-demodulation pipeline.
 
 The raw IQ blocks of the session are fed to the same pipeline as a live run
 (:class:`iot_radar.acquisition.sources.ReplaySource`), so the replay shows
@@ -24,15 +24,15 @@ import yaml
 
 from iot_radar.acquisition.sources import ReplaySource
 from iot_radar.config import DEFAULT_RADAR_CONFIG, load_config, radar_log_file, setup_logging
-from iot_radar.pipeline import build_context, streaming_frame_generator
-from iot_radar.ui.dashboard import DashboardRadar
+from iot_radar.pipeline import VitalSignsPipeline
+from run_radar import log_output
 
 logger = logging.getLogger(__name__)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Command-line options of the replay."""
-    p = argparse.ArgumentParser(description="Replay a recorded HDF5 session in the radar dashboard.")
+    p = argparse.ArgumentParser(description="Replay a recorded HDF5 session through the radar pipeline.")
     p.add_argument("session", type=Path, help="session file (.h5)")
     p.add_argument("--config", default=None,
                    help="YAML configuration (default: the one stored in the session)")
@@ -57,26 +57,24 @@ def replay_config(source: ReplaySource, config_path: str | None) -> dict[str, An
     return load_config(DEFAULT_RADAR_CONFIG)
 
 
+def build_pipeline(cfg: dict[str, Any], source: ReplaySource) -> VitalSignsPipeline:
+    """Pipeline for the session: its sampling rate, TX offset and carrier come from the file."""
+    cfg = dict(cfg, sdr={**cfg["sdr"], "center_frequency_hz": source.attributes["center_frequency_hz"]})
+    return VitalSignsPipeline.from_config(cfg, source.sample_rate_hz, float(source.attributes["tx_offset_hz"]))
+
+
 def main(argv: list[str] | None = None) -> None:
-    """Open the session, build the pipeline and show its frames."""
+    """Open the session and run the pipeline on it."""
     args = parse_args(argv)
     if not args.session.is_file():
         raise SystemExit(f"File not found: {args.session}")
     source = ReplaySource(args.session, speed=args.speed or None)
     cfg = replay_config(source, args.config)
     setup_logging(cfg.get("logging", {}).get("level", "INFO"), radar_log_file(cfg, args.log_file))
-
-    if float(cfg["sdr"]["sample_rate_hz"]) != source.sample_rate_hz:
-        source.close()
-        raise SystemExit(
-            f"The session is sampled at {source.sample_rate_hz:.0f} Hz but the configuration "
-            f"expects {float(cfg['sdr']['sample_rate_hz']):.0f} Hz."
-        )
-
     labels = sorted({label for _, _, label in source.annotations()})
-    title = f"Replay — {args.session.name}" + (f" — {', '.join(labels)}" if labels else "")
-    dashboard = DashboardRadar(config=cfg, context=build_context(cfg), title=title)
-    dashboard.run(streaming_frame_generator(cfg, source))
+    logger.info("Replaying %s (annotated: %s)", args.session.name, ", ".join(labels) or "none")
+    for output in build_pipeline(cfg, source).run(source):
+        log_output(output)
 
 
 if __name__ == "__main__":
