@@ -315,18 +315,18 @@ def open_source(cfg: dict[str, Any], simulation: bool) -> PlutoSource | CWSimula
     """Open the IQ source described by the configuration.
 
     The simulation is used when *simulation* is true or when
-    ``simulation.enable`` is set in the configuration; otherwise the
+    ``simulation.enabled`` is set in the configuration; otherwise the
     PlutoSDR is opened and starts transmitting.
     """
     sdr = cfg["sdr"]
     sim = cfg["simulation"]
     f_off = resolve_f_offset(cfg)
 
-    if simulation or sim.get("enable", False):
+    if simulation or sim.get("enabled", False):
         logger.info("Mode simulation continu activé (f_offset=%.1f Hz)", f_off)
         return CWSimulationSource(
-            f_c=sdr["f_c"],
-            f_s=sdr["f_s"],
+            f_c=sdr["center_frequency_hz"],
+            f_s=sdr["sample_rate_hz"],
             buffer_size=sdr["buffer_size"],
             f_offset=f_off,
             breath_rate_hz=sim["breath_rate_hz"],
@@ -344,17 +344,17 @@ def open_source(cfg: dict[str, Any], simulation: bool) -> PlutoSource | CWSimula
 
     logger.info("Mode matériel continu — connexion au PlutoSDR")
     tx_buffer = generate_tx_buffer(
-        mode=cfg["emission"]["mode"],
+        mode=cfg["tx"]["waveform"],
         buffer_size=sdr["buffer_size"],
-        f_s=sdr["f_s"],
+        f_s=sdr["sample_rate_hz"],
         f_offset=f_off,
     )
     return PlutoSource(
         uri=sdr["uri"],
-        f_c=sdr["f_c"],
-        f_s=sdr["f_s"],
-        rx_gain=sdr["rx_gain"],
-        tx_gain=sdr["tx_gain"],
+        f_c=sdr["center_frequency_hz"],
+        f_s=sdr["sample_rate_hz"],
+        rx_gain=sdr["rx_gain_db"],
+        tx_gain=sdr["tx_gain_db"],
         buffer_size=sdr["buffer_size"],
         tx_buffer=tx_buffer,
     )

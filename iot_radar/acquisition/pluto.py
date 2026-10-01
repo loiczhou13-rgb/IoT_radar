@@ -159,16 +159,16 @@ def snap_tx_offset(f_offset: float, f_s: float, buffer_size: int) -> float:
 def resolve_f_offset(cfg: dict[str, Any]) -> float:
     """Return the effective baseband offset (Hz), 0 if not in cw_offset mode.
 
-    The configured ``emission.f_offset`` is snapped with
+    The configured ``tx.offset_hz`` is snapped with
     :func:`snap_tx_offset`; the snapped value is the one transmitted, so it
     is also the one used by the receiver (bug B1).
     """
-    emi = cfg.get("emission", {})
-    if emi.get("mode") != "cw_offset":
+    tx_cfg = cfg.get("tx", {})
+    if tx_cfg.get("waveform") != "cw_offset":
         return 0.0
-    requested = float(emi.get("f_offset", 0.0))
+    requested = float(tx_cfg.get("offset_hz", 0.0))
     sdr = cfg["sdr"]
-    effective = snap_tx_offset(requested, float(sdr["f_s"]), int(sdr["buffer_size"]))
+    effective = snap_tx_offset(requested, float(sdr["sample_rate_hz"]), int(sdr["buffer_size"]))
     if effective != requested:
         logger.info(
             "f_offset recalé de %.3f Hz à %.5f Hz (nombre entier de périodes "

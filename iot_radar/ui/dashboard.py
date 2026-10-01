@@ -31,7 +31,7 @@ class DashboardRadar:
 
     When the score panel is shown, the presence score is the fused output of
     the Fisher band-power F-test and the phase-autocorrelation peak.  The
-    dashboard status is driven by the fused score vs. ``affichage.seuil_proba``.
+    dashboard status is driven by the fused score vs. ``display.score_threshold``.
 
     Architecture
     ------------
@@ -60,13 +60,13 @@ class DashboardRadar:
         show_presence_score: bool = True,
         title: str | None = None,
     ) -> None:
-        aff = config["affichage"]
+        aff = config["display"]
         det_cfg = config.get("detection", {})
 
-        self._N_hist: int = aff["N_historique"]
-        self._plein_ecran: bool = aff["plein_ecran"]
-        self._seuil_score: float = aff.get("seuil_proba", 0.6)
-        self._alpha: float = det_cfg.get("alpha", 0.01)
+        self._N_hist: int = aff["score_history_length"]
+        self._plein_ecran: bool = aff["full_screen"]
+        self._seuil_score: float = aff.get("score_threshold", 0.6)
+        self._alpha: float = det_cfg.get("false_alarm_probability", 0.01)
 
         self._f_hz: np.ndarray = context["f_hz"]
         self._f_hz_tx: np.ndarray = context["f_hz_tx"]

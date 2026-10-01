@@ -185,7 +185,7 @@ def compute_spectrogram(
         Step between the starts of two successive segments (samples).
     skip_frames : int, optional
         Number of initial columns to drop (filter warm-up), like the
-        ``skip_warmup`` setting of the stream.
+        ``spectrogram.skip_warmup_frames`` setting of the stream.
 
     Returns
     -------

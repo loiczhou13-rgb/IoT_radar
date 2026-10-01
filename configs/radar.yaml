@@ -1,257 +1,241 @@
 # =============================================================================
-# Configuration — Radar Micro-Doppler — Détection de survivants ensevelis
+# Radar configuration — CW radar for detecting the breathing of buried people
 # =============================================================================
 #
-# Fichier unique de paramétrage du pipeline streaming.  Chaque paramètre est
-# accompagné d'un commentaire expliquant son effet physique ou algorithmique.
+# Single settings file of the streaming pipeline.  Every parameter comes with
+# a comment explaining its physical or algorithmic effect.
 #
-# Unités : fréquences en Hz, durées en secondes, distances en mètres,
-#           amplitudes en dB (sauf indication contraire).
+# Units are given by the key suffix: _hz (Hz), _s (seconds), _m / _mm
+# (metres / millimetres), _db / _dbm / _dbi (decibels), _m2 (square metres).
 # =============================================================================
 
 
 # ---------------------------------------------------------------------------
-# Journalisation
+# Logging
 # ---------------------------------------------------------------------------
 logging:
-  # Niveau de log global : DEBUG, INFO, WARNING.
-  # DEBUG affiche chaque colonne STFT et chaque étape du pipeline.
+  # Global log level: DEBUG, INFO, WARNING.
+  # DEBUG prints every STFT column and every pipeline step.
   level: "INFO"
 
-  # Écrire les logs dans un fichier logs/radar_<ts>.log
-  # en plus de la sortie console.  Mettre à false pour désactiver.
-  # Le chemin peut aussi être forcé via l'option CLI --log-file.
+  # Also write the logs to logs/radar_<timestamp>.log (in addition to the
+  # console).  Set to false to disable.  The command-line option --log-file
+  # chooses another file.
   to_file: true
 
 
 # ---------------------------------------------------------------------------
-# Paramètres du transceiver PlutoSDR (AD9363/AD9364)
+# PlutoSDR transceiver (AD9363)
 # ---------------------------------------------------------------------------
 sdr:
-  # Adresse réseau ou USB du PlutoSDR.
-  # Réseau : "ip:192.168.2.1" (défaut DHCP Pluto).
-  # USB    : "usb:" (détection automatique).
+  # Network or USB address of the PlutoSDR.
+  # Network: "ip:192.168.2.1" (Pluto default).
+  # USB:     "usb:" (automatic detection).
   uri: "ip:192.168.2.1"
 
-  # Fréquence porteuse (Hz).  λ = c / f_c ≈ 12.5 cm à 2.4 GHz.
-  # Fixe la sensibilité à un déplacement thoracique D : Δφ = 4πD/λ.
-  f_c: 3.5e+9
+  # Carrier (local-oscillator) frequency (Hz).  lambda = c / f_c = 8.57 cm at
+  # 3.5 GHz.  Sets the sensitivity to a chest displacement D: dphi = 4 pi D / lambda.
+  center_frequency_hz: 3.5e+9
 
-  # Taux d'échantillonnage du convertisseur ADC (Hz).
-  # Minimum matériel PlutoSDR ≈ 521 kHz.
-  # Une valeur élevée facilite le filtrage anti-repliement avant décimation.
-  f_s: 2.0e+6
+  # ADC sampling rate (Hz).  Pluto hardware minimum: about 521 kHz.
+  # A high rate eases the anti-aliasing filtering before decimation.
+  sample_rate_hz: 2.0e+6
 
-  # Gain du récepteur (dB, mode manuel — AGC désactivé).
-  # Viser 50–80 % de la pleine échelle ADC 12 bits (±2048), soit ≈ ±1024–1638.
-  rx_gain: 45
+  # Receiver gain (dB, manual mode — AGC disabled).
+  # Aim at 50–80 % of the 12-bit ADC full scale (±2048), i.e. about ±1024–1638.
+  rx_gain_db: 45
 
-  # Atténuation de l'émetteur (dB, valeur négative).
-  # Réduire (rendre plus négatif) si saturation RX par couplage TX→RX.
-  tx_gain: -20
+  # Transmitter attenuation (dB, negative value).
+  # Lower it (more negative) if the TX->RX leakage saturates the receiver.
+  tx_gain_db: -20
 
-  # Nombre d'échantillons IQ par buffer.
-  # Puissance de 2 pour efficacité FFT.  2^14 = 16384 → 8.2 ms par trame
-  # à f_s = 2 MHz.
+  # Number of IQ samples per buffer.  2^14 = 16384 -> 8.2 ms per buffer at
+  # 2 MS/s.
   buffer_size: 16384
 
 
 # ---------------------------------------------------------------------------
-# Émission du signal TX
+# Transmitted signal
 # ---------------------------------------------------------------------------
-emission:
-  # Mode d'émission :
-  #   "cw"        — onde continue pure (module constant, fréquence = f_c).
-  #   "cw_offset" — sinusoïde complexe à f_offset Hz en bande de base, ce
-  #                 qui déplace le signal utile loin du pic DC, réduisant
-  #                 l'impact du clutter et du bruit de phase.
+tx:
+  # Waveform:
+  #   "cw"        — pure continuous wave (constant baseband sample, RF at f_c).
+  #   "cw_offset" — complex tone at offset_hz in baseband (RF at f_c + offset),
+  #                 which moves the useful signal away from the receiver DC
+  #                 offset and its 1/f noise.
   #
-  # Note : le buffer TX est mis à l'échelle à ±2^14 (convention pyadi-iio).
-  mode: "cw_offset"
+  # Note: the TX buffer is scaled to ±2^14 (pyadi-iio convention).
+  waveform: "cw_offset"
 
-  # Décalage fréquentiel du signal TX en bande de base (Hz).
-  # Utilisé uniquement si mode = "cw_offset".
-  # Le signal utile apparaîtra autour de f_offset ± f_v dans le spectre RX.
-  # Le code le recale sur un multiple de f_s / buffer_size (122,07 Hz ici)
-  # pour que le buffer TX cyclique contienne un nombre entier de périodes :
-  # 500 Hz demandés → 488,28 Hz émis et utilisés à la réception.
-  f_offset: 500
+  # Baseband frequency of the TX tone (Hz), "cw_offset" only.  The useful
+  # signal appears around offset_hz ± f_breathing in the RX spectrum.
+  # The code snaps it to a multiple of sample_rate_hz / buffer_size
+  # (122.07 Hz here) so that the cyclic TX buffer holds a whole number of
+  # periods: 500 Hz requested -> 488.28 Hz transmitted and used by the receiver.
+  offset_hz: 500
 
 
 # ---------------------------------------------------------------------------
-# Décimation (réduction du taux d'échantillonnage)
+# Decimation (sample-rate reduction)
 # ---------------------------------------------------------------------------
 decimation:
-  # Activer/désactiver la décimation.
-  enable: true
+  # Enable / disable the decimation.
+  enabled: true
 
-  # Facteur de décimation D.  f_s_new = f_s / D.
-  # Avec f_s = 2 MHz et D = 1000 → f_s_new = 2 kHz.
-  # D doit se factoriser en nombres premiers ≤ 13.
-  D: 1000
+  # Decimation factor D: output rate = sample_rate_hz / D.
+  # With 2 MS/s and D = 1000 -> 2 kHz.  D must factor into primes <= 13.
+  factor: 1000
 
-  # Fréquence utile maximale (Hz), utilisée pour la vérification du critère
-  # de Shannon : f_s_new > 2.5 × max(f_max_utile, |f_offset| + bande_ref_max).
-  # En cw_offset, la valeur effective est élargie automatiquement par le code.
-  f_max_utile: 10
+  # Highest useful frequency (Hz), used by the Shannon check:
+  # output rate > 2.5 x max(max_useful_frequency_hz, |offset_hz| + reference band top).
+  # In cw_offset mode the code widens it automatically.
+  max_useful_frequency_hz: 10
 
 
 # ---------------------------------------------------------------------------
-# Suppression du clutter (composante statique / 0 Hz)
+# Clutter suppression (static component / 0 Hz)
 # ---------------------------------------------------------------------------
 clutter:
-  # Méthode de suppression du clutter :
-  #   "mean"        — soustraction de la moyenne glissante EMA (boucle Python).
-  #   "iir"         — filtre passe-haut IIR EMA vectorisé.
-  #   "butterworth" — Butterworth passe-haut, ordre et coupure configurables.
-  #   "mti"         — DÉPRÉCIÉ (atténue les fréquences respiratoires).
+  # Clutter-removal method:
+  #   "mean"        — subtraction of a running EMA mean (Python loop).
+  #   "iir"         — vectorised EMA high-pass IIR filter.
+  #   "butterworth" — Butterworth high-pass, configurable order and cut-off.
+  #   "mti"         — DEPRECATED (attenuates the breathing frequencies).
   mode: "butterworth"
 
-  # Facteur de mémoire EMA (modes "iir" et "mean").
-  # Proche de 1 → mémoire longue, coupure basse.
-  # Fréquence de coupure approximative : f_c_hp ≈ (1−α)·f_s / (2π).
+  # EMA memory factor ("iir" and "mean" modes).  Close to 1 -> long memory,
+  # low cut-off.  Approximate cut-off: (1 - alpha) * f_s / (2 pi).
   alpha: 0.9999
 
-  # Ordre du filtre Butterworth passe-haut (mode "butterworth" uniquement).
+  # Order of the Butterworth high-pass ("butterworth" mode only).
   butterworth_order: 2
 
-  # Fréquence de coupure du filtre Butterworth (Hz).
-  # Doit rester bien en dessous de la fréquence de respiration (0.1 Hz).
-  butterworth_cutoff: 0.05
+  # Cut-off of the Butterworth high-pass (Hz).
+  # Must stay well below the breathing frequencies (0.1 Hz).
+  butterworth_cutoff_hz: 0.05
 
 
 # ---------------------------------------------------------------------------
-# Fenêtrage spectral (appliqué à chaque segment STFT avant FFT)
+# Spectrogram (STFT computed column by column while streaming)
 # ---------------------------------------------------------------------------
-windowing:
-  # Fenêtre :
-  #   "hann"     — bon compromis résolution / fuite spectrale (-31 dB).
-  #   "hamming"  — lobes secondaires plus bas (-43 dB), lobe principal élargi.
-  #   "blackman" — lobes secondaires très atténués (-58 dB).
-  #   "flattop"  — meilleure précision d'amplitude, lobe très large.
-  #   "none"     — fenêtre rectangulaire (résolution maximale, fuite maximale).
-  mode: "hann"
+spectrogram:
+  # Window applied to each STFT segment before the FFT:
+  #   "hann"     — good resolution / leakage trade-off (-31 dB sidelobes).
+  #   "hamming"  — lower sidelobes (-43 dB), wider main lobe.
+  #   "blackman" — very low sidelobes (-58 dB).
+  #   "flattop"  — best amplitude accuracy, very wide main lobe.
+  #   "none"     — rectangular window (best resolution, most leakage).
+  window: "hann"
 
-
-# ---------------------------------------------------------------------------
-# Spectrogramme (STFT colonne par colonne en streaming)
-# ---------------------------------------------------------------------------
-spectrogramme:
-  # Taille de la FFT (nombre de points fréquentiels).
-  # Résolution : δf = f_s_dec / n_fft.  Avec f_s_dec = 2 kHz et n_fft = 8192
-  # → δf ≈ 0.24 Hz.  Une trame STFT couvre n_fft / f_s_dec ≈ 4 s de signal.
+  # FFT size (number of frequency points).  Resolution = f_s_dec / n_fft:
+  # with f_s_dec = 2 kHz and n_fft = 8192 -> 0.24 Hz.  One STFT column covers
+  # n_fft / f_s_dec = 4.1 s of signal.
   n_fft: 8192
 
-  # Recouvrement entre segments STFT successifs (ratio, 0 à <1).
-  # 0.90 → bon lissage temporel mais 10× plus de FFT.
+  # Overlap between successive STFT segments (ratio, 0 to < 1).
+  # 0.90 -> hop of int(8192 x 0.1) = 819 samples (0.41 s): smooth in time but
+  # 10x more FFTs.
   overlap: 0.90
 
-  # Nombre de trames STFT à ignorer au démarrage (warm-up clutter).
-  # Si absent ou null, le pipeline calcule automatiquement la valeur
-  # adaptée au mode clutter et aux paramètres f_s_dec / hop / n_fft.
-  # En pratique : ~3·τ_filtre / T_hop, soit ≈ 12 trames pour un Butterworth
-  # ordre 2 à 0.05 Hz avec hop = 820 échantillons à 2 kHz.
-  skip_warmup: null
+  # Number of STFT columns dropped at start-up (clutter-filter warm-up).
+  # null = computed automatically from the clutter mode and f_s_dec / hop:
+  # about 3 x tau_filter / T_hop, i.e. 24 columns for a 0.05 Hz order-2
+  # Butterworth with a 0.41 s hop.
+  skip_warmup_frames: null
 
 
 # ---------------------------------------------------------------------------
-# Détection de la respiration (Fisher × ACF fusionnés)
+# Breathing detection (Fisher F-test fused with the phase ACF)
 # ---------------------------------------------------------------------------
 detection:
-  # Bande de fréquences Doppler où chercher la respiration (Hz),
-  # exprimée RELATIVEMENT à la porteuse (autour de 0 Hz).
-  # 0.1–0.8 Hz couvre les rythmes respiratoires humains (6–48 cycles/min).
-  # En cw_offset, le code décale automatiquement cette bande de f_offset
-  # pour le test spectral, et conserve la version baseband pour l'ACF
-  # (qui opère sur la phase démodulée).
-  bande_respiration: [0.1, 0.8]
+  # Doppler band where breathing is searched (Hz), RELATIVE to the carrier
+  # (around 0 Hz).  0.1–0.8 Hz covers human breathing (6–48 breaths/min).
+  # In cw_offset mode the code shifts this band by the TX offset for the
+  # spectral test and keeps it in baseband for the ACF (which works on the
+  # demodulated phase).
+  breathing_band_hz: [0.1, 0.8]
 
-  # Bande de référence pour estimer le plancher de bruit (Hz),
-  # exprimée RELATIVEMENT à la porteuse.  Doit être éloignée de la
-  # respiration et du DC résiduel.
-  bande_reference: [2.0, 5.0]
+  # Reference band used to estimate the noise floor (Hz), RELATIVE to the
+  # carrier.  Must stay away from breathing and from the residual DC.
+  reference_band_hz: [2.0, 5.0]
 
-  # Seuil de p-valeur pour l'alerte (test de Fisher).
-  # alpha = 0.01 → 1 % de probabilité de fausse alarme.
-  # alert = True ssi p_value_f < alpha.
-  alpha: 0.01
+  # p-value threshold of the alert (Fisher test): 0.01 -> 1 % false alarms.
+  # alert = True if p_value < false_alarm_probability.
+  false_alarm_probability: 0.01
 
-  # Poids du score Fisher dans la fusion (score_acf a le poids 1-w).
-  # w=1 → décision purement spectrale ; w=0 → purement autocorrélation.
-  # 0.5 → équilibre entre les deux tests (recommandé).
-  w: 0.5
+  # Weight of the Fisher score in the fusion (the ACF score weighs 1 - w).
+  # 1 -> purely spectral decision; 0 -> purely autocorrelation; 0.5 -> balanced.
+  spectral_weight: 0.5
 
-  # --- Transformation des indices bruts en scores [0, 1] avant fusion ---
-  # Score spectral : échelle log de la p-value du test de Fisher.
-  # p_value ≤ 10^(-p_value_decades) → score 1 ; p_value = 1 → score 0.
-  # 3.0 → une p-value de 1e-3 (ou moins) sature le score spectral à 1.
+  # --- Mapping of the raw indicators to scores in [0, 1] before fusion ---
+  # Spectral score: log scale of the Fisher p-value.
+  # p_value <= 10^(-p_value_decades) -> score 1; p_value = 1 -> score 0.
   p_value_decades: 3.0
 
-  # Score temporel : rampe linéaire du pic d'autocorrélation (phase).
-  # acf_peak ≤ acf_floor → score 0 ; acf_peak ≥ acf_good → score 1.
-  # acf_floor = plancher de bruit ACF, acf_good = périodicité franche.
+  # Temporal score: linear ramp of the phase autocorrelation peak.
+  # acf_peak <= acf_floor -> score 0; acf_peak >= acf_good -> score 1.
   acf_floor: 0.2
   acf_good: 0.7
 
-  # Durée (s) de l'historique de phase utilisé par l'ACF, indépendante de
-  # n_fft.  Doit couvrir PLUSIEURS périodes respiratoires : la période la plus
-  # longue détectable est 1 / bande_respiration[0] (ex. 1/0.1 = 10 s), donc
-  # viser ≥ 3–5× cette valeur évite que l'effet de bord n'écrase le pic.
-  # Compromis : plus la fenêtre est longue, plus la latence d'établissement
-  # (remplissage initial) est grande.  20 s ≈ 6 cycles à 0.3 Hz.
-  acf_buffer_seconds: 20.0
+  # Length (s) of the phase history used by the ACF, independent of n_fft.
+  # It must cover SEVERAL breathing periods: the longest detectable period is
+  # 1 / breathing_band_hz[0] (1 / 0.1 = 10 s), so 3–5x that value keeps the
+  # edge effect from crushing the peak.  Longer -> longer start-up latency.
+  # 20 s ~ 6 cycles at 0.3 Hz.
+  acf_buffer_s: 20.0
 
 
 # ---------------------------------------------------------------------------
-# Affichage (Dashboard matplotlib — 3 panneaux + encadré info)
+# Dashboard (matplotlib)
 # ---------------------------------------------------------------------------
-affichage:
-  # Longueur de l'historique de la courbe de score de présence.
-  N_historique: 100
+display:
+  # Length of the history of the presence-score curve (columns).
+  score_history_length: 100
 
-  # Seuil visuel sur la courbe de score (ligne horizontale en pointillés).
-  seuil_proba: 0.6
+  # Visual threshold drawn on the score curve (dashed line); the status
+  # turns to "breathing detected" above it.
+  score_threshold: 0.6
 
-  # Activer le mode plein écran au lancement du dashboard.
-  plein_ecran: false
-
-
-# ---------------------------------------------------------------------------
-# Bilan de liaison radar (portée effective)
-# ---------------------------------------------------------------------------
-bilan_liaison:
-  # ---- Scénario optimiste (espace libre, cible dégagée) ----
-  optimiste:
-    P_tx_dBm: -13      # PlutoSDR avec tx_gain = -20 dB ≈ -13 dBm.
-    G_tx_dBi: 2        # Antenne omnidirectionnelle ≈ 2, patch 6–10.
-    G_rx_dBi: 2
-    sigma_m2: 0.5      # Thorax humain de face ≈ 0.5–1.0 m².
-    NF_dB: 4           # AD9363 typique : 3–5 dB.
-    L_sys_dB: 3        # Pertes câbles / connecteurs.
-    SNR_min_dB: 3
-
-  # ---- Scénario pessimiste (décombres, pire-cas terrain) ----
-  pessimiste:
-    P_tx_dBm: -13
-    G_tx_dBi: 0        # Antennes mal orientées.
-    G_rx_dBi: 0
-    sigma_m2: 0.05     # Cible partiellement masquée.
-    NF_dB: 6
-    L_sys_dB: 25       # 3 dB câbles + ~20 dB propagation décombres.
-    SNR_min_dB: 3
-
-  # Bande passante effective de bruit (Hz).
-  # En théorie δf = f_s_dec / n_fft ≈ 0.24 Hz, mais le bruit de phase de
-  # l'oscillateur Pluto élargit le plancher à ~30–100 Hz en pratique.
-  B_eff_hz: 50
+  # Start the dashboard in full screen.
+  full_screen: false
 
 
 # ---------------------------------------------------------------------------
-# Mode simulation (sans matériel PlutoSDR)
+# Radar link budget (range shown on the dashboard)
+# ---------------------------------------------------------------------------
+link_budget:
+  # ---- Optimistic scenario (free space, unobstructed target) ----
+  optimistic:
+    tx_power_dbm: -13             # PlutoSDR with tx_gain_db = -20 dB, about -13 dBm.
+    tx_antenna_gain_dbi: 2        # Omnidirectional antenna ~2, patch 6–10.
+    rx_antenna_gain_dbi: 2
+    radar_cross_section_m2: 0.5   # Human chest, front view: about 0.5–1.0 m².
+    noise_figure_db: 4            # AD9363: typically 3–5 dB.
+    system_losses_db: 3           # Cables / connectors.
+    min_snr_db: 3
+
+  # ---- Pessimistic scenario (rubble, worst case in the field) ----
+  pessimistic:
+    tx_power_dbm: -13
+    tx_antenna_gain_dbi: 0        # Badly oriented antennas.
+    rx_antenna_gain_dbi: 0
+    radar_cross_section_m2: 0.05  # Partially hidden target.
+    noise_figure_db: 6
+    system_losses_db: 25          # 3 dB cables + about 20 dB through rubble.
+    min_snr_db: 3
+
+  # Effective noise bandwidth (Hz).  In theory the bin width f_s_dec / n_fft
+  # (0.24 Hz), but the phase noise of the Pluto oscillator raises the floor to
+  # about 30–100 Hz in practice.
+  noise_bandwidth_hz: 50
+
+
+# ---------------------------------------------------------------------------
+# Simulation (no PlutoSDR needed)
 # ---------------------------------------------------------------------------
 simulation:
   # Use the simulated source (true) or the PlutoSDR (false).
-  enable: false
+  enabled: false
 
   # Person in front of the radar (false = empty scene).
   presence: true

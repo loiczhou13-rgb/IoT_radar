@@ -213,7 +213,7 @@ def build_optimizer(model: nn.Module, cfg: dict[str, Any]) -> torch.optim.Optimi
         raise ValueError(f"optimizer.name non supporté : {name!r} (attendu adamw)")
     return torch.optim.AdamW(
         model.parameters(),
-        lr=float(opt_cfg["lr"]),
+        lr=float(opt_cfg["learning_rate"]),
         weight_decay=float(opt_cfg["weight_decay"]),
         betas=tuple(float(b) for b in opt_cfg.get("betas", (0.9, 0.999))),
     )
@@ -397,7 +397,7 @@ def train(cfg: dict[str, Any], config_path: Path) -> None:
         ("Input shape", str(model.expected_input_shape)),
         ("Latent shape", str(model.latent_shape)),
         ("Loss", f"{alpha:.2f}·{recon_name} + {1 - alpha:.2f}·BCE"),
-        ("Optimizer", f"AdamW  lr={opt_cfg['lr']}  wd={opt_cfg['weight_decay']}"),
+        ("Optimizer", f"AdamW  lr={opt_cfg['learning_rate']}  wd={opt_cfg['weight_decay']}"),
         ("Scheduler", f"StepLR  step={sch_cfg['step_size']}  γ={sch_cfg['gamma']}"),
         ("Epochs", str(n_epochs)),
         ("Best metric", best_metric_key),

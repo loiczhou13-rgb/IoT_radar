@@ -84,7 +84,7 @@ def test_training_runs_end_to_end(data_dir: Path, tmp_path: Path) -> None:
         "training": {
             "epochs": 2,
             "loss": {"reconstruction": "mse", "alpha": 0.5, "bce_pos_weight": None},
-            "optimizer": {"name": "adamw", "lr": 1e-3, "weight_decay": 1e-4, "betas": [0.9, 0.999]},
+            "optimizer": {"name": "adamw", "learning_rate": 1e-3, "weight_decay": 1e-4, "betas": [0.9, 0.999]},
             "scheduler": {"name": "steplr", "step_size": 1, "gamma": 0.5},
             "best_metric": "val_total",
             "progress_interval": 1,

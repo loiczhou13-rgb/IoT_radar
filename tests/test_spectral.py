@@ -22,12 +22,12 @@ def test_offline_spectrogram_equals_stream() -> None:
         frames.close()
     logging.disable(logging.NOTSET)
 
-    n_fft = cfg["spectrogramme"]["n_fft"]
-    hop = int(n_fft * (1.0 - cfg["spectrogramme"]["overlap"]))
+    n_fft = cfg["spectrogram"]["n_fft"]
+    hop = int(n_fft * (1.0 - cfg["spectrogram"]["overlap"]))
     offline = compute_spectrogram(
         np.concatenate(chunks), f_s=1000.0,
         window=get_window("hann", n_fft), hop=hop,
-        skip_frames=cfg["spectrogramme"]["skip_warmup"],
+        skip_frames=cfg["spectrogram"]["skip_warmup_frames"],
     )
     assert offline.shape[0] >= 5
     np.testing.assert_array_equal(offline[:5], np.array(streamed))

@@ -37,7 +37,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--batch-size", type=int, default=None,
                    help="Surcharge dataloader.batch_size.")
     p.add_argument("--lr", type=float, default=None,
-                   help="Surcharge training.optimizer.lr.")
+                   help="Surcharge training.optimizer.learning_rate.")
     p.add_argument("--device", default=None,
                    help="Surcharge le device (auto|cpu|cuda).")
     return p.parse_args(argv)
@@ -49,7 +49,7 @@ def apply_cli_overrides(cfg: dict[str, Any], args: argparse.Namespace) -> None:
     if args.batch_size is not None:
         cfg["dataloader"]["batch_size"] = int(args.batch_size)
     if args.lr is not None:
-        cfg["training"]["optimizer"]["lr"] = float(args.lr)
+        cfg["training"]["optimizer"]["learning_rate"] = float(args.lr)
     if args.device is not None:
         cfg["device"] = str(args.device)
 

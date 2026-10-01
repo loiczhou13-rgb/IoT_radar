@@ -32,5 +32,5 @@ def test_tx_buffer_refuses_a_fractional_number_of_periods() -> None:
 def test_default_config_transmits_and_receives_the_snapped_offset() -> None:
     cfg = load_config(DEFAULT_RADAR_CONFIG)
     assert resolve_f_offset(cfg) == pytest.approx(488.28125)
-    cfg["emission"]["mode"] = "cw"
+    cfg["tx"]["waveform"] = "cw"
     assert resolve_f_offset(cfg) == 0.0

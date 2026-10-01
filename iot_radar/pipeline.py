@@ -38,14 +38,14 @@ def auto_skip_warmup(
 
     The clutter filter has a transient of ~3·τ.  We translate it into a
     number of STFT hops and round up.  The user can still override via
-    ``spectrogramme.skip_warmup`` in the config.
+    ``spectrogram.skip_warmup_frames`` in the config.
     """
     mode = clu_cfg.get("mode", "butterworth")
     if mode in ("iir", "mean"):
         alpha = float(clu_cfg.get("alpha", 0.9999))
         tau_s = 1.0 / max((1.0 - alpha) * f_s_dec, 1e-12)
     elif mode == "butterworth":
-        f_cut = float(clu_cfg.get("butterworth_cutoff", 0.05))
+        f_cut = float(clu_cfg.get("butterworth_cutoff_hz", 0.05))
         tau_s = 1.0 / (2.0 * math.pi * max(f_cut, 1e-6))
     else:
         tau_s = 0.0
@@ -81,22 +81,21 @@ def streaming_frame_generator(
     sdr_cfg = cfg["sdr"]
     dec_cfg = cfg["decimation"]
     clu_cfg = cfg["clutter"]
-    spec_cfg = cfg["spectrogramme"]
-    win_cfg = cfg["windowing"]
+    spec_cfg = cfg["spectrogram"]
     det_cfg = cfg["detection"]
 
-    f_s = float(sdr_cfg["f_s"])
+    f_s = float(sdr_cfg["sample_rate_hz"])
     n_fft = int(spec_cfg["n_fft"])
     overlap = float(spec_cfg["overlap"])
     hop = max(1, int(n_fft * (1.0 - overlap)))
 
-    do_decimate = dec_cfg.get("enable", True)
-    D = int(dec_cfg["D"]) if do_decimate else 1
-    f_max_utile = float(dec_cfg["f_max_utile"])
+    do_decimate = dec_cfg.get("enabled", True)
+    D = int(dec_cfg["factor"]) if do_decimate else 1
+    f_max_utile = float(dec_cfg["max_useful_frequency_hz"])
 
     f_off = resolve_f_offset(cfg)
-    bande_resp_bb = tuple(det_cfg["bande_respiration"])
-    bande_ref_bb = tuple(det_cfg["bande_reference"])
+    bande_resp_bb = tuple(det_cfg["breathing_band_hz"])
+    bande_ref_bb = tuple(det_cfg["reference_band_hz"])
 
     f_max_eff = max(f_max_utile, abs(f_off) + bande_ref_bb[1])
     decimator = Decimator(f_s=f_s, D=D, f_max_utile=f_max_eff)
@@ -107,20 +106,20 @@ def streaming_frame_generator(
         fs=f_s_dec,
         alpha=float(clu_cfg["alpha"]),
         butterworth_order=int(clu_cfg["butterworth_order"]),
-        butterworth_cutoff=float(clu_cfg["butterworth_cutoff"]),
+        butterworth_cutoff=float(clu_cfg["butterworth_cutoff_hz"]),
     )
-    window = get_window(win_cfg["mode"], n_fft)
+    window = get_window(spec_cfg["window"], n_fft)
 
-    w = float(det_cfg["w"])
-    alpha_alert = float(det_cfg["alpha"])
+    w = float(det_cfg["spectral_weight"])
+    alpha_alert = float(det_cfg["false_alarm_probability"])
     p_value_decades = float(det_cfg["p_value_decades"])
     acf_floor = float(det_cfg["acf_floor"])
     acf_good = float(det_cfg["acf_good"])
 
-    acf_buffer_seconds = float(det_cfg["acf_buffer_seconds"])
+    acf_buffer_seconds = float(det_cfg["acf_buffer_s"])
     acf_len = max(1, int(round(acf_buffer_seconds * f_s_dec)))
 
-    user_warmup = spec_cfg.get("skip_warmup")
+    user_warmup = spec_cfg.get("skip_warmup_frames")
     auto_warmup = auto_skip_warmup(clu_cfg, f_s_dec, hop)
     skip_warmup = int(user_warmup) if user_warmup is not None else auto_warmup
 
@@ -231,14 +230,14 @@ def streaming_frame_generator(
 def build_context(cfg: dict[str, Any]) -> dict[str, Any]:
     """Build the dashboard context dict from config alone."""
     sdr = cfg["sdr"]
-    emi = cfg["emission"]
+    tx_cfg = cfg["tx"]
     dec_cfg = cfg["decimation"]
-    spec_cfg = cfg["spectrogramme"]
+    spec_cfg = cfg["spectrogram"]
     det_cfg = cfg["detection"]
 
-    f_s = float(sdr["f_s"])
-    f_c = float(sdr["f_c"])
-    D = int(dec_cfg["D"]) if dec_cfg.get("enable", True) else 1
+    f_s = float(sdr["sample_rate_hz"])
+    f_c = float(sdr["center_frequency_hz"])
+    D = int(dec_cfg["factor"]) if dec_cfg.get("enabled", True) else 1
     f_s_dec = f_s / D
     n_fft = int(spec_cfg["n_fft"])
 
@@ -246,7 +245,7 @@ def build_context(cfg: dict[str, Any]) -> dict[str, Any]:
 
     f_off = resolve_f_offset(cfg)
     tx_buffer = generate_tx_buffer(
-        mode=emi["mode"],
+        mode=tx_cfg["waveform"],
         buffer_size=sdr["buffer_size"],
         f_s=f_s,
         f_offset=f_off,
@@ -264,8 +263,8 @@ def build_context(cfg: dict[str, Any]) -> dict[str, Any]:
 
     clutter_mode = cfg["clutter"]["mode"]
     
-    bande_resp_bb = list(det_cfg["bande_respiration"])
-    B_eff_hz = float(cfg["bilan_liaison"]["B_eff_hz"])
+    bande_resp_bb = list(det_cfg["breathing_band_hz"])
+    B_eff_hz = float(cfg["link_budget"]["noise_bandwidth_hz"])
 
     return {
         "f_hz": f_hz,

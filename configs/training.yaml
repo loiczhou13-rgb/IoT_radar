@@ -1,32 +1,32 @@
 # =============================================================================
-# Configuration — AICalibration (autoencodeur supervisé micro-Doppler)
+# Training configuration — supervised micro-Doppler autoencoder (iot_radar.ml)
 # =============================================================================
-# Toutes les hyperparamètres modèle / entraînement / données sont définis ici.
-# Aucun de ces nombres ne doit être codé en dur dans le code Python.
+# Every model / training / data hyper-parameter is defined here; none of these
+# numbers is hard-coded in the Python code.  Relative paths are relative to
+# the repository root.
 
 # ---------------------------------------------------------------------------
-# Reproductibilité
+# Reproducibility
 # ---------------------------------------------------------------------------
 seed: 42
 
-# auto = CUDA si dispo, sinon CPU.  Forcer avec "cpu" ou "cuda".
+# auto = CUDA if available, otherwise CPU.  Force with "cpu" or "cuda".
 device: auto
 
 
 # ---------------------------------------------------------------------------
-# Données
+# Data (legacy .npz spectrogram recordings)
 # ---------------------------------------------------------------------------
 data:
-  # Chemins relatifs à la racine du dépôt (lus depuis train.py).
   data_root: AICalibration/data
   train_subdir: train
-  val_subdir: val            # utilisé s'il contient au moins un .npz
-  val_split: 0.2             # sinon : split aléatoire de train_subdir
+  val_subdir: val            # used if it contains at least one .npz
+  val_split: 0.2             # otherwise: random split of train_subdir
 
   # CalibrationDataset
-  n_cols: 32                 # nombre de colonnes STFT par fenêtre
-  stride: 32                 # pas entre fenêtres successives (= n_cols → disjointes)
-  normalise: true            # zéro-mean / unit-var par fenêtre
+  n_cols: 32                 # number of STFT columns per window
+  stride: 32                 # step between successive windows (= n_cols -> disjoint)
+  normalise: true            # zero mean / unit variance per window
 
 
 # ---------------------------------------------------------------------------
@@ -34,78 +34,77 @@ data:
 # ---------------------------------------------------------------------------
 dataloader:
   batch_size: 8
-  num_workers: 0             # 0 = chargement dans le process principal
-  pin_memory: false          # passer à true sur GPU
+  num_workers: 0             # 0 = load in the main process
+  pin_memory: false          # set to true on GPU
 
 
 # ---------------------------------------------------------------------------
-# Modèle (autoencodeur Conv2D + tête de classification binaire)
+# Model (Conv2D autoencoder + binary classification head)
 # ---------------------------------------------------------------------------
 model:
-  # Forme d'entrée attendue (C, H, W) — H = n_fft, W = n_cols.
-  # Doit être cohérent avec la production du dataset.
+  # Expected input shape (C, H, W) — H = n_fft, W = n_cols.
+  # Must match what the dataset produces.
   expected_input_shape: [1, 8192, 32]
 
-  # Liste des canaux successifs : [in, post_in_conv, après_down_1, ..., latent].
+  # Successive channels: [in, after in_conv, after down_1, ..., latent].
   encoder_channels: [1, 16, 32, 64, 128, 128]
 
-  # Facteurs de downsampling (freq, temps) appliqués séquentiellement.
-  # Produit cumulé doit diviser exactement H et W de expected_input_shape.
-  # Ici : 4×4×4×4 = 256 sur la fréquence, 2×2×2×2 = 16 sur le temps.
-  # Latent : (128, 8192/256, 32/16) = (128, 32, 2).
+  # (frequency, time) downsampling factors, applied in sequence.  Their
+  # cumulative product must divide H and W of expected_input_shape exactly.
+  # Here: 4x4x4x4 = 256 on frequency, 2x2x2x2 = 16 on time.
+  # Latent: (128, 8192/256, 32/16) = (128, 32, 2).
   downsample_factors: [[4, 2], [4, 2], [4, 2], [4, 2]]
 
-  # Noyaux convolutifs.
-  in_conv_kernel:   [7, 3]   # première couche (champ réceptif fréquentiel large)
-  refine_kernel:    [3, 3]   # après chaque down/up
-  out_conv_kernel:  [7, 3]   # dernière couche du décodeur
+  # Convolution kernels.
+  in_conv_kernel:   [7, 3]   # first layer (wide frequency receptive field)
+  refine_kernel:    [3, 3]   # after each down / up block
+  out_conv_kernel:  [7, 3]   # last decoder layer
 
-  # Tête de classification (MLP sur le latent global-pool).
+  # Classification head (MLP on the globally pooled latent).
   classifier:
     hidden: 64
     dropout: 0.3
 
 
 # ---------------------------------------------------------------------------
-# Entraînement
+# Training
 # ---------------------------------------------------------------------------
 training:
   epochs: 50
 
-  # Loss composite : alpha * recon + (1 - alpha) * BCE.
+  # Composite loss: alpha * reconstruction + (1 - alpha) * BCE.
   loss:
-    reconstruction: mse      # "mse" ou "l1"
-    alpha: 0.5               # poids reconstruction (0..1) ; (1 - alpha) → BCE
-    bce_pos_weight: null     # null = pas de pondération ; sinon flottant
+    reconstruction: mse      # "mse" or "l1"
+    alpha: 0.5               # reconstruction weight (0..1); (1 - alpha) -> BCE
+    bce_pos_weight: null     # null = no weighting; otherwise a float
 
   optimizer:
     name: adamw
-    lr: 1.0e-3
+    learning_rate: 1.0e-3
     weight_decay: 1.0e-4
     betas: [0.9, 0.999]
 
   scheduler:
     name: steplr
-    step_size: 15            # diviser le LR par gamma tous les step_size epochs
+    step_size: 15            # divide the learning rate by gamma every step_size epochs
     gamma: 0.5
 
-  # Critère de sélection du meilleur checkpoint.
-  # "val_total" (défaut) ou "val_bce" ou "val_recon".
+  # Best-checkpoint criterion: "val_total" (default), "val_bce" or "val_recon".
   best_metric: val_total
 
-  # Progress bar (train batches) + val summary every N epochs.
-  # Val is still evaluated every epoch when save_metrics is enabled.
+  # Progress bar (train batches) + validation summary every N epochs.
+  # Validation itself runs at every epoch.
   progress_interval: 10
 
 
 # ---------------------------------------------------------------------------
-# Sorties
+# Outputs
 # ---------------------------------------------------------------------------
 output:
   results_dir: AICalibration/results
   checkpoint_name: best.pt
   log_file: AICalibration/results/train.log
 
-  # Per-epoch metrics history (CSV) for plotting in inference.ipynb.
+  # Per-epoch metrics history (CSV) for plotting in notebooks/inference.ipynb.
   save_metrics: true
   metrics_file: AICalibration/results/history.csv
