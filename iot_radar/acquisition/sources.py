@@ -21,10 +21,10 @@ import numpy as np
 from iot_radar.acquisition.pluto import (
     check_saturation,
     clear_rx_overflow,
-    generate_tx_buffer,
+    cw_tx_buffer,
     open_pluto,
     read_and_clear_rx_overflow,
-    resolve_f_offset,
+    effective_tx_offset_hz,
 )
 from iot_radar.physics import SPEED_OF_LIGHT
 
@@ -320,7 +320,7 @@ def open_source(cfg: dict[str, Any], simulation: bool) -> PlutoSource | CWSimula
     """
     sdr = cfg["sdr"]
     sim = cfg["simulation"]
-    f_off = resolve_f_offset(cfg)
+    f_off = effective_tx_offset_hz(cfg)
 
     if simulation or sim.get("enabled", False):
         logger.info("Mode simulation continu activé (f_offset=%.1f Hz)", f_off)
@@ -343,11 +343,11 @@ def open_source(cfg: dict[str, Any], simulation: bool) -> PlutoSource | CWSimula
         )
 
     logger.info("Mode matériel continu — connexion au PlutoSDR")
-    tx_buffer = generate_tx_buffer(
-        mode=cfg["tx"]["waveform"],
+    tx_buffer = cw_tx_buffer(
+        waveform=cfg["tx"]["waveform"],
         buffer_size=sdr["buffer_size"],
-        f_s=sdr["sample_rate_hz"],
-        f_offset=f_off,
+        f_s_hz=sdr["sample_rate_hz"],
+        offset_hz=f_off,
     )
     return PlutoSource(
         uri=sdr["uri"],

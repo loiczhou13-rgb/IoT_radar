@@ -1,4 +1,13 @@
-"""PlutoSDR (ADALM-PLUTO) transceiver: TX waveform and streaming reception."""
+"""PlutoSDR (ADALM-PLUTO, AD9363) transceiver: TX waveform, configuration, RX checks.
+
+Place in the chain: first step.  The Pluto is used as a monostatic CW radar:
+its transmitter replays a baseband waveform in **cyclic** mode (a pure carrier,
+or a tone at ``offset_hz``), and its receiver, tuned to the same local
+oscillator, delivers the echoes already down-converted to baseband.
+
+This module only talks to the hardware; :class:`iot_radar.acquisition.sources.PlutoSource`
+turns the received buffers into blocks for the pipeline.
+"""
 
 from __future__ import annotations
 
@@ -9,7 +18,9 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-_ADC_FULL_SCALE: int = 2048
+ADC_FULL_SCALE: int = 2048
+"""Full scale of the 12-bit ADC as returned by ``pyadi-iio``: samples in [-2048, 2047]."""
+
 _ADC_SATURATION_RATIO: float = 0.80
 
 RX_STATUS_REGISTER: int = 0x80000088
@@ -18,119 +29,114 @@ RX_STATUS_REGISTER: int = 0x80000088
 RX_OVERFLOW_BIT: int = 0b0100
 """Bit set by the FPGA when RX samples were dropped (host too slow)."""
 
-_DAC_FULL_SCALE: int = 2**14
-"""PlutoSDR DAC convention used by ``pyadi-iio``.
+DAC_FULL_SCALE: int = 2**14
+"""Amplitude that maps unit-amplitude IQ to the DAC full scale with ``pyadi-iio``.
 
-The ``adi.Pluto.tx()`` API casts ``complex64`` samples directly to
-``int16`` without applying any scaling.  The AD9363 DAC is 12-bit but
-``pyadi-iio`` aligns its samples to the upper bits of the ``int16`` word,
-so unit-amplitude IQ has to be multiplied by ``2**14`` to reach DAC
-full-scale.  Without this scaling the carrier sits at ~1 LSB
-(≈ −84 dBFS) and is invisible on a spectrum analyser.
+The ``adi.Pluto.tx()`` API casts ``complex64`` samples directly to ``int16``
+without any scaling.  The AD9363 DAC is 12-bit but ``pyadi-iio`` aligns its
+samples to the upper bits of the ``int16`` word, so unit-amplitude IQ has to
+be multiplied by ``2**14`` to reach the DAC full scale.  Without this scaling
+the carrier sits at ~1 LSB (≈ −84 dBFS) and is invisible on a spectrum
+analyser.
 """
 
 
-def generate_tx_buffer(
-    mode: str,
+# ---------------------------------------------------------------------------
+# Transmitted waveform
+# ---------------------------------------------------------------------------
+
+def cw_tx_buffer(
+    waveform: str,
     buffer_size: int,
-    f_s: float,
-    f_offset: float = 0.0,
+    f_s_hz: float,
+    offset_hz: float = 0.0,
 ) -> np.ndarray:
-    """Generate a complex baseband TX waveform of length *buffer_size*.
+    """Cyclic baseband TX buffer of a CW radar.
 
     Parameters
     ----------
-    mode : str
-        Emission mode. ``"cw"`` produces a constant-envelope carrier;
-        ``"cw_offset"`` produces a complex sinusoid at *f_offset* Hz,
-        which shifts the useful signal away from the DC bin.
+    waveform : str
+        ``"cw"`` (constant sample: pure carrier) or ``"cw_offset"`` (complex
+        tone at *offset_hz*, which moves the useful signal away from the
+        receiver DC offset).
     buffer_size : int
-        Number of IQ samples in the transmit buffer.
-    f_s : float
-        ADC / DAC sampling rate (Hz).
-    f_offset : float, optional
-        Frequency offset in baseband (Hz).  Only used when
-        *mode* = ``"cw_offset"``.  Default is 0.
+        Number of IQ samples of the buffer.
+    f_s_hz : float
+        DAC sampling rate (Hz).
+    offset_hz : float, optional
+        Baseband frequency of the tone (Hz), ``"cw_offset"`` only.  Must be a
+        whole number of periods per buffer (see :func:`snap_tx_offset_hz`).
 
     Returns
     -------
     numpy.ndarray
-        Complex64 array of shape ``(buffer_size,)`` with samples scaled
-        to the PlutoSDR DAC full-scale (``±2**14``).
+        Complex64 array of shape ``(buffer_size,)`` scaled to the PlutoSDR
+        DAC full scale (``±2**14``, see :data:`DAC_FULL_SCALE`).
 
     Raises
     ------
     ValueError
-        If *mode* is not one of ``{"cw", "cw_offset"}``, if *f_offset*
-        violates the Nyquist criterion (``|f_offset| >= f_s / 2``), or if
-        the buffer would not hold a whole number of periods of the offset
-        tone (use :func:`snap_tx_offset`).
+        If *waveform* is unknown, if *offset_hz* violates the Nyquist
+        criterion (``|offset_hz| >= f_s_hz / 2``), or if the buffer would not
+        hold a whole number of periods of the tone.
 
     Notes
     -----
-    * **CW mode** — baseband samples are a constant ``2**14 + 0j``;
-      the RF output is a pure tone at exactly ``f_c``.
-    * **CW-offset mode** — baseband samples are
-      ``2**14 · exp(j·2π·f_offset·t)``, producing an RF tone at
-      ``f_c + f_offset`` and avoiding the DC clutter.
+    * ``"cw"`` — samples ``2**14 + 0j``: RF tone at exactly the LO frequency.
+    * ``"cw_offset"`` — samples ``2**14 · exp(j·2π·offset_hz·t)``: RF tone at
+      ``LO + offset_hz``.
     * The Pluto replays the buffer back-to-back (cyclic mode).  With a
       non-integer number of periods per buffer, the phase would jump at
       every repetition and the emitted spectrum would become a set of lines
-      at multiples of ``f_s / buffer_size`` (bug B1: 500 Hz requested,
+      at multiples of ``f_s_hz / buffer_size`` (bug B1: 500 Hz requested,
       dominant line at 488.28 Hz).
-
-    The ``2**14`` scaling is **mandatory**: without it the DAC effectively
-    transmits a zero-amplitude signal (see :data:`_DAC_FULL_SCALE`).
     """
-    if mode not in ("cw", "cw_offset"):
+    if waveform not in ("cw", "cw_offset"):
         raise ValueError(
-            f"Unknown emission mode '{mode}'. Expected 'cw' or 'cw_offset'."
+            f"Unknown TX waveform '{waveform}'. Expected 'cw' or 'cw_offset'."
         )
 
-    if mode == "cw":
-        logger.info(
-            "Génération du buffer TX — mode CW (module constant, scale=%d)",
-            _DAC_FULL_SCALE,
-        )
-        return np.full(buffer_size, _DAC_FULL_SCALE + 0j, dtype=np.complex64)
+    if waveform == "cw":
+        logger.info("TX buffer — CW (constant envelope, scale=%d)", DAC_FULL_SCALE)
+        return np.full(buffer_size, DAC_FULL_SCALE + 0j, dtype=np.complex64)
 
-    if abs(f_offset) >= f_s / 2:
+    if abs(offset_hz) >= f_s_hz / 2:
         raise ValueError(
-            f"f_offset={f_offset} Hz dépasse la fréquence de Nyquist "
-            f"(f_s/2 = {f_s / 2} Hz). Réduire f_offset ou augmenter f_s."
+            f"offset_hz={offset_hz} Hz exceeds the Nyquist frequency "
+            f"(f_s/2 = {f_s_hz / 2} Hz). Reduce the offset or increase the sampling rate."
         )
 
-    periods_per_buffer = f_offset * buffer_size / f_s
+    periods_per_buffer = offset_hz * buffer_size / f_s_hz
     if abs(periods_per_buffer - round(periods_per_buffer)) > 1e-6:
         raise ValueError(
-            f"f_offset={f_offset} Hz donne {periods_per_buffer:.4f} périodes par "
-            f"buffer de {buffer_size} échantillons : le buffer cyclique serait "
-            f"discontinu. Utiliser snap_tx_offset() (multiple de "
-            f"{f_s / buffer_size:.4f} Hz)."
+            f"offset_hz={offset_hz} Hz gives {periods_per_buffer:.4f} periods per "
+            f"{buffer_size}-sample buffer: the cyclic buffer would be "
+            f"discontinuous. Use snap_tx_offset_hz() (multiple of "
+            f"{f_s_hz / buffer_size:.4f} Hz)."
         )
 
     logger.info(
-        "Génération du buffer TX — mode CW-offset (f_offset=%.0f Hz, scale=%d)",
-        f_offset,
-        _DAC_FULL_SCALE,
+        "TX buffer — CW offset (offset=%.0f Hz, scale=%d)",
+        offset_hz,
+        DAC_FULL_SCALE,
     )
-    t = np.arange(buffer_size, dtype=np.float64) / f_s
-    waveform = _DAC_FULL_SCALE * np.exp(1j * 2 * np.pi * f_offset * t)
-    return waveform.astype(np.complex64)
+    t_s = np.arange(buffer_size, dtype=np.float64) / f_s_hz
+    waveform_samples = DAC_FULL_SCALE * np.exp(1j * 2 * np.pi * offset_hz * t_s)
+    return waveform_samples.astype(np.complex64)
 
 
-def snap_tx_offset(f_offset: float, f_s: float, buffer_size: int) -> float:
+def snap_tx_offset_hz(requested_offset_hz: float, f_s_hz: float, buffer_size: int) -> float:
     """Nearest offset giving a whole number of periods per TX buffer.
 
     The cyclic TX buffer is continuous only if it holds an integer number of
-    periods of the offset tone, i.e. if ``f_offset`` is a multiple of
-    ``f_s / buffer_size`` (122.07 Hz for 16384 samples at 2 MS/s).
+    periods of the offset tone, i.e. if the offset is a multiple of
+    ``f_s_hz / buffer_size`` (122.07 Hz for 16384 samples at 2 MS/s).
 
     Parameters
     ----------
-    f_offset : float
+    requested_offset_hz : float
         Requested baseband offset (Hz).
-    f_s : float
+    f_s_hz : float
         DAC sampling rate (Hz).
     buffer_size : int
         Number of samples of the cyclic TX buffer.
@@ -138,54 +144,58 @@ def snap_tx_offset(f_offset: float, f_s: float, buffer_size: int) -> float:
     Returns
     -------
     float
-        Effective offset (Hz): ``round(f_offset / grid) * grid`` with
-        ``grid = f_s / buffer_size``.
+        Effective offset (Hz): ``round(requested / grid) * grid`` with
+        ``grid = f_s_hz / buffer_size``.
 
     Raises
     ------
     ValueError
         If the snapped offset is 0 (requested offset below ``grid / 2``).
     """
-    grid_hz = f_s / buffer_size
-    n_periods = round(f_offset / grid_hz)
+    grid_hz = f_s_hz / buffer_size
+    n_periods = round(requested_offset_hz / grid_hz)
     if n_periods == 0:
         raise ValueError(
-            f"f_offset={f_offset} Hz est trop faible : le plus petit décalage "
-            f"possible est {grid_hz:.4f} Hz (f_s / buffer_size)."
+            f"offset {requested_offset_hz} Hz is too small: the smallest possible "
+            f"offset is {grid_hz:.4f} Hz (f_s / buffer_size)."
         )
     return n_periods * grid_hz
 
 
-def resolve_f_offset(cfg: dict[str, Any]) -> float:
-    """Return the effective baseband offset (Hz), 0 if not in cw_offset mode.
+def effective_tx_offset_hz(cfg: dict[str, Any]) -> float:
+    """TX offset actually transmitted (Hz), 0 if the waveform is not ``"cw_offset"``.
 
-    The configured ``tx.offset_hz`` is snapped with
-    :func:`snap_tx_offset`; the snapped value is the one transmitted, so it
-    is also the one used by the receiver (bug B1).
+    The configured ``tx.offset_hz`` is snapped with :func:`snap_tx_offset_hz`;
+    the snapped value is the one transmitted, so it is also the one the
+    receiver must use (bug B1).
     """
     tx_cfg = cfg.get("tx", {})
     if tx_cfg.get("waveform") != "cw_offset":
         return 0.0
-    requested = float(tx_cfg.get("offset_hz", 0.0))
+    requested_hz = float(tx_cfg.get("offset_hz", 0.0))
     sdr = cfg["sdr"]
-    effective = snap_tx_offset(requested, float(sdr["sample_rate_hz"]), int(sdr["buffer_size"]))
-    if effective != requested:
+    effective_hz = snap_tx_offset_hz(requested_hz, float(sdr["sample_rate_hz"]), int(sdr["buffer_size"]))
+    if effective_hz != requested_hz:
         logger.info(
-            "f_offset recalé de %.3f Hz à %.5f Hz (nombre entier de périodes "
-            "par buffer TX de %d échantillons)",
-            requested,
-            effective,
+            "TX offset snapped from %.3f Hz to %.5f Hz (whole number of periods "
+            "per %d-sample TX buffer)",
+            requested_hz,
+            effective_hz,
             int(sdr["buffer_size"]),
         )
-    return effective
+    return effective_hz
 
+
+# ---------------------------------------------------------------------------
+# Device configuration
+# ---------------------------------------------------------------------------
 
 def open_pluto(
     uri: str,
-    f_c: float,
-    f_s: float,
-    rx_gain: float,
-    tx_gain: float,
+    f_c_hz: float,
+    f_s_hz: float,
+    rx_gain_db: float,
+    tx_gain_db: float,
     buffer_size: int,
     tx_buffer: np.ndarray,
 ):
@@ -195,15 +205,16 @@ def open_pluto(
     ----------
     uri : str
         PlutoSDR address, e.g. ``"ip:192.168.2.1"`` or ``"usb:"``.
-    f_c, f_s : float
-        Carrier frequency (Hz) and ADC sampling rate (Hz).
-    rx_gain, tx_gain : float
-        Receiver gain (dB) and transmitter attenuation (dB, negative).
+    f_c_hz, f_s_hz : float
+        Carrier (TX and RX local oscillator) frequency and ADC sampling rate (Hz).
+        The analog RF bandwidth is set to *f_s_hz*.
+    rx_gain_db, tx_gain_db : float
+        Manual receiver gain (dB) and transmitter attenuation (dB, ≤ 0).
     buffer_size : int
         Samples per RX buffer.
     tx_buffer : numpy.ndarray
-        Complex64 baseband TX waveform (cyclic).  **Already scaled to
-        ±2**14** — see :func:`generate_tx_buffer`.
+        Complex64 baseband TX waveform (cyclic), **already scaled to ±2**14**
+        (see :func:`cw_tx_buffer`).
 
     Returns
     -------
@@ -220,31 +231,35 @@ def open_pluto(
         import adi
     except ImportError as exc:
         raise RuntimeError(
-            "pyadi-iio n'est pas installé. Exécuter : pip install pyadi-iio"
+            "pyadi-iio is not installed: pip install pyadi-iio"
         ) from exc
 
     try:
         sdr = adi.Pluto(uri)
     except Exception as exc:
         raise RuntimeError(
-            f"Impossible de se connecter au PlutoSDR à '{uri}'. "
-            f"Vérifier l'adresse IP (ex. ip:192.168.2.1) ou la connexion USB (usb:)."
+            f"Cannot reach the PlutoSDR at '{uri}'. Check the IP address "
+            f"(e.g. ip:192.168.2.1) or the USB link (usb:)."
         ) from exc
 
-    sdr.sample_rate = int(f_s)
-    sdr.rx_lo = int(f_c)
-    sdr.tx_lo = int(f_c)
-    sdr.rx_rf_bandwidth = int(f_s)
-    sdr.tx_rf_bandwidth = int(f_s)
+    sdr.sample_rate = int(f_s_hz)
+    sdr.rx_lo = int(f_c_hz)
+    sdr.tx_lo = int(f_c_hz)
+    sdr.rx_rf_bandwidth = int(f_s_hz)
+    sdr.tx_rf_bandwidth = int(f_s_hz)
     sdr.rx_buffer_size = buffer_size
     sdr.gain_control_mode_chan0 = "manual"
-    sdr.rx_hardwaregain_chan0 = rx_gain
-    sdr.tx_hardwaregain_chan0 = tx_gain
+    sdr.rx_hardwaregain_chan0 = rx_gain_db
+    sdr.tx_hardwaregain_chan0 = tx_gain_db
 
     sdr.tx_cyclic_buffer = True
     sdr.tx(tx_buffer)
     return sdr
 
+
+# ---------------------------------------------------------------------------
+# Reception checks
+# ---------------------------------------------------------------------------
 
 def clear_rx_overflow(sdr) -> None:
     """Clear the sticky bits of the RX status register.
@@ -268,15 +283,19 @@ def read_and_clear_rx_overflow(sdr) -> bool:
 
 
 def check_saturation(frame: np.ndarray, frame_index: int) -> None:
-    """Warn if the IQ frame approaches ADC saturation."""
+    """Warn if an RX buffer approaches the ADC full scale (80 %).
+
+    Saturation clips the echoes; reduce ``sdr.rx_gain_db`` or
+    ``sdr.tx_gain_db`` if it happens.
+    """
     peak = np.max(np.abs(frame))
-    threshold = _ADC_SATURATION_RATIO * _ADC_FULL_SCALE
+    threshold = _ADC_SATURATION_RATIO * ADC_FULL_SCALE
     if peak > threshold:
         logger.warning(
-            "Saturation ADC probable — trame %d : max(|IQ|) = %.0f "
-            "(seuil = %.0f, pleine échelle = %d)",
+            "Probable ADC saturation — buffer %d: max(|IQ|) = %.0f "
+            "(threshold %.0f, full scale %d)",
             frame_index,
             peak,
             threshold,
-            _ADC_FULL_SCALE,
+            ADC_FULL_SCALE,
         )

@@ -28,7 +28,7 @@ from iot_radar.dsp.detection import (
     detect_presence_column,
 )
 from iot_radar.dsp.spectral import compute_single_column, get_window
-from iot_radar.acquisition.pluto import generate_tx_buffer
+from iot_radar.acquisition.pluto import cw_tx_buffer
 from iot_radar.physics import compute_range
 from iot_radar.acquisition.sources import open_source
 from iot_radar.pipeline import build_context, streaming_frame_generator
@@ -190,8 +190,8 @@ def case_detection() -> dict[str, np.ndarray]:
 def case_tx_buffer() -> dict[str, np.ndarray]:
     """CW and CW-offset transmit buffers (offset = whole number of periods)."""
     return {
-        "cw": generate_tx_buffer("cw", 1024, 2e6),
-        "cw_offset": generate_tx_buffer("cw_offset", 16384, 2e6, 488.28125),
+        "cw": cw_tx_buffer("cw", 1024, 2e6),
+        "cw_offset": cw_tx_buffer("cw_offset", 16384, 2e6, 488.28125),
     }
 
 

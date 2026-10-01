@@ -14,7 +14,7 @@ from typing import Any, Generator
 
 import numpy as np
 
-from iot_radar.acquisition.pluto import generate_tx_buffer, resolve_f_offset
+from iot_radar.acquisition.pluto import cw_tx_buffer, effective_tx_offset_hz
 from iot_radar.acquisition.sources import Source
 from iot_radar.dsp.clutter import ClutterFilter
 from iot_radar.dsp.decimation import Decimator
@@ -93,7 +93,7 @@ def streaming_frame_generator(
     D = int(dec_cfg["factor"]) if do_decimate else 1
     f_max_utile = float(dec_cfg["max_useful_frequency_hz"])
 
-    f_off = resolve_f_offset(cfg)
+    f_off = effective_tx_offset_hz(cfg)
     bande_resp_bb = tuple(det_cfg["breathing_band_hz"])
     bande_ref_bb = tuple(det_cfg["reference_band_hz"])
 
@@ -243,12 +243,12 @@ def build_context(cfg: dict[str, Any]) -> dict[str, Any]:
 
     f_hz = frequency_axis(n_fft, f_s_dec)
 
-    f_off = resolve_f_offset(cfg)
-    tx_buffer = generate_tx_buffer(
-        mode=tx_cfg["waveform"],
+    f_off = effective_tx_offset_hz(cfg)
+    tx_buffer = cw_tx_buffer(
+        waveform=tx_cfg["waveform"],
         buffer_size=sdr["buffer_size"],
-        f_s=f_s,
-        f_offset=f_off,
+        f_s_hz=f_s,
+        offset_hz=f_off,
     )
     tx_spectrum = np.fft.fftshift(np.fft.fft(tx_buffer, n=len(tx_buffer)))
     eps = 1e-12
