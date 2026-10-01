@@ -19,7 +19,7 @@ from iot_radar.acquisition.sources import stream_simulation
 from iot_radar.dsp.clutter import ClutterFilter
 from iot_radar.dsp.decimation import Decimator
 from iot_radar.dsp.detection import detect_presence_column
-from iot_radar.dsp.spectral import compute_single_column, get_window
+from iot_radar.dsp.spectral import compute_single_column, frequency_axis, get_window
 from iot_radar.physics import SPEED_OF_LIGHT, compute_range
 
 logger = logging.getLogger(__name__)
@@ -280,7 +280,7 @@ def build_context(cfg: dict[str, Any]) -> dict[str, Any]:
     f_s_dec = f_s / D
     n_fft = int(spec_cfg["n_fft"])
 
-    f_hz = np.fft.fftshift(np.fft.fftfreq(n_fft, d=1.0 / f_s_dec)).astype(np.float64)
+    f_hz = frequency_axis(n_fft, f_s_dec)
 
     f_off = resolve_f_offset(cfg)
     tx_buffer = generate_tx_buffer(
@@ -292,9 +292,7 @@ def build_context(cfg: dict[str, Any]) -> dict[str, Any]:
     tx_spectrum = np.fft.fftshift(np.fft.fft(tx_buffer, n=len(tx_buffer)))
     eps = 1e-12
     spectre_tx_db = 20.0 * np.log10(np.abs(tx_spectrum) + eps).astype(np.float64)
-    f_hz_tx = np.fft.fftshift(
-        np.fft.fftfreq(len(tx_buffer), d=1.0 / f_s)
-    ).astype(np.float64)
+    f_hz_tx = frequency_axis(len(tx_buffer), f_s)
 
     R_min, R_max = compute_range(cfg)
 

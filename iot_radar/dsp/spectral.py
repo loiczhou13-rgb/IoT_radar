@@ -82,6 +82,26 @@ def get_window(mode: str, n: int) -> np.ndarray:
 # Single STFT column
 # ---------------------------------------------------------------------------
 
+def frequency_axis(n_fft: int, f_s: float) -> np.ndarray:
+    """Centred frequency axis (Hz) of an fftshifted ``n_fft``-point spectrum.
+
+    Parameters
+    ----------
+    n_fft : int
+        Number of FFT points.
+    f_s : float
+        Sampling rate (Hz) of the transformed signal.
+
+    Returns
+    -------
+    numpy.ndarray
+        Float64 array of shape ``(n_fft,)`` from ``-f_s/2`` up to
+        ``f_s/2 - f_s/n_fft``, in steps of ``f_s / n_fft``.
+    """
+    frequencies = np.fft.fftfreq(n_fft, d=1.0 / f_s)
+    return np.fft.fftshift(frequencies).astype(np.float64)
+
+
 @dataclass
 class ColumnOutput:
     """Container for a single STFT column (one spectral snapshot).
@@ -127,11 +147,9 @@ def compute_single_column(
     eps = 1e-12
     col_db = 10.0 * np.log10(np.abs(spectrum) ** 2 + eps)
 
-    f_hz = np.fft.fftshift(np.fft.fftfreq(n_fft, d=1.0 / f_s))
-
     return ColumnOutput(
         col_db=col_db.astype(np.float64),
-        f_hz=f_hz.astype(np.float64),
+        f_hz=frequency_axis(n_fft, f_s),
     )
 
 
