@@ -44,7 +44,7 @@ def test_replay_runs_the_phase_pipeline(tmp_path: Path) -> None:
                                              "--log-file", str(tmp_path / "record.log")])
 
     log_file = tmp_path / "replay.log"
-    load_script("replay").main([str(session), "--speed", "0", "--log-file", str(log_file)])
+    load_script("replay").main([str(session), "--speed", "0", "--headless", "--log-file", str(log_file)])
     lines = [line for line in log_file.read_text(encoding="utf-8").splitlines() if "confidence=" in line]
     assert len(lines) > 30 and "WARMUP" in lines[0]
     assert "WARMUP" not in lines[-1]  # the 20 s window is full at the end

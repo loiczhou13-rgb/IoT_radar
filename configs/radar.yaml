@@ -150,6 +150,15 @@ micro_doppler_view:
 
 
 # ---------------------------------------------------------------------------
+# Dashboard (matplotlib)
+# ---------------------------------------------------------------------------
+display:
+  history_s: 120.0          # length of the confidence and rate timelines (s)
+  waterfall_columns: 240    # micro-Doppler columns kept (one per update: 2 min)
+  full_screen: false        # start the dashboard in full screen
+
+
+# ---------------------------------------------------------------------------
 # Radar link budget (range shown on the dashboard)
 # ---------------------------------------------------------------------------
 link_budget:
