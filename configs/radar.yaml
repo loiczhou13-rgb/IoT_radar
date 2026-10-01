@@ -249,13 +249,26 @@ simulation:
   # Use the simulated source (true) or the PlutoSDR (false).
   enabled: false
 
-  # Person in front of the radar (false = empty scene).
+  # Person in front of the radar (false = empty scene); ignored when a
+  # timeline is given.
   presence: true
+
+  # Optional scene timeline [[t_start_s, state], ...] with the states
+  # breathing, empty, motion (body sway) and apnea (heartbeat only), e.g.
+  # [[0, breathing], [45, apnea], [60, breathing], [95, motion], [110, empty]]
+  timeline: null
 
   # Breathing: frequency (Hz, 0.3 Hz = 18 breaths/min) and peak chest
   # displacement (mm).
   breath_rate_hz: 0.3
   breath_amplitude_mm: 10
+
+  # Heartbeat: frequency (Hz) and peak chest displacement (mm).
+  heart_rate_hz: 1.2
+  heart_amplitude_mm: 0.15
+
+  # Amplitude of the body sway during "motion" periods (mm).
+  motion_amplitude_mm: 40.0
 
   # Distance of the person (m): only sets the phase of its echo.
   target_range_m: 3.0

@@ -178,6 +178,22 @@ def _pluto_firmware_version(sdr) -> str:
 # Simulation
 # ---------------------------------------------------------------------------
 
+SCENE_STATES: tuple[str, ...] = ("breathing", "empty", "motion", "apnea")
+"""States of the simulated scene (they are also annotation labels)."""
+
+
+def _parse_timeline(timeline: list | None) -> tuple[np.ndarray, np.ndarray]:
+    """``[[t_start_s, state], ...]`` -> (start times, state indices), sorted by time."""
+    if not timeline:
+        return np.zeros(0), np.zeros(0, dtype=np.int8)
+    entries = sorted((float(start_s), str(state)) for start_s, state in timeline)
+    for _, state in entries:
+        if state not in SCENE_STATES:
+            raise ValueError(f"Unknown scene state '{state}', use {SCENE_STATES}.")
+    starts_s = np.array([start_s for start_s, _ in entries])
+    states = np.array([SCENE_STATES.index(state) for _, state in entries], dtype=np.int8)
+    return starts_s, states
+
 class CWSimulationSource:
     """Simulated PlutoSDR reception of a CW / CW-offset radar, block by block.
 
@@ -194,7 +210,20 @@ class CWSimulationSource:
     included — is a delayed copy of the TX tone, hence sits at ``+f_offset``
     (bug B2: the former model put the static clutter at 0 Hz, where the
     clutter high-pass removed it perfectly, which never happens on the
-    hardware).  The chest displacement is ``d(t) = D·sin(2π·f_b·t)``.
+    hardware).
+
+    Scene model (:meth:`presence_and_displacement`): the radial chest
+    displacement is ``d(t) = D·sin(2π·f_b·t) + D_h·sin(2π·f_h·t)``
+    (breathing + heartbeat).  An optional **timeline** changes the scene over
+    time, e.g. ``[[0, "breathing"], [60, "empty"], [90, "motion"]]``: each
+    entry ``[t_start_s, state]`` holds until the next one, with the states
+
+    * ``breathing`` — person present, breathing (and heartbeat);
+    * ``empty`` — nobody in front of the radar (no echo of a person);
+    * ``motion`` — person moving: a sway of several centimetres is added;
+    * ``apnea`` — person present, holding the breath (heartbeat only).
+
+    Without a timeline the scene is ``breathing`` if *presence* else ``empty``.
 
     The samples are finally rounded to the integer levels of the 12-bit ADC
     and clipped to ``[-2048, 2047]``, as delivered by the Pluto.
@@ -212,7 +241,13 @@ class CWSimulationSource:
     breath_amplitude_mm : float
         Peak chest displacement ``D`` (mm).
     presence : bool, optional
-        ``False`` simulates an empty scene (no echo of a person).
+        ``False`` simulates an empty scene (ignored when *timeline* is given).
+    heart_rate_hz, heart_amplitude_mm : float, optional
+        Heartbeat frequency (Hz) and peak chest displacement (mm).
+    timeline : list or None, optional
+        Scene timeline ``[[t_start_s, state], ...]`` (see above).
+    motion_amplitude_mm : float, optional
+        Amplitude of the body sway during ``motion`` periods (mm).
     target_range_m : float, optional
         Distance ``R0`` of the person (m); sets the phase of its echo.
     target_amplitude : float, optional
@@ -248,6 +283,10 @@ class CWSimulationSource:
         breath_rate_hz: float,
         breath_amplitude_mm: float,
         presence: bool = True,
+        heart_rate_hz: float = 1.2,
+        heart_amplitude_mm: float = 0.0,
+        timeline: list | None = None,
+        motion_amplitude_mm: float = 40.0,
         target_range_m: float = 3.0,
         target_amplitude: float = 1.0,
         static_clutter_amplitude: float = 30.0,
@@ -264,6 +303,10 @@ class CWSimulationSource:
         self._breath_rate_hz = float(breath_rate_hz)
         self._breath_amplitude_m = float(breath_amplitude_mm) * 1e-3
         self._presence = bool(presence)
+        self._heart_rate_hz = float(heart_rate_hz)
+        self._heart_amplitude_m = float(heart_amplitude_mm) * 1e-3
+        self._motion_amplitude_m = float(motion_amplitude_mm) * 1e-3
+        self._timeline_starts_s, self._timeline_states = _parse_timeline(timeline)
         self._target_range_m = float(target_range_m)
         self._target_amplitude = float(target_amplitude)
         # Fixed, arbitrary phases: only the geometry of the IQ arc matters.
@@ -277,11 +320,11 @@ class CWSimulationSource:
         self._next_block_time_s = time.monotonic()
 
         logger.info(
-            "Simulated stream — breathing %.2f Hz, %.1f mm, presence=%s, "
+            "Simulated stream — breathing %.2f Hz, %.1f mm, scene=%s, "
             "SNR per sample %.0f dB, TX offset %.2f Hz, LO offset %.3f Hz",
             breath_rate_hz,
             breath_amplitude_mm,
-            self._presence,
+            timeline if timeline else ("breathing" if self._presence else "empty"),
             snr_db,
             self._tx_offset_hz,
             self._lo_offset_hz,
@@ -293,9 +336,9 @@ class CWSimulationSource:
         t = (np.arange(n, dtype=np.float64) + self._sample_idx) / self.sample_rate_hz
 
         tx_tone = np.exp(2j * np.pi * self._tx_offset_hz * t)
-        displacement_m = self._breath_amplitude_m * np.sin(2.0 * np.pi * self._breath_rate_hz * t)
+        presence, displacement_m = self.presence_and_displacement(t)
         target_phase = -4.0 * np.pi * (self._target_range_m + displacement_m) / self._wavelength_m
-        target_echo = self._target_amplitude * np.exp(1j * target_phase) if self._presence else 0.0
+        target_echo = self._target_amplitude * presence * np.exp(1j * target_phase)
         echoes = (self._static_clutter + target_echo) * tx_tone
         if self._lo_offset_hz != 0.0:
             echoes = echoes * np.exp(2j * np.pi * self._lo_offset_hz * t)
@@ -310,20 +353,60 @@ class CWSimulationSource:
         self._sample_idx += n
         return block
 
-    @property
-    def scene_label(self) -> str:
-        """Annotation of the simulated scene: ``"breathing"`` or ``"empty"``."""
-        return "breathing" if self._presence else "empty"
+    def scene_states(self, t_s: np.ndarray) -> np.ndarray:
+        """Index in :data:`SCENE_STATES` of the scene state at each time *t_s*."""
+        t_s = np.asarray(t_s, dtype=np.float64)
+        if self._timeline_states.size == 0:
+            constant = SCENE_STATES.index("breathing" if self._presence else "empty")
+            return np.full(t_s.shape, constant, dtype=np.int8)
+        entry = np.searchsorted(self._timeline_starts_s, t_s, side="right") - 1
+        states = self._timeline_states[np.clip(entry, 0, None)]
+        before_first_entry = SCENE_STATES.index("breathing")
+        return np.where(entry >= 0, states, before_first_entry).astype(np.int8)
+
+    def presence_and_displacement(self, t_s: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Presence (1 or 0) and radial chest displacement (m) at times *t_s*.
+
+        The displacement is positive away from the radar (an inhalation
+        brings the chest closer: negative displacement).
+        """
+        t_s = np.asarray(t_s, dtype=np.float64)
+        states = self.scene_states(t_s)
+        breathing_m = np.where(
+            states == SCENE_STATES.index("apnea"),
+            0.0,
+            self._breath_amplitude_m * np.sin(2.0 * np.pi * self._breath_rate_hz * t_s),
+        )
+        heartbeat_m = self._heart_amplitude_m * np.sin(2.0 * np.pi * self._heart_rate_hz * t_s)
+        displacement_m = breathing_m + heartbeat_m
+        sway_m = self._motion_amplitude_m * (
+            np.sin(2.0 * np.pi * 0.23 * t_s) + 0.6 * np.sin(2.0 * np.pi * 0.71 * t_s + 1.3)
+        )
+        displacement_m = displacement_m + np.where(states == SCENE_STATES.index("motion"), sway_m, 0.0)
+        presence = (states != SCENE_STATES.index("empty")).astype(np.float64)
+        return presence, displacement_m
 
     def chest_displacement_m(self, t_s: np.ndarray) -> np.ndarray:
-        """Simulated radial chest displacement at times *t_s* (m), 0 without a person.
+        """Simulated chest displacement at times *t_s* (m), 0 when nobody is there.
 
         This is the ground truth stored in the recorded sessions.
         """
-        t_s = np.asarray(t_s, dtype=np.float64)
-        if not self._presence:
-            return np.zeros_like(t_s)
-        return self._breath_amplitude_m * np.sin(2.0 * np.pi * self._breath_rate_hz * t_s)
+        presence, displacement_m = self.presence_and_displacement(t_s)
+        return presence * displacement_m
+
+    def scene_annotations(self, n_samples: int) -> list[tuple[int, int, str]]:
+        """``(sample_start, sample_count, label)`` of the scene over the first *n_samples*."""
+        if self._timeline_states.size == 0:
+            label = "breathing" if self._presence else "empty"
+            return [(0, n_samples, label)] if n_samples > 0 else []
+        # Sample index where each timeline entry starts, within the session.
+        starts = [min(n_samples, max(0, int(round(t * self.sample_rate_hz)))) for t in self._timeline_starts_s]
+        labels = [SCENE_STATES[int(state)] for state in self._timeline_states]
+        if starts[0] > 0:  # before the first entry the person breathes (see scene_states)
+            starts = [0] + starts
+            labels = ["breathing"] + labels
+        stops = starts[1:] + [n_samples]
+        return [(start, stop - start, label) for start, stop, label in zip(starts, stops, labels) if stop > start]
 
     def close(self) -> None:
         """Nothing to release."""
@@ -454,6 +537,10 @@ def open_source(cfg: dict[str, Any], simulation: bool) -> PlutoSource | CWSimula
             breath_rate_hz=sim["breath_rate_hz"],
             breath_amplitude_mm=sim["breath_amplitude_mm"],
             presence=sim.get("presence", True),
+            heart_rate_hz=sim.get("heart_rate_hz", 1.2),
+            heart_amplitude_mm=sim.get("heart_amplitude_mm", 0.0),
+            timeline=sim.get("timeline"),
+            motion_amplitude_mm=sim.get("motion_amplitude_mm", 40.0),
             target_range_m=sim.get("target_range_m", 3.0),
             target_amplitude=sim.get("target_amplitude", 1.0),
             static_clutter_amplitude=sim.get("static_clutter_amplitude", 30.0),

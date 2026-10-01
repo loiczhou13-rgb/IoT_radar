@@ -171,3 +171,21 @@ def test_pluto_without_status_register(fake_adi) -> None:
     source._overflow_check_available = True
     assert source.read_block().overflow is False
     assert source._overflow_check_available is False
+
+
+def test_scene_timeline() -> None:
+    source = _simulation(timeline=[[1.0, "empty"], [2.0, "apnea"], [3.0, "motion"]],
+                         heart_amplitude_mm=0.2, breath_amplitude_mm=4)
+    t_s = np.array([0.5, 1.5, 2.5, 3.5])
+    presence, displacement_m = source.presence_and_displacement(t_s)
+    assert presence.tolist() == [1.0, 0.0, 1.0, 1.0]
+    heartbeat_m = 0.2e-3 * np.sin(2 * np.pi * 1.2 * t_s)
+    assert displacement_m[2] == pytest.approx(heartbeat_m[2])  # apnea: heartbeat only
+    assert abs(displacement_m[3] - heartbeat_m[3]) > 4e-3  # motion: centimetre sway
+    assert source.chest_displacement_m(t_s)[1] == 0.0
+    assert source.scene_annotations(400_000) == [
+        (0, 100_000, "breathing"), (100_000, 100_000, "empty"),
+        (200_000, 100_000, "apnea"), (300_000, 100_000, "motion"),
+    ]
+    with pytest.raises(ValueError):
+        _simulation(timeline=[[0, "sleeping"]])

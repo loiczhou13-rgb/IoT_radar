@@ -63,5 +63,16 @@ def test_command_line_checks(config_path: Path, tmp_path: Path) -> None:
         record.main(["--config", str(hardware_path), "--duration-s", "1"])
     with pytest.raises(SystemExit):
         record.main(["--simulation", "--config", str(config_path), "-n", "2", "--session-id", "4"])
-    with pytest.raises(SystemExit):  # not reproducible by the simulation yet
-        record.main(["--simulation", "--config", str(config_path), "--label", "apnea"])
+    with pytest.raises(SystemExit):  # not reproducible by the simulation
+        record.main(["--simulation", "--config", str(config_path), "--label", "unknown"])
+
+
+def test_timeline_annotations(config_path: Path) -> None:
+    cfg = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    cfg["simulation"]["timeline"] = [[0.05, "empty"], [0.1, "motion"]]
+    config_path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
+    (path,) = load_script("record").main(["--simulation", "--duration-s", "0.2", "--config", str(config_path)])
+    with SessionReader(path) as session:
+        assert session.annotations() == [
+            (0, 5000, "breathing"), (5000, 5000, "empty"), (10000, session.n_samples - 10000, "motion"),
+        ]

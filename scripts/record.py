@@ -12,8 +12,9 @@ Five 60 s sessions of an empty room with a 2-minute pause after each one::
 
     python scripts/record.py -n 5 --interval-s 120 --label empty --duration-s 60 --room lab_b12
 
-Simulated session (the label then sets the simulated scene; without
-``--label`` the scene of the configuration is used)::
+Simulated session (the label then sets a constant simulated scene; without
+``--label`` the scene of the configuration — possibly a timeline — is used
+and the annotations follow it)::
 
     python scripts/record.py --simulation --duration-s 30
 
@@ -57,8 +58,8 @@ logger = logging.getLogger(__name__)
 GROUND_TRUTH_RATE_HZ: float = 100.0
 """Sampling rate of the simulated ground truth stored in the sessions (Hz)."""
 
-SIMULATED_LABELS: tuple[str, ...] = ("breathing", "empty")
-"""Labels the simulated scene can reproduce (presence or not of a breathing person)."""
+SIMULATED_LABELS: tuple[str, ...] = ("breathing", "empty", "motion", "apnea")
+"""Labels the simulated scene can reproduce (see CWSimulationSource)."""
 
 
 def build_argument_parser() -> argparse.ArgumentParser:
@@ -154,8 +155,12 @@ def record_session(cfg: dict[str, Any], args: argparse.Namespace, session_id: in
             "saved as is.", exc,
         )
     finally:
-        label = args.label or (source.scene_label if isinstance(source, CWSimulationSource) else "unknown")
-        writer.add_annotation(0, writer.n_samples, label)
+        if isinstance(source, CWSimulationSource):
+            annotations = source.scene_annotations(writer.n_samples)
+        else:
+            annotations = [(0, writer.n_samples, args.label or "unknown")]
+        for sample_start, sample_count, label in annotations:
+            writer.add_annotation(sample_start, sample_count, label)
         if isinstance(source, CWSimulationSource):
             time_s = np.arange(0.0, writer.n_samples / source.sample_rate_hz, 1.0 / GROUND_TRUTH_RATE_HZ)
             writer.set_ground_truth(time_s, source.chest_displacement_m(time_s))
@@ -182,7 +187,7 @@ def main(argv: list[str] | None = None) -> list[Path]:
     if simulation and args.label is not None:
         if args.label not in SIMULATED_LABELS:
             raise SystemExit(f"The simulation can only reproduce the labels {SIMULATED_LABELS}.")
-        cfg["simulation"]["presence"] = args.label == "breathing"
+        cfg["simulation"]["timeline"] = [[0.0, args.label]]
 
     sessions_dir = Path(args.sessions_dir) if args.sessions_dir else resolve_repo_path(
         cfg["recording"]["sessions_dir"])
