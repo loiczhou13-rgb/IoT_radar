@@ -112,3 +112,6 @@ AICalibration/results/*
 # *.log est déjà ignoré globalement ; on conserve le dossier via .gitkeep.
 MicroDopplerDetection/logs/*
 !MicroDopplerDetection/logs/.gitkeep
+
+# ===== Claude Code (local settings and worktrees, never committed) =====
+.claude/
