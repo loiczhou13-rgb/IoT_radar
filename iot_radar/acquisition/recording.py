@@ -43,9 +43,9 @@ from typing import Any
 
 import h5py
 import numpy as np
-from scipy.io import wavfile
 
 import iot_radar
+from iot_radar.acquisition.pluto import effective_tx_offset_hz
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +117,33 @@ def next_session_id(sessions_dir: Path) -> int:
 def session_file_name(session_id: int, start_time_utc: dt.datetime) -> str:
     """``session_<id on 4 digits>_<YYYYMMDD>_<HHMMSS>.h5`` (start time in UTC)."""
     return f"session_{session_id:04d}_{start_time_utc.strftime('%Y%m%d_%H%M%S')}.h5"
+
+
+def radar_attributes(cfg: dict[str, Any], source: Any) -> dict[str, Any]:
+    """Radar attributes of a session (:data:`RADAR_ATTRIBUTES`).
+
+    Parameters
+    ----------
+    cfg : dict
+        Configuration used for the acquisition (``sdr`` and ``tx`` sections).
+    source : Source
+        The IQ source being recorded (rate, channels, kind, firmware).
+    """
+    sdr = cfg["sdr"]
+    return {
+        "sample_rate_hz": float(source.sample_rate_hz),
+        "center_frequency_hz": float(sdr["center_frequency_hz"]),
+        "tx_waveform": str(cfg["tx"]["waveform"]),
+        "tx_offset_hz": effective_tx_offset_hz(cfg),
+        "tx_gain_db": float(sdr["tx_gain_db"]),
+        "rx_gain_db": float(sdr["rx_gain_db"]),
+        "rx_gain_mode": "manual",
+        "n_rx_channels": int(source.n_channels),
+        "channel_layout": ",".join(f"rx{i}" for i in range(source.n_channels)),
+        "firmware_version": str(source.firmware_version),
+        "source_kind": str(source.kind),
+        "iq_stage": "raw_adc",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -385,43 +412,8 @@ def _python_value(value: Any) -> Any:
 
 
 # ---------------------------------------------------------------------------
-# Legacy .npz recordings (replaced by the HDF5 sessions in the next commit)
+# Legacy .npz recordings (read by the replay until it switches to sessions)
 # ---------------------------------------------------------------------------
-
-def write_iq_complex64(path: Path, iq: np.ndarray) -> None:
-    """Write IQ samples to a raw ``.iq`` file (dtype complex64 / float32×2)."""
-    if iq.size == 0:
-        raise ValueError("Empty IQ signal — cannot write the .iq file.")
-    z = np.asarray(iq, dtype=np.complex64)
-    z.tofile(path)
-
-
-def write_iq_stereo_wav(path: Path, iq: np.ndarray, sample_rate_hz: float) -> None:
-    """Write complex IQ to a stereo float32 WAV (I = channel 0, Q = channel 1)."""
-    if iq.size == 0:
-        raise ValueError("Empty IQ signal — cannot write the WAV file.")
-    i = np.asarray(iq.real, dtype=np.float32)
-    q = np.asarray(iq.imag, dtype=np.float32)
-    stereo = np.column_stack((i, q))
-    wavfile.write(path, int(round(float(sample_rate_hz))), stereo)
-
-
-def next_sample_index(split_dir: Path) -> int:
-    """Largest existing index ``n`` (``n.npz`` files) + 1, or 1 if empty."""
-    if not split_dir.is_dir():
-        return 1
-    best = 0
-    for p in split_dir.iterdir():
-        if not p.is_file() or p.suffix.lower() != ".npz":
-            continue
-        try:
-            n = int(p.stem)
-        except ValueError:
-            continue
-        if n >= 1:
-            best = max(best, n)
-    return best + 1
-
 
 def read_recording_metadata(npz_path: Path) -> tuple[str | None, int | None]:
     """Return ``(config_path, label)`` of a recording.

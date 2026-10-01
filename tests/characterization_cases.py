@@ -82,6 +82,7 @@ PIPELINE_CONFIG: dict[str, Any] = {
         },
         "noise_bandwidth_hz": 50,
     },
+    "recording": {"sessions_dir": "data/sessions", "flush_interval_s": 1.0},
     "simulation": {
         "enabled": True,
         "presence": True,

@@ -310,6 +310,21 @@ class CWSimulationSource:
         self._sample_idx += n
         return block
 
+    @property
+    def scene_label(self) -> str:
+        """Annotation of the simulated scene: ``"breathing"`` or ``"empty"``."""
+        return "breathing" if self._presence else "empty"
+
+    def chest_displacement_m(self, t_s: np.ndarray) -> np.ndarray:
+        """Simulated radial chest displacement at times *t_s* (m), 0 without a person.
+
+        This is the ground truth stored in the recorded sessions.
+        """
+        t_s = np.asarray(t_s, dtype=np.float64)
+        if not self._presence:
+            return np.zeros_like(t_s)
+        return self._breath_amplitude_m * np.sin(2.0 * np.pi * self._breath_rate_hz * t_s)
+
     def close(self) -> None:
         """Nothing to release."""
 

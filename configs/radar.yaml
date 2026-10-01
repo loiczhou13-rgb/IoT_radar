@@ -231,6 +231,18 @@ link_budget:
 
 
 # ---------------------------------------------------------------------------
+# Recorded sessions (scripts/record.py)
+# ---------------------------------------------------------------------------
+recording:
+  # Folder of the HDF5 session files (relative to the repository root).
+  sessions_dir: data/sessions
+
+  # Maximum time between two writes to disk (s): at most this much signal is
+  # lost if the program is killed during an acquisition.
+  flush_interval_s: 1.0
+
+
+# ---------------------------------------------------------------------------
 # Simulation (no PlutoSDR needed)
 # ---------------------------------------------------------------------------
 simulation:
