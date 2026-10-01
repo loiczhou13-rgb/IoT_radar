@@ -4,9 +4,10 @@ Run from the repository root::
 
     python tests/make_references.py
 
-Only allowed in the commits that fix bugs B2 and B5 (simulation changes); see
-``REFACTOR_PLAN.md``.  Any other change of these references hides a numerical
-regression.
+Only when a change of the numerical results is intended, in a dedicated
+commit that explains why (during the refactor: only the fixes of bugs B2 and
+B5, see ``REFACTOR_PLAN.md``).  Any other change of these references hides a
+numerical regression.
 """
 
 from __future__ import annotations
