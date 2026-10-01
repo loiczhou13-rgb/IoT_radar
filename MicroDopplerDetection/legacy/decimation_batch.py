@@ -11,7 +11,7 @@ import logging
 import numpy as np
 from scipy.signal import decimate as _scipy_decimate
 
-from MicroDopplerDetection.pipeline.decimation import _check_shannon, _factorise
+from iot_radar.dsp.decimation import _check_shannon, _factorise
 
 logger = logging.getLogger(__name__)
 

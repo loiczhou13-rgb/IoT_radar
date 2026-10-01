@@ -1,5 +1,32 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "iot-radar"
+version = "0.1.0"
+description = "Continuous-wave radar (ADALM-Pluto) for detecting the breathing of buried people"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "scipy",
+    "matplotlib",
+    "pyyaml",
+]
+
+[project.optional-dependencies]
+hardware = ["pyadi-iio", "pylibiio"]
+ml = ["torch", "tqdm"]
+ui = ["pygame"]
+notebook = ["ipykernel"]
+dev = ["pytest"]
+
+[tool.setuptools.packages.find]
+include = ["iot_radar*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# Temporary: lets the tests import the current top-level packages until the
-# code is turned into an installable package (see REFACTOR_PLAN.md, step 1).
+# Temporary: lets the tests import the former top-level folders until all the
+# code lives in the installable iot_radar package (see REFACTOR_PLAN.md).
 pythonpath = ["."]

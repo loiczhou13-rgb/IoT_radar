@@ -24,17 +24,16 @@ from MicroDopplerDetection.main import (
     _compute_range,
     _streaming_frame_generator,
 )
-from MicroDopplerDetection.pipeline.clutter import ClutterFilter
-from MicroDopplerDetection.pipeline.decimation import Decimator
-from MicroDopplerDetection.pipeline.detection import (
+from iot_radar.dsp.clutter import ClutterFilter
+from iot_radar.dsp.decimation import Decimator
+from iot_radar.dsp.detection import (
     _acf_peak,
     _fisher_pvalue,
     _fusion_score,
     detect_presence_column,
 )
+from iot_radar.dsp.spectral import compute_single_column, get_window
 from MicroDopplerDetection.pipeline.emission import generate_tx_buffer
-from MicroDopplerDetection.pipeline.spectrogramme import compute_single_column
-from MicroDopplerDetection.pipeline.windowing import get_window
 
 SIMULATION_SEED = 1234
 """Seed of the random generator used by the simulated IQ source."""

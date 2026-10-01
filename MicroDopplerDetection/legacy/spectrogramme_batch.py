@@ -14,7 +14,7 @@ from dataclasses import dataclass
 import numpy as np
 from scipy.signal import stft as _scipy_stft
 
-from MicroDopplerDetection.pipeline.windowing import get_window
+from iot_radar.dsp.spectral import get_window
 
 logger = logging.getLogger(__name__)
 

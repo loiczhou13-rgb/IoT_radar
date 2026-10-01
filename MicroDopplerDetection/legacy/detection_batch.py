@@ -12,7 +12,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from MicroDopplerDetection.pipeline.detection import (
+from iot_radar.dsp.detection import (
     _acf_peak,
     _fisher_pvalue,
     _fusion_score,

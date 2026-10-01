@@ -35,11 +35,10 @@ from MicroDopplerDetection.pipeline.acquisition import (
     stream_pluto,
     stream_simulation,
 )
-from MicroDopplerDetection.pipeline.decimation import Decimator
-from MicroDopplerDetection.pipeline.clutter import ClutterFilter
-from MicroDopplerDetection.pipeline.spectrogramme import compute_single_column
-from MicroDopplerDetection.pipeline.detection import detect_presence_column
-from MicroDopplerDetection.pipeline.windowing import get_window
+from iot_radar.dsp.decimation import Decimator
+from iot_radar.dsp.clutter import ClutterFilter
+from iot_radar.dsp.spectral import compute_single_column, get_window
+from iot_radar.dsp.detection import detect_presence_column
 from MicroDopplerDetection.utils.display import DashboardRadar
 
 logger = logging.getLogger(__name__)
