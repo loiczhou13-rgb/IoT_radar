@@ -138,7 +138,7 @@ class CalibrationDataset(Dataset):
                 if "spectrogram_db" not in data.files:
                     logger.warning(
                         "%s skipped — no 'spectrogram_db' key "
-                        "(enregistrement fait avec --no-spectrogram ?).",
+                        "(recorded with --no-spectrogram?).",
                         path.name,
                     )
                     continue
