@@ -9,18 +9,21 @@ import numpy as np
 import yaml
 
 from characterization_cases import pipeline_config
-from MicroDopplerDetection.utils import record_acquisition, record_visualization
+from iot_radar.acquisition.recording import next_sample_index, read_recording_metadata
+from script_loader import load_script
 
 
 def test_record_and_replay_helpers(tmp_path: Path) -> None:
     config_path = tmp_path / "radar.yaml"
     config_path.write_text(yaml.safe_dump(pipeline_config()), encoding="utf-8")
     data_root = tmp_path / "data"
-    args = record_acquisition.parse_record_args([
+    record = load_script("record")
+    replay = load_script("replay")
+    args = record.build_argument_parser().parse_args([
         "--subset", "train", "--env", "salle", "--label", "1", "--duration", "1.0",
         "--config", str(config_path), "--simulation", "--data-root", str(data_root),
     ])
-    npz_path = record_acquisition.run(args)
+    npz_path = record.run(args)
 
     assert npz_path == (data_root / "train" / "1.npz").resolve()
     with np.load(npz_path) as z:
@@ -36,12 +39,27 @@ def test_record_and_replay_helpers(tmp_path: Path) -> None:
     assert iq.size == n_iq > 0
 
     # Next free index.
-    assert record_acquisition._next_sample_index(npz_path.parent) == 2
+    assert next_sample_index(npz_path.parent) == 2
 
     # Replay helpers.
-    assert record_visualization._load_config_path_from_recording(npz_path) == str(config_path.resolve())
-    assert record_visualization._label_from_json_sidecar(npz_path) == 1
+    assert read_recording_metadata(npz_path) == (str(config_path.resolve()), 1)
     with np.load(npz_path) as z:
-        frames, n = record_visualization._frames_from_npz(z)
+        frames, n = replay._frames_from_npz(z)
     assert n == n_frames and len(frames) == n_frames
     assert frames[0]["spectre_colonne"].shape == (4096,)
+
+
+def test_metadata_falls_back_on_json_sidecar(tmp_path: Path) -> None:
+    npz_path = tmp_path / "1.npz"
+    np.savez_compressed(npz_path, spectrogram_db=np.zeros((2, 4)))
+    assert read_recording_metadata(npz_path) == (None, None)
+    npz_path.with_suffix(".json").write_text(json.dumps({"config_path": "/x.yaml", "label": 0}), encoding="utf-8")
+    assert read_recording_metadata(npz_path) == ("/x.yaml", 0)
+
+
+def test_record_refuses_index_with_several_samples(tmp_path: Path) -> None:
+    import pytest
+
+    record = load_script("record")
+    with pytest.raises(SystemExit):
+        record.main(["--subset", "train", "--env", "salle", "--label", "1", "-n", "2", "--index", "3"])

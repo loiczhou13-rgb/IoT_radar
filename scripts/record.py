@@ -1,16 +1,21 @@
 #!/usr/bin/env python3
-"""Record the micro-Doppler pipeline outputs for a fixed duration (no GUI).
+"""Record labelled acquisitions of the micro-Doppler pipeline (no GUI).
 
-Example — 2 minutes, training set, next auto index ::
+Examples (from the repository root) — one 2-minute training sample, next free
+index ::
 
-    cd MicroDopplerDetection
-    python utils/record_acquisition.py --subset train --env salle --label 1 --duration 120
+    python scripts/record.py --subset train --env salle --label 1 --duration 120
 
 Explicit sample ``AICalibration/data/train/7.*`` (label 0 = empty, 1 = presence / breathing) ::
 
-    python utils/record_acquisition.py --subset train --env salle --label 0 --index 7 --duration 60
+    python scripts/record.py --subset train --env salle --label 0 --index 7 --duration 60
 
-``--env`` must be one of the recognised environments (see ``_VALID_ENVS`` in this module).
+Five samples of 60 s with a 2-minute pause after each one (indices are then
+always automatic: ``--index`` is refused) ::
+
+    python scripts/record.py -n 5 --interval 120 --subset train --env salle --label 1 --duration 60
+
+``--env`` must be one of the recognised environments (see ``_VALID_ENVS``).
 
 Layout (default root: ``AICalibration/data`` in the repo) ::
 
@@ -27,81 +32,36 @@ import datetime as dt
 import errno
 import json
 import logging
-import sys
 import time
 from pathlib import Path
 from typing import Any
 
 import numpy as np
-from scipy.io import wavfile
 
-_UTILS_DIR = Path(__file__).resolve().parent
-_ROOT = _UTILS_DIR.parent
-_REPO_ROOT = _ROOT.parent
-
-
-def _ensure_paths() -> None:
-    """Make both ``utils.*`` (via the package dir) and ``MicroDopplerDetection.*``
-    (via the repo root, required by ``main.py``) importable, regardless of the
-    directory the script is launched from."""
-    for p in (_REPO_ROOT, _ROOT):
-        if str(p) not in sys.path:
-            sys.path.insert(0, str(p))
-
-
-_ensure_paths()
-
-from utils.repo_paths import default_recording_data_root
-
-from iot_radar.config import load_config, setup_logging
+from iot_radar.acquisition.recording import (
+    next_sample_index,
+    write_iq_complex64,
+    write_iq_stereo_wav,
+)
+from iot_radar.config import (
+    DEFAULT_RADAR_CONFIG,
+    RECORDING_DATA_DIR,
+    load_config,
+    setup_logging,
+)
 from iot_radar.pipeline import build_context, streaming_frame_generator
 
 _VALID_ENVS: tuple[str, ...] = ("salle",)
 
 
-def _write_iq_complex64(path: Path, iq: np.ndarray) -> None:
-    """Write IQ samples to a raw ``.iq`` file (dtype complex64 / float32×2)."""
-    if iq.size == 0:
-        raise ValueError("Signal IQ vide — impossible d'écrire le .iq.")
-    z = np.asarray(iq, dtype=np.complex64)
-    z.tofile(path)
-
-
-def _write_iq_stereo_wav(path: Path, iq: np.ndarray, sample_rate_hz: float) -> None:
-    """Write complex IQ to a stereo float32 WAV (I = channel 0, Q = channel 1)."""
-    if iq.size == 0:
-        raise ValueError("Signal IQ vide — impossible d'écrire le WAV.")
-    i = np.asarray(iq.real, dtype=np.float32)
-    q = np.asarray(iq.imag, dtype=np.float32)
-    stereo = np.column_stack((i, q))
-    wavfile.write(path, int(round(float(sample_rate_hz))), stereo)
-
-
-def _next_sample_index(split_dir: Path) -> int:
-    """Largest existing index ``n`` (``n.npz`` files) + 1, or 1 if empty."""
-    if not split_dir.is_dir():
-        return 1
-    best = 0
-    for p in split_dir.iterdir():
-        if not p.is_file() or p.suffix.lower() != ".npz":
-            continue
-        try:
-            n = int(p.stem)
-        except ValueError:
-            continue
-        if n >= 1:
-            best = max(best, n)
-    return best + 1
-
-
-_DEFAULT_DATA_HELP = str(default_recording_data_root())
+_DEFAULT_DATA_HELP = str(RECORDING_DATA_DIR)
 
 
 def build_record_argument_parser(
     *,
     description: str | None = None,
 ) -> argparse.ArgumentParser:
-    """Build the CLI parser (reusable by ``auto_record``)."""
+    """Build the CLI parser of one acquisition (without the repetition options)."""
     desc = description or (
         "Acquisition micro-Doppler : enregistrer spectrogramme, paramètres, "
         "étiquettes, métadonnées et signal IQ décimé sous "
@@ -157,7 +117,7 @@ def build_record_argument_parser(
     )
     p.add_argument(
         "--config",
-        default=str(_ROOT / "configs" / "config.yaml"),
+        default=str(DEFAULT_RADAR_CONFIG),
         help="Chemin vers le fichier YAML de configuration.",
     )
     p.add_argument(
@@ -188,18 +148,11 @@ def build_record_argument_parser(
     return p
 
 
-def parse_record_args(argv: list[str] | None = None) -> argparse.Namespace:
-    """Parse the recording CLI arguments (defaults to ``sys.argv``)."""
-    return build_record_argument_parser().parse_args(argv)
-
-
-def run(args: argparse.Namespace | None = None) -> Path:
+def run(args: argparse.Namespace) -> Path:
     """Run one acquisition and write the ``.npz``/``.json`` (+ optional IQ/WAV).
 
     Returns the path to the written ``.npz``.
     """
-    if args is None:
-        args = parse_record_args()
     cfg: dict[str, Any] = load_config(args.config)
     log_path = setup_logging(
         cfg,
@@ -214,7 +167,7 @@ def run(args: argparse.Namespace | None = None) -> Path:
     data_root = (
         Path(args.data_root).expanduser().resolve()
         if args.data_root
-        else default_recording_data_root()
+        else RECORDING_DATA_DIR
     )
     split_dir = (data_root / args.subset).resolve()
     split_dir.mkdir(parents=True, exist_ok=True)
@@ -224,7 +177,7 @@ def run(args: argparse.Namespace | None = None) -> Path:
             raise SystemExit("--index doit être >= 1.")
         sample_index = int(args.index)
     else:
-        sample_index = _next_sample_index(split_dir)
+        sample_index = next_sample_index(split_dir)
 
     stem = str(sample_index)
     npz_path = split_dir / f"{stem}.npz"
@@ -355,7 +308,7 @@ def run(args: argparse.Namespace | None = None) -> Path:
         iq_num_samples = int(iq_full.size)
 
         if not args.no_iq_file:
-            _write_iq_complex64(iq_path, iq_full)
+            write_iq_complex64(iq_path, iq_full)
             wrote_iq = True
             logger.info(
                 "IQ décimé (.iq) — %d échantillons complexes @ %.1f Hz — %s",
@@ -365,7 +318,7 @@ def run(args: argparse.Namespace | None = None) -> Path:
             )
 
         if args.wav:
-            _write_iq_stereo_wav(wav_path, iq_full, f_s_dec)
+            write_iq_stereo_wav(wav_path, iq_full, f_s_dec)
             wrote_wav = True
             logger.info(
                 "WAV IQ décimé — %d échantillons complexes @ %.1f Hz — %s",
@@ -458,10 +411,63 @@ def run(args: argparse.Namespace | None = None) -> Path:
     return npz_path
 
 
-def main() -> None:
-    """CLI entry point: run a single acquisition."""
-    _ensure_paths()
-    run()
+def build_argument_parser() -> argparse.ArgumentParser:
+    """Acquisition options plus the repetition options ``-n`` / ``--interval``."""
+    p = build_record_argument_parser()
+    g = p.add_argument_group("enchaînement")
+    g.add_argument(
+        "--samples",
+        "-n",
+        type=int,
+        default=1,
+        metavar="N",
+        help="Nombre d’échantillons à enregistrer successivement (défaut : 1).",
+    )
+    g.add_argument(
+        "--interval",
+        type=float,
+        default=0.0,
+        metavar="SEC",
+        help=(
+            "Pause en secondes après la fin d’un .npz avant le suivant "
+            "(défaut : 0)."
+        ),
+    )
+    return p
+
+
+def main(argv: list[str] | None = None) -> list[Path]:
+    """CLI entry point: run ``--samples`` acquisitions (one by default)."""
+    args = build_argument_parser().parse_args(argv)
+    if args.samples < 1:
+        raise SystemExit("-n / --samples doit être >= 1.")
+    if args.interval < 0:
+        raise SystemExit("--interval doit être >= 0.")
+    if args.samples > 1 and args.index is not None:
+        raise SystemExit(
+            "--index est incompatible avec -n > 1 (indices auto : prochain libre).",
+        )
+
+    log = logging.getLogger(__name__)
+    paths: list[Path] = []
+    for k in range(args.samples):
+        if k > 0 and args.interval > 0:
+            log.info("Pause %.1f s avant l’échantillon %d / %d", args.interval, k + 1, args.samples)
+            time.sleep(args.interval)
+        if args.samples > 1:
+            log.info(
+                "Début échantillon %d / %d (subset=%s env=%s label=%s)",
+                k + 1,
+                args.samples,
+                args.subset,
+                args.env,
+                args.label,
+            )
+        paths.append(run(args))
+
+    if args.samples > 1:
+        log.info("Terminé — %d fichier(s) .npz : %s", len(paths), ", ".join(str(p) for p in paths))
+    return paths
 
 
 if __name__ == "__main__":

@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
-"""Offline replay of a recording — same RX/TX dashboard as ``display.py``,
-without the "presence score" panel (the .npz no longer carries those series).
+"""Offline replay of a recording — same RX/TX dashboard as the live radar,
+without the "presence score" panel (the .npz does not carry those series).
 
-Examples ::
+Examples (from the repository root) ::
 
-    cd MicroDopplerDetection
-    python utils/record_visualization.py --subset train --index 1
+    python scripts/replay.py --subset train --index 1
 
-    python utils/record_visualization.py --npz ../AICalibration/data/train/3.npz
+    python scripts/replay.py --npz AICalibration/data/train/3.npz
 
 The ``.npz`` must contain ``spectrogram_db``. YAML path: ``--config``, the
 ``config_path`` key inside the ``.npz``, or otherwise the ``.json`` of the same index.
@@ -17,34 +16,16 @@ from __future__ import annotations
 
 import argparse
 import itertools
-import json
 import logging
-import sys
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
-_UTILS_DIR = Path(__file__).resolve().parent
-_ROOT = _UTILS_DIR.parent
-_REPO_ROOT = _ROOT.parent
-
-
-def _ensure_paths() -> None:
-    """Make both ``utils.*`` (via the package dir) and ``MicroDopplerDetection.*``
-    (via the repo root, required by ``main.py``) importable, regardless of the
-    directory the script is launched from."""
-    for p in (_REPO_ROOT, _ROOT):
-        if str(p) not in sys.path:
-            sys.path.insert(0, str(p))
-
-
-_ensure_paths()
-
-from utils.repo_paths import default_recording_data_root
-
-from iot_radar.config import load_config
+from iot_radar.acquisition.recording import read_recording_metadata
+from iot_radar.config import DEFAULT_RADAR_CONFIG, RECORDING_DATA_DIR, load_config
 from iot_radar.pipeline import build_context
+from iot_radar.ui.dashboard import DashboardRadar
 
 
 def _resolve_npz_path(args: argparse.Namespace) -> Path:
@@ -60,41 +41,9 @@ def _resolve_npz_path(args: argparse.Namespace) -> Path:
     data_root = (
         Path(args.data_root).expanduser().resolve()
         if args.data_root
-        else default_recording_data_root()
+        else RECORDING_DATA_DIR
     )
     return (data_root / args.subset / f"{int(args.index)}.npz").resolve()
-
-
-def _load_config_path_from_recording(npz_path: Path) -> str | None:
-    """Return the config path stored in the ``.npz`` (or its ``.json`` sidecar), if any."""
-    with np.load(npz_path, allow_pickle=False) as z:
-        if "config_path" in z.files:
-            return str(np.asarray(z["config_path"]).item())
-    legacy = npz_path.with_suffix(".json")
-    if not legacy.is_file():
-        return None
-    try:
-        with open(legacy, encoding="utf-8") as fh:
-            meta: dict[str, Any] = json.load(fh)
-    except json.JSONDecodeError:
-        logging.warning("JSON illisible — %s", legacy)
-        return None
-    p = meta.get("config_path")
-    return str(p) if isinstance(p, str) and p else None
-
-
-def _label_from_json_sidecar(npz_path: Path) -> int | None:
-    """Read ``label`` from the ``.json`` sidecar next to the ``.npz``."""
-    legacy = npz_path.with_suffix(".json")
-    if not legacy.is_file():
-        return None
-    try:
-        with open(legacy, encoding="utf-8") as fh:
-            meta = json.load(fh)
-        v = meta.get("label")
-        return int(v) if v is not None else None
-    except (json.JSONDecodeError, TypeError, ValueError):
-        return None
 
 
 def _frames_from_npz(data: Any) -> tuple[list[dict[str, Any]], int]:
@@ -133,9 +82,6 @@ def _frames_from_npz(data: Any) -> tuple[list[dict[str, Any]], int]:
 
 def main() -> None:
     """CLI entry point: replay a recorded ``.npz`` in the dashboard."""
-    _ensure_paths()
-    from iot_radar.ui.dashboard import DashboardRadar
-
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(message)s",
@@ -164,7 +110,7 @@ def main() -> None:
         "--data-root",
         type=Path,
         default=None,
-        help=f"Racine data (défaut : {default_recording_data_root()}).",
+        help=f"Racine data (défaut : {RECORDING_DATA_DIR}).",
     )
     p.add_argument(
         "--config",
@@ -188,25 +134,20 @@ def main() -> None:
     if not npz_path.is_file():
         raise SystemExit(f"Fichier introuvable : {npz_path}")
 
-    cfg_default = str(_ROOT / "configs" / "config.yaml")
+    cfg_default = str(DEFAULT_RADAR_CONFIG)
+    stored_config_path, rec_label = read_recording_metadata(npz_path)
     cfg_path = args.config
     if cfg_path is None:
-        cfg_path = _load_config_path_from_recording(npz_path) or cfg_default
+        cfg_path = stored_config_path or cfg_default
     cfg_path = str(Path(cfg_path).expanduser().resolve())
 
     cfg: dict[str, Any] = load_config(cfg_path)
     context = build_context(cfg)
 
     with np.load(npz_path, allow_pickle=False) as data:
-        rec_label: int | None = None
-        if "label" in data.files:
-            rec_label = int(np.asarray(data["label"]).item())
         if "f_hz" in data:
             context = {**context, "f_hz": np.asarray(data["f_hz"], dtype=np.float64)}
         frames, n_tr = _frames_from_npz(data)
-
-    if rec_label is None:
-        rec_label = _label_from_json_sidecar(npz_path)
 
     logging.info(
         "Relecture — %d trames — label=%s — %s — config %s",

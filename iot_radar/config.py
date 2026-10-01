@@ -26,6 +26,9 @@ DEFAULT_RADAR_CONFIG: Path = REPO_ROOT / "MicroDopplerDetection" / "configs" / "
 LOGS_DIR: Path = REPO_ROOT / "MicroDopplerDetection" / "logs"
 """Folder of the timestamped run logs."""
 
+RECORDING_DATA_DIR: Path = REPO_ROOT / "AICalibration" / "data"
+"""Default root of the labelled recordings (``<train|test|val>/<n>.npz``)."""
+
 
 def load_config(path: str) -> dict[str, Any]:
     """Load and return the YAML configuration file."""
