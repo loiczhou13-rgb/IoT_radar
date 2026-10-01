@@ -1,66 +1,35 @@
-#!/usr/bin/env python3
-"""Supervised micro-Doppler autoencoder training.
+"""Supervised micro-Doppler autoencoder training (library part).
 
-No hyperparameters are hard-coded in this script: everything is read from
-``AICalibration/config.yaml`` (or another YAML passed via ``--config``).
-
-Run ::
-
-    cd AICalibration                   # or from the repository root
-    python train.py
-    python train.py --config config.yaml --epochs 100
-
-The ``--epochs`` option (and a few others) **overrides** the YAML value
-for quick experiments.
+No hyperparameters are hard-coded here: everything is read from the training
+configuration (``AICalibration/config.yaml`` by default).  The command-line
+entry point is ``scripts/train.py``, whose options (``--epochs``…) override
+the YAML values for quick experiments.
 """
 
 from __future__ import annotations
 
-import argparse
 import csv
 import logging
 import random
-import sys
 from pathlib import Path
 from typing import Any, Iterable
 
 import numpy as np
 import torch
 import torch.nn as nn
-import yaml
 from torch.utils.data import DataLoader, Subset, random_split
 from tqdm import tqdm
 
-_THIS_DIR = Path(__file__).resolve().parent
-_REPO_ROOT = _THIS_DIR.parent
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
+from iot_radar.config import resolve_repo_path, setup_logging
+from iot_radar.ml.dataset import CalibrationDataset
+from iot_radar.ml.model import SpectrogramAutoencoder
 
-from AICalibration.dataset import CalibrationDataset  # noqa: E402
-from AICalibration.model import SpectrogramAutoencoder  # noqa: E402
-
-logger = logging.getLogger("AICalibration.train")
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
 # Config / setup helpers
 # ---------------------------------------------------------------------------
-
-def _load_yaml(path: Path) -> dict[str, Any]:
-    with open(path, encoding="utf-8") as fh:
-        cfg = yaml.safe_load(fh)
-    if not isinstance(cfg, dict):
-        raise ValueError(f"Config invalide (pas un mapping) : {path}")
-    return cfg
-
-
-def _resolve_repo_path(p: str | Path) -> Path:
-    """Resolve a relative path against the repository root."""
-    pth = Path(p).expanduser()
-    if pth.is_absolute():
-        return pth.resolve()
-    return (_REPO_ROOT / pth).resolve()
-
 
 def _set_seed(seed: int) -> None:
     random.seed(seed)
@@ -79,25 +48,6 @@ def _pick_device(spec: str) -> torch.device:
             raise RuntimeError("CUDA demandé mais indisponible.")
         return torch.device("cuda")
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-
-def _setup_logging(log_file: Path | None) -> None:
-    logging.basicConfig(
-        level=logging.WARNING,
-        format="%(asctime)s [%(levelname)s] %(message)s",
-        datefmt="%H:%M:%S",
-    )
-    logger.setLevel(logging.INFO)
-    logger.propagate = False
-    if log_file is not None:
-        log_file.parent.mkdir(parents=True, exist_ok=True)
-        fh = logging.FileHandler(log_file, mode="a", encoding="utf-8")
-        fh.setFormatter(logging.Formatter(
-            "%(asctime)s [%(levelname)s] %(name)s — %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S",
-        ))
-        fh.setLevel(logging.INFO)
-        logger.addHandler(fh)
 
 
 def _print_table(title: str, rows: list[tuple[str, str]]) -> None:
@@ -183,7 +133,7 @@ def build_loaders(
     data_cfg = cfg["data"]
     dl_cfg = cfg["dataloader"]
 
-    data_root = _resolve_repo_path(data_cfg["data_root"])
+    data_root = resolve_repo_path(data_cfg["data_root"])
     train_dir = data_root / data_cfg["train_subdir"]
     val_dir = data_root / data_cfg["val_subdir"]
 
@@ -371,60 +321,27 @@ def _should_display_epoch(epoch: int, n_epochs: int, interval: int) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# CLI
+# Training run
 # ---------------------------------------------------------------------------
 
-def _parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    p.add_argument(
-        "--config",
-        type=Path,
-        default=_THIS_DIR / "config.yaml",
-        help="Fichier YAML (défaut : AICalibration/config.yaml)",
-    )
-    p.add_argument("--epochs", type=int, default=None,
-                   help="Surcharge training.epochs.")
-    p.add_argument("--batch-size", type=int, default=None,
-                   help="Surcharge dataloader.batch_size.")
-    p.add_argument("--lr", type=float, default=None,
-                   help="Surcharge training.optimizer.lr.")
-    p.add_argument("--device", default=None,
-                   help="Surcharge le device (auto|cpu|cuda).")
-    return p.parse_args()
+def train(cfg: dict[str, Any], config_path: Path) -> None:
+    """Train the autoencoder described by *cfg* and save the best checkpoint.
 
-
-def _apply_cli_overrides(cfg: dict[str, Any], args: argparse.Namespace) -> None:
-    if args.epochs is not None:
-        cfg["training"]["epochs"] = int(args.epochs)
-    if args.batch_size is not None:
-        cfg["dataloader"]["batch_size"] = int(args.batch_size)
-    if args.lr is not None:
-        cfg["training"]["optimizer"]["lr"] = float(args.lr)
-    if args.device is not None:
-        cfg["device"] = str(args.device)
-
-
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
-
-def main() -> None:
-    args = _parse_args()
-    cfg = _load_yaml(args.config)
-    _apply_cli_overrides(cfg, args)
-
+    *config_path* is only displayed in the run summary.
+    """
     seed = int(cfg.get("seed", 0))
     _set_seed(seed)
     generator = torch.Generator().manual_seed(seed)
 
     out_cfg = cfg["output"]
-    results_dir = _resolve_repo_path(out_cfg["results_dir"])
+    results_dir = resolve_repo_path(out_cfg["results_dir"])
     results_dir.mkdir(parents=True, exist_ok=True)
-    log_file = _resolve_repo_path(out_cfg["log_file"]) if out_cfg.get("log_file") else None
-    _setup_logging(log_file)
+    log_file = resolve_repo_path(out_cfg["log_file"]) if out_cfg.get("log_file") else None
+    # Console kept quiet (progress bar + prints); every INFO record goes to the file.
+    setup_logging("INFO", log_file, console_level="WARNING", file_mode="a")
 
     device = _pick_device(cfg.get("device", "auto"))
-    logging.getLogger("AICalibration.dataset").setLevel(logging.WARNING)
+    logging.getLogger("iot_radar.ml.dataset").setLevel(logging.WARNING)
 
     print("Loading data...", flush=True)
     train_loader, val_loader, data_meta = build_loaders(cfg, generator=generator)
@@ -459,7 +376,7 @@ def main() -> None:
     metrics_history: MetricsHistory | None = None
     metrics_path: Path | None = None
     if save_metrics:
-        metrics_path = _resolve_repo_path(out_cfg["metrics_file"])
+        metrics_path = resolve_repo_path(out_cfg["metrics_file"])
         metrics_history = MetricsHistory(metrics_path)
 
     opt_cfg = cfg["training"]["optimizer"]
@@ -469,7 +386,7 @@ def main() -> None:
     _print_table("Run configuration", [
         ("Device", str(device)),
         ("Seed", str(seed)),
-        ("Config", str(args.config)),
+        ("Config", str(config_path)),
         ("Data split", data_meta["split"]),
         ("Train windows", str(data_meta["train_samples"])),
         ("Val windows", str(data_meta["val_samples"])),
@@ -557,7 +474,3 @@ def main() -> None:
 
     print(f"\nTraining finished. Best {best_metric_key} = {best_value:.4f} → {ckpt_path}")
     logger.info("Training finished. Best %s = %.4f", best_metric_key, best_value)
-
-
-if __name__ == "__main__":
-    main()

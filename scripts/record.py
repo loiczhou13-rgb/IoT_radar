@@ -47,6 +47,7 @@ from iot_radar.config import (
     DEFAULT_RADAR_CONFIG,
     RECORDING_DATA_DIR,
     load_config,
+    radar_log_file,
     setup_logging,
 )
 from iot_radar.pipeline import build_context, streaming_frame_generator
@@ -154,10 +155,8 @@ def run(args: argparse.Namespace) -> Path:
     Returns the path to the written ``.npz``.
     """
     cfg: dict[str, Any] = load_config(args.config)
-    log_path = setup_logging(
-        cfg,
-        log_file=Path(args.log_file) if args.log_file else None,
-    )
+    log_path = radar_log_file(cfg, args.log_file)
+    setup_logging(cfg.get("logging", {}).get("level", "INFO"), log_path)
 
     logger = logging.getLogger(__name__)
     dur = float(args.duration)

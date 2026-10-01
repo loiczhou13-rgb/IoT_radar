@@ -12,9 +12,8 @@ from __future__ import annotations
 
 import argparse
 import logging
-from pathlib import Path
 
-from iot_radar.config import DEFAULT_RADAR_CONFIG, load_config, setup_logging
+from iot_radar.config import DEFAULT_RADAR_CONFIG, load_config, radar_log_file, setup_logging
 from iot_radar.pipeline import build_context, streaming_frame_generator
 from iot_radar.ui.dashboard import DashboardRadar
 
@@ -51,10 +50,8 @@ def main() -> None:
     """Top-level pipeline orchestration (streaming mode)."""
     args = parse_args()
     cfg = load_config(args.config)
-    log_path = setup_logging(
-        cfg,
-        log_file=Path(args.log_file) if args.log_file else None,
-    )
+    log_path = radar_log_file(cfg, args.log_file)
+    setup_logging(cfg.get("logging", {}).get("level", "INFO"), log_path)
 
     logger.info("=== Démarrage du pipeline micro-Doppler (mode continu) ===")
     logger.info("Configuration chargée depuis %s", args.config)

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 import numpy as np
@@ -10,8 +9,9 @@ import pytest
 import torch
 import yaml
 
-from AICalibration.dataset import CalibrationDataset
-from AICalibration.model import SpectrogramAutoencoder
+from iot_radar.ml.dataset import CalibrationDataset
+from iot_radar.ml.model import SpectrogramAutoencoder
+from script_loader import load_script
 
 N_FFT = 16
 SMALL_MODEL = {
@@ -70,9 +70,7 @@ def test_model_shapes() -> None:
         model(torch.randn(3, 1, N_FFT + 1, 32))
 
 
-def test_training_runs_end_to_end(data_dir: Path, tmp_path: Path, monkeypatch) -> None:
-    import AICalibration.train as train
-
+def test_training_runs_end_to_end(data_dir: Path, tmp_path: Path) -> None:
     results = tmp_path / "results"
     cfg = {
         "seed": 0,
@@ -99,8 +97,7 @@ def test_training_runs_end_to_end(data_dir: Path, tmp_path: Path, monkeypatch) -
     }
     config_path = tmp_path / "config.yaml"
     config_path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
-    monkeypatch.setattr(sys, "argv", ["train.py", "--config", str(config_path)])
-    train.main()
+    load_script("train").main(["--config", str(config_path)])
 
     checkpoint = torch.load(results / "best.pt", map_location="cpu", weights_only=False)
     assert checkpoint["config"]["model"] == SMALL_MODEL

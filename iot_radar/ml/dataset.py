@@ -2,9 +2,7 @@
 
 Source of truth for recordings
 ------------------------------
-``.npz`` files are produced by
-``MicroDopplerDetection/utils/record_acquisition.py`` (and its launcher
-``auto_record.py``). Typical layout ::
+``.npz`` files are produced by ``scripts/record.py``. Typical layout ::
 
     AICalibration/data/
     ├── train/<n>.npz
@@ -125,7 +123,7 @@ class CalibrationDataset(Dataset):
         if not npz_files:
             raise FileNotFoundError(
                 f"Aucun fichier .npz trouvé sous {self.data_dir}. "
-                "Lancer d'abord MicroDopplerDetection/utils/record_acquisition.py."
+                "Lancer d'abord scripts/record.py."
             )
 
         n_fft_ref: int | None = None

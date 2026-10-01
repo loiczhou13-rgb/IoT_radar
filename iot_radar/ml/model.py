@@ -1,7 +1,7 @@
 """Conv2D autoencoder for micro-Doppler spectrograms with a classification head.
 
 The architecture is **fully parameterized** by the constructor (and thus
-by ``AICalibration/config.yaml``). Hyperparameters such as channels,
+by the training configuration, ``AICalibration/config.yaml``). Hyperparameters such as channels,
 downsampling factors, kernels, and input sizes must be supplied as
 constructor arguments.
 
@@ -363,37 +363,3 @@ class SpectrogramAutoencoder(nn.Module):
         x_hat = self.decode(z)
         logits = self.head(z)
         return x_hat, logits
-
-
-# ---------------------------------------------------------------------------
-# Smoke test
-# ---------------------------------------------------------------------------
-
-def _smoke_test() -> None:
-    """Smoke-test forward pass and shape consistency (no external config)."""
-    model = SpectrogramAutoencoder()
-    batch_size = 2
-    x = torch.randn(batch_size, *model.expected_input_shape)
-
-    x_hat, logits = model(x)
-    z = model.encode(x)
-
-    n_params = sum(p.numel() for p in model.parameters())
-    n_train = sum(p.numel() for p in model.parameters() if p.requires_grad)
-
-    print(f"Entrée x       : {tuple(x.shape)}")
-    print(f"Latent z       : {tuple(z.shape)}     "
-          f"(attendu (B, {model.latent_shape[0]}, "
-          f"{model.latent_shape[1]}, {model.latent_shape[2]}))")
-    print(f"Reconstruite   : {tuple(x_hat.shape)}")
-    print(f"Logits         : {tuple(logits.shape)}  (attendu (B, 1))")
-    print(f"Paramètres     : {n_params:,}  (entraînables : {n_train:,})")
-
-    assert x_hat.shape == x.shape, "Forme de sortie != entrée."
-    assert tuple(z.shape[1:]) == model.latent_shape, "Forme du latent inattendue."
-    assert tuple(logits.shape) == (batch_size, 1), "Forme des logits inattendue."
-    print("OK — toutes les formes sont cohérentes.")
-
-
-if __name__ == "__main__":
-    _smoke_test()
