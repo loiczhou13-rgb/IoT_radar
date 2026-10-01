@@ -33,7 +33,7 @@ from iot_radar.dsp.detection import (
     detect_presence_column,
 )
 from iot_radar.dsp.spectral import compute_single_column, get_window
-from MicroDopplerDetection.pipeline.emission import generate_tx_buffer
+from iot_radar.acquisition.pluto import generate_tx_buffer
 
 SIMULATION_SEED = 1234
 """Seed of the random generator used by the simulated IQ source."""

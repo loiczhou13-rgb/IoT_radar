@@ -1,8 +1,4 @@
-"""Streaming IQ acquisition from PlutoSDR hardware or numerical simulation.
-
-The streaming pipeline consumes one buffer at a time via the generators
-defined here.
-"""
+"""PlutoSDR (ADALM-PLUTO) transceiver: TX waveform and streaming reception."""
 
 from __future__ import annotations
 
@@ -15,7 +11,90 @@ logger = logging.getLogger(__name__)
 
 _ADC_FULL_SCALE: int = 2048
 _ADC_SATURATION_RATIO: float = 0.80
-_SPEED_OF_LIGHT: float = 299_792_458.0
+
+_DAC_FULL_SCALE: int = 2**14
+"""PlutoSDR DAC convention used by ``pyadi-iio``.
+
+The ``adi.Pluto.tx()`` API casts ``complex64`` samples directly to
+``int16`` without applying any scaling.  The AD9363 DAC is 12-bit but
+``pyadi-iio`` aligns its samples to the upper bits of the ``int16`` word,
+so unit-amplitude IQ has to be multiplied by ``2**14`` to reach DAC
+full-scale.  Without this scaling the carrier sits at ~1 LSB
+(≈ −84 dBFS) and is invisible on a spectrum analyser.
+"""
+
+
+def generate_tx_buffer(
+    mode: str,
+    buffer_size: int,
+    f_s: float,
+    f_offset: float = 0.0,
+) -> np.ndarray:
+    """Generate a complex baseband TX waveform of length *buffer_size*.
+
+    Parameters
+    ----------
+    mode : str
+        Emission mode. ``"cw"`` produces a constant-envelope carrier;
+        ``"cw_offset"`` produces a complex sinusoid at *f_offset* Hz,
+        which shifts the useful signal away from the DC bin.
+    buffer_size : int
+        Number of IQ samples in the transmit buffer.
+    f_s : float
+        ADC / DAC sampling rate (Hz).
+    f_offset : float, optional
+        Frequency offset in baseband (Hz).  Only used when
+        *mode* = ``"cw_offset"``.  Default is 0.
+
+    Returns
+    -------
+    numpy.ndarray
+        Complex64 array of shape ``(buffer_size,)`` with samples scaled
+        to the PlutoSDR DAC full-scale (``±2**14``).
+
+    Raises
+    ------
+    ValueError
+        If *mode* is not one of ``{"cw", "cw_offset"}``, or if *f_offset*
+        violates the Nyquist criterion (``|f_offset| >= f_s / 2``).
+
+    Notes
+    -----
+    * **CW mode** — baseband samples are a constant ``2**14 + 0j``;
+      the RF output is a pure tone at exactly ``f_c``.
+    * **CW-offset mode** — baseband samples are
+      ``2**14 · exp(j·2π·f_offset·t)``, producing an RF tone at
+      ``f_c + f_offset`` and avoiding the DC clutter.
+
+    The ``2**14`` scaling is **mandatory**: without it the DAC effectively
+    transmits a zero-amplitude signal (see :data:`_DAC_FULL_SCALE`).
+    """
+    if mode not in ("cw", "cw_offset"):
+        raise ValueError(
+            f"Unknown emission mode '{mode}'. Expected 'cw' or 'cw_offset'."
+        )
+
+    if mode == "cw":
+        logger.info(
+            "Génération du buffer TX — mode CW (module constant, scale=%d)",
+            _DAC_FULL_SCALE,
+        )
+        return np.full(buffer_size, _DAC_FULL_SCALE + 0j, dtype=np.complex64)
+
+    if abs(f_offset) >= f_s / 2:
+        raise ValueError(
+            f"f_offset={f_offset} Hz dépasse la fréquence de Nyquist "
+            f"(f_s/2 = {f_s / 2} Hz). Réduire f_offset ou augmenter f_s."
+        )
+
+    logger.info(
+        "Génération du buffer TX — mode CW-offset (f_offset=%.0f Hz, scale=%d)",
+        f_offset,
+        _DAC_FULL_SCALE,
+    )
+    t = np.arange(buffer_size, dtype=np.float64) / f_s
+    waveform = _DAC_FULL_SCALE * np.exp(1j * 2 * np.pi * f_offset * t)
+    return waveform.astype(np.complex64)
 
 
 def stream_pluto(
@@ -41,7 +120,7 @@ def stream_pluto(
         Samples per RX buffer.
     tx_buffer : numpy.ndarray
         Complex64 baseband TX waveform (cyclic).  **Already scaled to
-        ±2**14** — see ``MicroDopplerDetection.pipeline.emission``.
+        ±2**14** — see :func:`generate_tx_buffer`.
 
     Yields
     ------
@@ -107,83 +186,6 @@ def stream_pluto(
         except Exception:
             pass
         logger.info("Streaming PlutoSDR arrêté après %d trames", frame_idx)
-
-
-def stream_simulation(
-    f_c: float,
-    f_s: float,
-    buffer_size: int,
-    fv: float,
-    D_mm: float,
-    snr_dB: float,
-    f_offset: float = 0.0,
-    clutter_amplitude: float = 100.0,
-) -> Generator[np.ndarray, None, None]:
-    """Yield simulated IQ buffers indefinitely with continuous phase.
-
-    Parameters
-    ----------
-    f_c, f_s : float
-        Carrier frequency (Hz) and sampling rate (Hz).
-    buffer_size : int
-        Samples per buffer.
-    fv : float
-        Simulated breathing frequency (Hz).
-    D_mm : float
-        Chest displacement amplitude (mm).
-    snr_dB : float
-        Target micro-Doppler SNR (dB).
-    f_offset : float, optional
-        Baseband frequency offset (Hz).  Default is 0.
-    clutter_amplitude : float, optional
-        Amplitude of the static-clutter component relative to the signal.
-        Default 100.0 (40 dB above signal — typical CW radar isolation).
-
-    Yields
-    ------
-    numpy.ndarray
-        Complex64 vector of shape ``(buffer_size,)``.
-
-    Notes
-    -----
-    Each call produces the *next* ``buffer_size`` samples of the same
-    continuous waveform, maintaining phase continuity across buffers.
-    This mimics the real PlutoSDR streaming behaviour.
-    """
-    wavelength = _SPEED_OF_LIGHT / f_c
-    D_m = D_mm * 1e-3
-    mod_index = 4.0 * np.pi * D_m / wavelength
-
-    noise_power = 10.0 ** (-snr_dB / 10.0)
-    noise_std = np.sqrt(noise_power / 2.0)
-    rng = np.random.default_rng()
-
-    logger.info(
-        "Streaming simulation — fv=%.2f Hz, D=%.1f mm, SNR=%.0f dB (continu)",
-        fv,
-        D_mm,
-        snr_dB,
-    )
-
-    sample_idx = 0
-    while True:
-        t = (np.arange(buffer_size, dtype=np.float64) + sample_idx) / f_s
-
-        phase_mod = mod_index * np.sin(2.0 * np.pi * fv * t)
-        carrier = (
-            2.0 * np.pi * f_offset * t if f_offset != 0.0 else np.zeros_like(t)
-        )
-        signal = np.exp(1j * (carrier - phase_mod))
-
-        clutter = clutter_amplitude * np.ones(buffer_size, dtype=np.complex128)
-        noise = noise_std * (
-            rng.standard_normal(buffer_size)
-            + 1j * rng.standard_normal(buffer_size)
-        )
-
-        buf = (clutter + signal + noise).astype(np.complex64)
-        sample_idx += buffer_size
-        yield buf
 
 
 def _check_saturation(frame: np.ndarray, frame_index: int) -> None:

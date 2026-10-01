@@ -30,11 +30,8 @@ if str(_REPO_ROOT) not in sys.path:
 import yaml
 import numpy as np
 
-from MicroDopplerDetection.pipeline.emission import generate_tx_buffer
-from MicroDopplerDetection.pipeline.acquisition import (
-    stream_pluto,
-    stream_simulation,
-)
+from iot_radar.acquisition.pluto import generate_tx_buffer, stream_pluto
+from iot_radar.acquisition.sources import stream_simulation
 from iot_radar.dsp.decimation import Decimator
 from iot_radar.dsp.clutter import ClutterFilter
 from iot_radar.dsp.spectral import compute_single_column, get_window
