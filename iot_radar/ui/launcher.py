@@ -1,15 +1,16 @@
 """Pygame home screen of the radar ("Modular Radar").
 
-The screen shows three buttons: start the acquisition, toggle the light / dark
-theme, quit.  The launcher does not know the radar code: the function that
-starts the acquisition is given by the caller (``scripts/launcher.py``, which
-runs the radar in a separate process).
+Place in the project: entry point for the end users.  The screen shows one
+button per launch action (e.g. radar on the PlutoSDR, radar in simulation),
+then "Dark / light theme" and "Quit".  The launcher does not know the radar
+code: the actions are given by the caller (``scripts/launcher.py``, which runs
+the radar in a separate process).
 """
 
 from __future__ import annotations
 
 import sys
-from typing import Callable
+from typing import Callable, Sequence
 
 import pygame
 import pygame.freetype
@@ -78,12 +79,12 @@ class HomeScreen:
 
     Parameters
     ----------
-    start_acquisition : callable
-        Function called by the "Start acquisition" button.  It must return
+    actions : sequence of (label, callable)
+        One button per action, in this order.  Each function must return
         quickly (e.g. start a separate process): the event loop waits for it.
     """
 
-    def __init__(self, start_acquisition: Callable[[], None]) -> None:
+    def __init__(self, actions: Sequence[tuple[str, Callable[[], object]]]) -> None:
         pygame.init()
         pygame.freetype.init()
         self.screen = pygame.display.set_mode(
@@ -93,10 +94,10 @@ class HomeScreen:
         pygame.display.set_caption("Modular Radar")
         self.clock = pygame.time.Clock()
         self.fonts = _load_fonts()
-        self.start_acquisition = start_acquisition
+        self.actions = list(actions)
         self.theme_mode = "light"
-        self.acquisition_pressed = False  # "pressed" look of the Acquisition button
-        self.btn_acquisition = pygame.Rect(0, 0, BTN_W, BTN_H)
+        self.pressed_action: int | None = None  # highlighted while the mouse button is held
+        self.action_buttons = [pygame.Rect(0, 0, BTN_W, BTN_H) for _ in self.actions]
         self.btn_quit = pygame.Rect(0, 0, BTN_W, BTN_H)
         self.btn_theme = pygame.Rect(0, 0, BTN_W, BTN_H)
 
@@ -171,15 +172,16 @@ class HomeScreen:
         if event.type == pygame.QUIT:
             return False
         if event.type == pygame.MOUSEBUTTONDOWN:
-            if self.btn_acquisition.collidepoint(mouse_pos):
-                self.acquisition_pressed = True
-                self.start_acquisition()
-            elif self.btn_quit.collidepoint(mouse_pos):
+            for index, (button, (_, action)) in enumerate(zip(self.action_buttons, self.actions)):
+                if button.collidepoint(mouse_pos):
+                    self.pressed_action = index
+                    action()
+            if self.btn_quit.collidepoint(mouse_pos):
                 return False
-            elif self.btn_theme.collidepoint(mouse_pos):
+            if self.btn_theme.collidepoint(mouse_pos):
                 self.theme_mode = "light" if self.theme_mode == "dark" else "dark"
-        if event.type == pygame.MOUSEBUTTONUP and self.acquisition_pressed:
-            self.acquisition_pressed = False
+        if event.type == pygame.MOUSEBUTTONUP:
+            self.pressed_action = None
         return True
 
     def draw(self, mouse_pos: tuple[int, int]) -> None:
@@ -187,7 +189,7 @@ class HomeScreen:
         theme = self.theme
         self.screen.fill(theme["bg"])
 
-        card_rect = pygame.Rect(0, 0, 520, 560)
+        card_rect = pygame.Rect(0, 0, 520, 560 + (BTN_H + BTN_SPACE) * max(0, len(self.actions) - 1))
         card_rect.center = (WIDTH // 2, HEIGHT // 2)
         self.draw_card(card_rect)
 
@@ -201,14 +203,15 @@ class HomeScreen:
 
         self.draw_badge(WIDTH // 2, subtitle_rect.bottom + 45, "S6 project - IoT team")
 
-        start_y = card_rect.y + 260
+        y = card_rect.y + 260
         center_x = WIDTH // 2
-        self.btn_acquisition.center = (center_x, start_y)
-        self.btn_theme.center = (center_x, start_y + BTN_H + BTN_SPACE)
-        self.btn_quit.center = (center_x, start_y + (BTN_H + BTN_SPACE) * 2)
-        self.draw_button(self.btn_acquisition, "Start acquisition",
-                         self.btn_acquisition.collidepoint(mouse_pos), accent=True,
-                         pressed=self.acquisition_pressed)
+        for index, (button, (label, _)) in enumerate(zip(self.action_buttons, self.actions)):
+            button.center = (center_x, y)
+            self.draw_button(button, label, button.collidepoint(mouse_pos), accent=True,
+                             pressed=self.pressed_action == index)
+            y += BTN_H + BTN_SPACE
+        self.btn_theme.center = (center_x, y)
+        self.btn_quit.center = (center_x, y + BTN_H + BTN_SPACE)
         self.draw_button(self.btn_theme, "Dark / light theme", self.btn_theme.collidepoint(mouse_pos))
         self.draw_button(self.btn_quit, "Quit", self.btn_quit.collidepoint(mouse_pos))
 
