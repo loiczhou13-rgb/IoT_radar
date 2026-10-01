@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Generator
+from typing import Any
 
 import numpy as np
 
@@ -11,6 +11,12 @@ logger = logging.getLogger(__name__)
 
 _ADC_FULL_SCALE: int = 2048
 _ADC_SATURATION_RATIO: float = 0.80
+
+RX_STATUS_REGISTER: int = 0x80000088
+"""Status register of the RX DMA (``cf-ad9361-lpc`` device, AXI address space)."""
+
+RX_OVERFLOW_BIT: int = 0b0100
+"""Bit set by the FPGA when RX samples were dropped (host too slow)."""
 
 _DAC_FULL_SCALE: int = 2**14
 """PlutoSDR DAC convention used by ``pyadi-iio``.
@@ -97,7 +103,15 @@ def generate_tx_buffer(
     return waveform.astype(np.complex64)
 
 
-def stream_pluto(
+def resolve_f_offset(cfg: dict[str, Any]) -> float:
+    """Return the effective baseband offset (Hz), 0 if not in cw_offset mode."""
+    emi = cfg.get("emission", {})
+    if emi.get("mode") == "cw_offset":
+        return float(emi.get("f_offset", 0.0))
+    return 0.0
+
+
+def open_pluto(
     uri: str,
     f_c: float,
     f_s: float,
@@ -105,8 +119,8 @@ def stream_pluto(
     tx_gain: float,
     buffer_size: int,
     tx_buffer: np.ndarray,
-) -> Generator[np.ndarray, None, None]:
-    """Yield IQ buffers from the PlutoSDR indefinitely.
+):
+    """Connect to the PlutoSDR, configure it and start the cyclic transmission.
 
     Parameters
     ----------
@@ -122,22 +136,16 @@ def stream_pluto(
         Complex64 baseband TX waveform (cyclic).  **Already scaled to
         ±2**14** — see :func:`generate_tx_buffer`.
 
-    Yields
-    ------
-    numpy.ndarray
-        Complex64 vector of shape ``(buffer_size,)``.
+    Returns
+    -------
+    adi.Pluto
+        The configured device; the TX path replays *tx_buffer* indefinitely
+        (**cyclic** mode) while the caller receives with ``sdr.rx()``.
 
     Raises
     ------
     RuntimeError
-        If the PlutoSDR cannot be reached at *uri*.
-
-    Notes
-    -----
-    * The TX path runs in **cyclic** mode: the SDR re-plays *tx_buffer*
-      indefinitely while we keep receiving.
-    * On generator close (``gen.close()`` or context exit) the TX buffer
-      is destroyed cleanly so the Pluto is left in a known state.
+        If ``pyadi-iio`` is missing or the PlutoSDR cannot be reached at *uri*.
     """
     try:
         import adi
@@ -166,29 +174,31 @@ def stream_pluto(
 
     sdr.tx_cyclic_buffer = True
     sdr.tx(tx_buffer)
-
-    logger.info(
-        "Streaming PlutoSDR — buffer_size=%d à %.0f Hz (continu)",
-        buffer_size,
-        f_s,
-    )
-
-    frame_idx = 0
-    try:
-        while True:
-            frame = sdr.rx()
-            _check_saturation(frame, frame_idx)
-            yield np.asarray(frame, dtype=np.complex64)
-            frame_idx += 1
-    finally:
-        try:
-            sdr.tx_destroy_buffer()
-        except Exception:
-            pass
-        logger.info("Streaming PlutoSDR arrêté après %d trames", frame_idx)
+    return sdr
 
 
-def _check_saturation(frame: np.ndarray, frame_index: int) -> None:
+def clear_rx_overflow(sdr) -> None:
+    """Clear the sticky bits of the RX status register.
+
+    Raises whatever ``reg_write`` raises when the register is not accessible.
+    """
+    sdr._rxadc.reg_write(RX_STATUS_REGISTER, 0x6)
+
+
+def read_and_clear_rx_overflow(sdr) -> bool:
+    """``True`` if the FPGA dropped RX samples since the previous call.
+
+    The bit is cleared after reading (write 1 to clear).  Raises whatever
+    ``reg_read`` raises when the register is not accessible.
+    """
+    status = sdr._rxadc.reg_read(RX_STATUS_REGISTER)
+    if status & RX_OVERFLOW_BIT:
+        sdr._rxadc.reg_write(RX_STATUS_REGISTER, status)
+        return True
+    return False
+
+
+def check_saturation(frame: np.ndarray, frame_index: int) -> None:
     """Warn if the IQ frame approaches ADC saturation."""
     peak = np.max(np.abs(frame))
     threshold = _ADC_SATURATION_RATIO * _ADC_FULL_SCALE

@@ -7,6 +7,7 @@ import logging
 import pytest
 
 from characterization_cases import pipeline_config, seeded_default_rng
+from iot_radar.acquisition.sources import open_source
 from iot_radar.pipeline import build_context, streaming_frame_generator
 from iot_radar.ui.dashboard import DashboardRadar
 
@@ -15,7 +16,7 @@ from iot_radar.ui.dashboard import DashboardRadar
 def frame() -> dict:
     logging.disable(logging.WARNING)
     with seeded_default_rng():
-        frames = streaming_frame_generator(pipeline_config(), simulation=True)
+        frames = streaming_frame_generator(pipeline_config(), open_source(pipeline_config(), simulation=True))
         first = next(frames)
         frames.close()
     logging.disable(logging.NOTSET)

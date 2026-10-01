@@ -30,6 +30,7 @@ from iot_radar.dsp.detection import (
 from iot_radar.dsp.spectral import compute_single_column, get_window
 from iot_radar.acquisition.pluto import generate_tx_buffer
 from iot_radar.physics import compute_range
+from iot_radar.acquisition.sources import open_source
 from iot_radar.pipeline import build_context, streaming_frame_generator
 
 SIMULATION_SEED = 1234
@@ -213,7 +214,7 @@ def case_pipeline() -> dict[str, np.ndarray]:
     the caller must make that generator deterministic (see
     ``seeded_default_rng`` in this module).
     """
-    frames = streaming_frame_generator(pipeline_config(), simulation=True)
+    frames = streaming_frame_generator(pipeline_config(), open_source(pipeline_config(), simulation=True))
     scalars, columns = [], []
     for k, frame in zip(range(N_PIPELINE_FRAMES), frames):
         scalars.append([

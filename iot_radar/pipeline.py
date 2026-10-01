@@ -14,8 +14,8 @@ from typing import Any, Generator
 
 import numpy as np
 
-from iot_radar.acquisition.pluto import generate_tx_buffer, stream_pluto
-from iot_radar.acquisition.sources import stream_simulation
+from iot_radar.acquisition.pluto import generate_tx_buffer, resolve_f_offset
+from iot_radar.acquisition.sources import Source
 from iot_radar.dsp.clutter import ClutterFilter
 from iot_radar.dsp.decimation import Decimator
 from iot_radar.dsp.detection import detect_presence_column
@@ -28,14 +28,6 @@ logger = logging.getLogger(__name__)
 # ------------------------------------------------------------------
 # Helpers
 # ------------------------------------------------------------------
-
-def resolve_f_offset(cfg: dict[str, Any]) -> float:
-    """Return the effective baseband offset (Hz), 0 if not in cw_offset mode."""
-    emi = cfg.get("emission", {})
-    if emi.get("mode") == "cw_offset":
-        return float(emi.get("f_offset", 0.0))
-    return 0.0
-
 
 def auto_skip_warmup(
     clu_cfg: dict[str, Any],
@@ -66,58 +58,22 @@ def auto_skip_warmup(
 # Streaming pipeline
 # ------------------------------------------------------------------
 
-def open_iq_stream(
-    cfg: dict[str, Any],
-    simulation: bool,
-) -> Generator[np.ndarray, None, None]:
-    """Return an infinite IQ-buffer generator (hardware or simulation)."""
-    sdr = cfg["sdr"]
-    sim = cfg["simulation"]
-    f_off = resolve_f_offset(cfg)
-
-    if simulation or sim.get("enable", False):
-        logger.info("Mode simulation continu activé (f_offset=%.1f Hz)", f_off)
-        return stream_simulation(
-            f_c=sdr["f_c"],
-            f_s=sdr["f_s"],
-            buffer_size=sdr["buffer_size"],
-            fv=sim["fv"],
-            D_mm=sim["D_mm"],
-            snr_dB=sim["snr_dB"],
-            f_offset=f_off,
-            clutter_amplitude=sim.get("clutter_amplitude", 100.0),
-        )
-
-    logger.info("Mode matériel continu — connexion au PlutoSDR")
-    tx_buffer = generate_tx_buffer(
-        mode=cfg["emission"]["mode"],
-        buffer_size=sdr["buffer_size"],
-        f_s=sdr["f_s"],
-        f_offset=f_off,
-    )
-    return stream_pluto(
-        uri=sdr["uri"],
-        f_c=sdr["f_c"],
-        f_s=sdr["f_s"],
-        rx_gain=sdr["rx_gain"],
-        tx_gain=sdr["tx_gain"],
-        buffer_size=sdr["buffer_size"],
-        tx_buffer=tx_buffer,
-    )
-
-
 def streaming_frame_generator(
     cfg: dict[str, Any],
-    simulation: bool,
+    source: Source,
     *,
     decimated_iq_chunks: list[np.ndarray] | None = None,
 ) -> Generator[dict[str, Any], None, None]:
-    """Acquire → decimate → clutter → FFT → detect → yield, indefinitely.
+    """Acquire → decimate → clutter → FFT → detect → yield, until the source ends.
 
     Parameters
     ----------
-    cfg, simulation
-        Identique aux autres appels du pipeline.
+    cfg
+        Configuration complète (voir ``configs/radar.yaml``).
+    source
+        Source IQ (PlutoSDR ou simulation) ; seule la première voie est
+        traitée.  Le générateur la ferme (``source.close()``) quand il
+        s'arrête.
     decimated_iq_chunks
         Si fourni, chaque bloc ``iq`` après décimation et filtre clutter est
         recopié dans cette liste (*debug / enregistrement .wav hors ligne*).
@@ -169,7 +125,6 @@ def streaming_frame_generator(
     skip_warmup = int(user_warmup) if user_warmup is not None else auto_warmup
 
     buf = np.empty(0, dtype=np.complex64)
-    iq_stream = open_iq_stream(cfg, simulation)
 
     logger.info(
         "Pipeline streaming — n_fft=%d, hop=%d, f_s_dec=%.1f Hz, "
@@ -196,70 +151,77 @@ def streaming_frame_generator(
 
     frame_counter = 0
 
-    for raw_buf in iq_stream:
-        iq_dec = decimator(raw_buf)
-        iq_filt = clutter_filter(iq_dec)
+    try:
+        while True:
+            block = source.read_block()
+            if block is None:
+                break
+            raw_buf = block.samples[0]
+            iq_dec = decimator(raw_buf)
+            iq_filt = clutter_filter(iq_dec)
 
-        if decimated_iq_chunks is not None:
-            decimated_iq_chunks.append(
-                np.asarray(iq_filt, dtype=np.complex64).copy()
-            )
-
-        n_chunk = len(iq_filt)
-        if f_off != 0.0:
-            k = np.arange(n_chunk, dtype=np.float64) + n_dec_seen
-            demod = np.exp(-1j * 2.0 * np.pi * f_off * k / f_s_dec)
-            iq_demod = iq_filt.astype(np.complex128) * demod
-        else:
-            iq_demod = iq_filt.astype(np.complex128)
-        n_dec_seen += n_chunk
-        phi_iq_hist = np.concatenate((phi_iq_hist, iq_demod))
-        if len(phi_iq_hist) > acf_len:
-            phi_iq_hist = phi_iq_hist[-acf_len:]
-
-        buf = np.concatenate((buf, np.asarray(iq_filt, dtype=np.complex64)))
-
-        while len(buf) >= n_fft:
-            segment = buf[:n_fft].copy()
-            buf = buf[hop:]
-            frame_counter += 1
-
-            if frame_counter <= skip_warmup:
-                logger.debug(
-                    "Warm-up : trame %d/%d ignorée", frame_counter, skip_warmup,
+            if decimated_iq_chunks is not None:
+                decimated_iq_chunks.append(
+                    np.asarray(iq_filt, dtype=np.complex64).copy()
                 )
-                continue
 
-            col = compute_single_column(segment, f_s_dec, window)
+            n_chunk = len(iq_filt)
+            if f_off != 0.0:
+                k = np.arange(n_chunk, dtype=np.float64) + n_dec_seen
+                demod = np.exp(-1j * 2.0 * np.pi * f_off * k / f_s_dec)
+                iq_demod = iq_filt.astype(np.complex128) * demod
+            else:
+                iq_demod = iq_filt.astype(np.complex128)
+            n_dec_seen += n_chunk
+            phi_iq_hist = np.concatenate((phi_iq_hist, iq_demod))
+            if len(phi_iq_hist) > acf_len:
+                phi_iq_hist = phi_iq_hist[-acf_len:]
 
-            phi_hist = np.unwrap(np.angle(phi_iq_hist))
+            buf = np.concatenate((buf, np.asarray(iq_filt, dtype=np.complex64)))
 
-            score_presence, p_value_f, acf_peak, fv_estimated = (
-                detect_presence_column(
-                    col_db=col.col_db,
-                    f_hz=col.f_hz,
-                    phi_buffer=phi_hist,
-                    f_s=f_s_dec,
-                    bande_respiration=bande_resp_bb,
-                    bande_reference=bande_ref_bb,
-                    f_center=f_off,
-                    w=w,
-                    p_value_decades=p_value_decades,
-                    acf_floor=acf_floor,
-                    acf_good=acf_good,
+            while len(buf) >= n_fft:
+                segment = buf[:n_fft].copy()
+                buf = buf[hop:]
+                frame_counter += 1
+
+                if frame_counter <= skip_warmup:
+                    logger.debug(
+                        "Warm-up : trame %d/%d ignorée", frame_counter, skip_warmup,
+                    )
+                    continue
+
+                col = compute_single_column(segment, f_s_dec, window)
+
+                phi_hist = np.unwrap(np.angle(phi_iq_hist))
+
+                score_presence, p_value_f, acf_peak, fv_estimated = (
+                    detect_presence_column(
+                        col_db=col.col_db,
+                        f_hz=col.f_hz,
+                        phi_buffer=phi_hist,
+                        f_s=f_s_dec,
+                        bande_respiration=bande_resp_bb,
+                        bande_reference=bande_ref_bb,
+                        f_center=f_off,
+                        w=w,
+                        p_value_decades=p_value_decades,
+                        acf_floor=acf_floor,
+                        acf_good=acf_good,
+                    )
                 )
-            )
-            alert = bool(p_value_f < alpha_alert)
+                alert = bool(p_value_f < alpha_alert)
 
-            yield {
-                "spectre_colonne": col.col_db,
-                "score_presence":  score_presence,
-                "p_value_f":       p_value_f,
-                "acf_peak":        acf_peak,
-                "fv_estimated":    fv_estimated,
-                "n_trame":         frame_counter,
-                "detection":       alert,
-            }
+                yield {
+                    "spectre_colonne": col.col_db,
+                    "score_presence":  score_presence,
+                    "p_value_f":       p_value_f,
+                    "acf_peak":        acf_peak,
+                    "fv_estimated":    fv_estimated,
+                    "n_trame":         frame_counter,
+                    "detection":       alert,
+                }
+    finally:
+        source.close()
 
 
 # ------------------------------------------------------------------

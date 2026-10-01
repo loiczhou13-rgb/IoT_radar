@@ -14,6 +14,7 @@ import argparse
 import logging
 
 from iot_radar.config import DEFAULT_RADAR_CONFIG, load_config, radar_log_file, setup_logging
+from iot_radar.acquisition.sources import open_source
 from iot_radar.pipeline import build_context, streaming_frame_generator
 from iot_radar.ui.dashboard import DashboardRadar
 
@@ -60,7 +61,8 @@ def main() -> None:
 
     context = build_context(cfg)
     dashboard = DashboardRadar(config=cfg, context=context)
-    gen = streaming_frame_generator(cfg, simulation=args.simulation)
+    source = open_source(cfg, simulation=args.simulation)
+    gen = streaming_frame_generator(cfg, source)
     dashboard.run(gen)
 
     logger.info("=== Pipeline terminé ===")

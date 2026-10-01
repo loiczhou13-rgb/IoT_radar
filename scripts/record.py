@@ -50,6 +50,7 @@ from iot_radar.config import (
     radar_log_file,
     setup_logging,
 )
+from iot_radar.acquisition.sources import open_source
 from iot_radar.pipeline import build_context, streaming_frame_generator
 
 _VALID_ENVS: tuple[str, ...] = ("salle",)
@@ -201,7 +202,7 @@ def run(args: argparse.Namespace) -> Path:
     decimated_iq_chunks: list[np.ndarray] | None = [] if need_iq_tape else None
     gen = streaming_frame_generator(
         cfg,
-        simulation=args.simulation,
+        open_source(cfg, simulation=args.simulation),
         decimated_iq_chunks=decimated_iq_chunks,
     )
 
