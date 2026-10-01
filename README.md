@@ -55,10 +55,11 @@ static DC offset (TX→RX leakage, walls, receiver DC).  The displacement is
 read from the angle **around that centre**, which is why the chain fits the
 circle instead of high-pass filtering the IQ (bug B3 of the former chain).
 
-In `cw_offset` mode (default) the tone is transmitted at `f_c + 488.28 Hz`,
+In `cw_offset` mode (default) the tone is transmitted at `f_c + 503.54 Hz`,
 so the echo lands away from the receiver DC offset and its 1/f noise.  The
 offset is snapped to a whole number of periods per TX buffer (500 Hz
-requested → 488.28 Hz transmitted, bug B1).
+requested → 503.54 Hz transmitted with 65536-sample buffers at 1 MS/s,
+bug B1).
 
 ### Processing chain
 
@@ -68,7 +69,7 @@ PlutoSDR │ simulation │ HDF5 replay        iot_radar/acquisition/sources.py
         ▼
 Mixer (NCO at −tx_offset_hz)               dsp/mixer.py       echo → 0 Hz
         ▼
-Decimator (Chebyshev cascade)              dsp/decimation.py  2 MS/s → 20 Hz slow time
+Decimator (Chebyshev cascade)              dsp/decimation.py  1 MS/s → 20 Hz slow time
         ▼
 sliding window: 20 s, analysed every 0.5 s pipeline.py
         ▼
@@ -272,6 +273,14 @@ simulation:
   timeline: [[0, breathing], [45, apnea], [60, breathing], [95, motion], [110, empty]]
 ```
 
+**Sampling rate.**  The Pluto samples at 1 MS/s, with 65536-sample buffers
+and 16 RX buffers queued in the Pluto (`sdr.rx_kernel_buffers`, 1 s of
+margin).  At 2 MS/s over USB, the PC could not keep up while the dashboard
+redrew (same Python process): the Pluto dropped samples and the pipeline
+kept restarting.  Losses are logged ("RX samples lost") and shown on the
+dashboard as stream discontinuities.  If they come back (slower PC, other
+USB link), lower `sample_rate_hz` or raise `rx_kernel_buffers`.
+
 [`configs/training.yaml`](configs/training.yaml) configures `ml/`.
 
 ---
@@ -385,9 +394,11 @@ English everywhere, physical names with a unit suffix (`_hz`, `_s`, `_m`,
 
 ## Known limitations
 
-- **No validation on new hardware recordings yet.**  The PlutoSDR overflow
-  detection (register `0x80000088`) and the real-time chain on the Pluto
-  have not been tested since the refactor.
+- **Hardware validation in progress.**  The detection of lost samples
+  (register `0x80000088`) works on the Pluto: it revealed the losses at
+  2 MS/s.  At 1 MS/s, a receive-only test with dashboard redraws lost no
+  samples; this still has to be confirmed with the full radar (TX + RX +
+  dashboard), then on new recordings.
 - **Legacy recordings.**  The 69 old `.iq` files are converted into
   `data/sessions/legacy/` (`iq_stage = "decimated_clutter_filtered"`).  Their
   high-pass filter only acted around 0 Hz, while the echo sits at +488 Hz,
@@ -397,10 +408,14 @@ English everywhere, physical names with a unit suffix (`_hz`, `_s`, `_m`,
     and 57 % are `MOTION` (more than 30 mm peak to peak);
   - on the `empty` sessions, 12 % of the updates are `BREATHING`.
 
-  The cause is not established: moving subjects, or a phase too noisy (the
-  circle-fit residual is close to that of a noise cloud).  New raw
-  recordings of a controlled scene (`scripts/record.py`) are needed.  Details
-  in section 19.3 of `REFACTOR_PLAN.md`.
+  The cause is not established: moving subjects, a phase too noisy (the
+  circle-fit residual is close to that of a noise cloud), or **lost
+  samples**.  The old code read the Pluto at 2 MS/s without checking for
+  losses, and each loss makes the phase jump.  In the only empty session
+  clean enough to check, the phase stays within 0.007 rad between bursts of
+  jumps of up to 3 rad, but someone moving in the room would look the same.
+  New raw recordings of a controlled scene (`scripts/record.py`) are needed.
+  Details in section 19.3 of `REFACTOR_PLAN.md`.
 - **`ml/`** still learns from the legacy `.npz` spectrograms of the removed
   micro-Doppler chain; it will be redesigned on the phase signal of the HDF5
   sessions.

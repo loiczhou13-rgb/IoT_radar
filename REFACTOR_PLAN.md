@@ -691,11 +691,28 @@ Les 69 sessions converties ont été relues par le pipeline avec la configuratio
 
 **La cause n'est pas établie.** Ce n'est pas le passe-haut des anciens enregistrements : il n'agit qu'autour de 0 Hz, alors que l'écho est à +488 Hz (§12.5). Ce résultat est négatif. Tant qu'il n'est pas expliqué, la chaîne de phase n'est validée que sur simulation.
 
+**Piste : des échantillons perdus.** Le premier essai du radar refactorisé sur le Pluto a montré des pertes fréquentes à 2 MS/s : 7 % des buffers, par paquets toutes les ~1,6 s (§19.5). L'ancien code lisait le Pluto au même débit sans détecter les pertes, et chaque perte fait sauter la phase de l'écho. Dans la seule session `empty` assez propre pour le vérifier (`session_0001`), la phase reste à 0,007 rad près, sauf pendant 7 paquets de sauts allant jusqu'à 3 rad, d'environ 7 s chacun. C'est compatible avec des pertes, mais aussi avec quelqu'un qui bouge dans la pièce : on ne peut pas trancher sur ces données.
+
 ### 19.4 Points ouverts
 
-- **Validation matérielle** de `PlutoSource` : séquence de configuration, détection des pertes par le registre `0x80000088`, temps réel à 2 MS/s.
+- **Validation matérielle** de `PlutoSource` : confirmer l'absence de pertes à 1 MS/s avec le radar complet (§19.5).
 - **Chaîne de phase sur données réelles** : faire de nouveaux enregistrements bruts (`scripts/record.py`) d'une scène connue (personne immobile à 1–2 m, sans obstacle, puis salle vide), et les relire avec `scripts/replay.py`.
 - **Refonte de `ml/`** sur le signal de phase des sessions HDF5 (voir `iot_radar/ml/README.md`).
 - **`ed_branch`** modifie `MicroDopplerDetection/accueil_2.py` et `accueil_tk.py`, qui n'existent plus : conflit à prévoir.
 - **`.claude/`** : à supprimer par vous (le worktree contient du travail non commité, voir §1).
 - **Fusion vers `main`** : en attente de votre accord.
+
+### 19.5 Pertes d'échantillons sur le matériel (après le refactor)
+
+Premier essai sur le Pluto : 205 buffers sur 2956 suivaient une perte en 30 s, et l'hôte lisait 1,64 MS/s pour 2 MS/s produits. Le pipeline redémarrait donc sans cesse. Les mesures, faites en réception seule (USB via WSL2), montrent la cause :
+- à 2 MS/s, un buffer de 8,2 ms coûte déjà ~8,1 ms à l'hôte : transfert 5,2 ms, lecture du registre de pertes 1,4 ms, mélangeur et décimateur 1,5 ms ;
+- chaque redessin du dashboard prend ~0,35 s dans le même processus Python, alors que le Pluto ne garde que 33 ms d'échantillons en file.
+
+| Réglage (redessin toutes les 0,5 s, 20 s) | Débit lu | Buffers après une perte |
+|---|---|---|
+| 2 MS/s, buffers de 16384, 4 buffers noyau | 0,72 MS/s | 63 % |
+| 2 MS/s, 131072, 8 buffers noyau | 1,58 MS/s | 44 % |
+| 1 MS/s, 65536, 4 buffers noyau | 1,00 MS/s | 7–9 % |
+| 1 MS/s, 65536, 16 buffers noyau | 1,02 MS/s | 0 |
+
+Correctif (`2a90e7b`, avec votre accord) : 1 MS/s, buffers de 65536 et `sdr.rx_kernel_buffers: 16`. Le décalage TX passe de 488,28 Hz à 503,54 Hz. Si l'équipe a besoin de 2 MS/s, il faudra sortir l'acquisition et le pipeline du processus du dashboard.

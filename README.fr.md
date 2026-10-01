@@ -56,10 +56,11 @@ murs, DC du récepteur).  Le déplacement se lit dans l'angle **autour de ce
 centre** : c'est pourquoi la chaîne ajuste le cercle au lieu de filtrer l'IQ
 par un passe-haut (bug B3 de l'ancienne chaîne).
 
-En mode `cw_offset` (par défaut), la tonalité est émise à `f_c + 488,28 Hz`,
+En mode `cw_offset` (par défaut), la tonalité est émise à `f_c + 503,54 Hz`,
 donc l'écho arrive loin du DC du récepteur et de son bruit en 1/f.  Le
 décalage est arrondi pour que le buffer TX contienne un nombre entier de
-périodes (500 Hz demandés → 488,28 Hz émis, bug B1).
+périodes (500 Hz demandés → 503,54 Hz émis avec des buffers de 65536
+échantillons à 1 MS/s, bug B1).
 
 ### Chaîne de traitement
 
@@ -69,7 +70,7 @@ PlutoSDR │ simulation │ relecture HDF5      iot_radar/acquisition/sources.py
         ▼
 Mixer (NCO à −tx_offset_hz)                dsp/mixer.py       écho → 0 Hz
         ▼
-Decimator (cascade de Tchebychev)          dsp/decimation.py  2 MS/s → 20 Hz (temps lent)
+Decimator (cascade de Tchebychev)          dsp/decimation.py  1 MS/s → 20 Hz (temps lent)
         ▼
 fenêtre glissante : 20 s, analysée toutes les 0,5 s   pipeline.py
         ▼
@@ -277,6 +278,16 @@ simulation:
   timeline: [[0, breathing], [45, apnea], [60, breathing], [95, motion], [110, empty]]
 ```
 
+**Fréquence d'échantillonnage.**  Le Pluto échantillonne à 1 MS/s, avec des
+buffers de 65536 échantillons et 16 buffers RX mis en file dans le Pluto
+(`sdr.rx_kernel_buffers`, 1 s de marge).  À 2 MS/s en USB, le PC ne suivait
+pas pendant les redessins du tableau de bord (même processus Python) : le
+Pluto perdait des échantillons et le pipeline redémarrait sans cesse.  Les
+pertes sont écrites dans le journal (« RX samples lost ») et signalées sur le
+tableau de bord comme discontinuités du flux.  Si elles reviennent (PC plus
+lent, autre liaison USB), baissez `sample_rate_hz` ou augmentez
+`rx_kernel_buffers`.
+
 [`configs/training.yaml`](configs/training.yaml) configure `ml/`.
 
 ---
@@ -393,9 +404,11 @@ DSP.
 
 ## Limites connues
 
-- **Pas encore de validation sur de nouveaux enregistrements matériels.**
-  La détection des débordements du PlutoSDR (registre `0x80000088`) et la
-  chaîne temps réel sur le Pluto n'ont pas été testées depuis le refactor.
+- **Validation matérielle en cours.**  La détection des échantillons perdus
+  (registre `0x80000088`) fonctionne sur le Pluto : elle a révélé les pertes
+  à 2 MS/s.  À 1 MS/s, un test en réception seule avec redessins du tableau
+  de bord n'a perdu aucun échantillon ; reste à le confirmer avec le radar
+  complet (TX + RX + tableau de bord), puis sur de nouveaux enregistrements.
 - **Anciens enregistrements.**  Les 69 anciens fichiers `.iq` sont convertis
   dans `data/sessions/legacy/` (`iq_stage = "decimated_clutter_filtered"`).
   Leur filtre passe-haut n'agissait qu'autour de 0 Hz, alors que l'écho est
@@ -405,10 +418,15 @@ DSP.
     `BREATHING` et 57 % en `MOTION` (plus de 30 mm crête à crête) ;
   - sur les sessions `empty`, 12 % des analyses sont en `BREATHING`.
 
-  La cause n'est pas établie : sujets qui bougent, ou phase trop bruitée (le
-  résidu de l'ajustement du cercle est proche de celui d'un nuage de bruit).
-  Il faut de nouveaux enregistrements bruts d'une scène contrôlée
-  (`scripts/record.py`).  Détails au §19.3 de `REFACTOR_PLAN.md`.
+  La cause n'est pas établie : sujets qui bougent, phase trop bruitée (le
+  résidu de l'ajustement du cercle est proche de celui d'un nuage de bruit),
+  ou **échantillons perdus**.  L'ancien code lisait le Pluto à 2 MS/s sans
+  vérifier les pertes, et chaque perte fait sauter la phase.  Dans la seule
+  session vide assez propre pour le vérifier, la phase reste à 0,007 rad près
+  entre des paquets de sauts allant jusqu'à 3 rad, mais quelqu'un qui bouge
+  dans la pièce donnerait la même signature.  Il faut de nouveaux
+  enregistrements bruts d'une scène contrôlée (`scripts/record.py`).  Détails
+  au §19.3 de `REFACTOR_PLAN.md`.
 - **`ml/`** apprend encore sur les anciens spectrogrammes `.npz` de la chaîne
   micro-Doppler supprimée ; il sera repensé sur le signal de phase des
   sessions HDF5.
