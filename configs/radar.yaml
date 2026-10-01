@@ -39,8 +39,12 @@ sdr:
   center_frequency_hz: 3.5e+9
 
   # ADC sampling rate (Hz).  Pluto hardware minimum: about 521 kHz.
-  # A high rate eases the anti-aliasing filtering before decimation.
-  sample_rate_hz: 2.0e+6
+  # Breathing only needs the 20 Hz slow time, so the rate is set by what the
+  # host can read in real time: at 2 MS/s over USB (WSL2), the transfer, the
+  # loss check and the processing leave no margin, and every dashboard redraw
+  # (~0.35 s, same Python process) makes the Pluto drop samples.  1 MS/s,
+  # with the buffer sizes below, was measured without any loss.
+  sample_rate_hz: 1.0e+6
 
   # Receiver gain (dB, manual mode — AGC disabled).
   # Aim at 50–80 % of the 12-bit ADC full scale (±2048), i.e. about ±1024–1638.
@@ -50,9 +54,15 @@ sdr:
   # Lower it (more negative) if the TX->RX leakage saturates the receiver.
   tx_gain_db: -20
 
-  # Number of IQ samples per buffer.  2^14 = 16384 -> 8.2 ms per buffer at
-  # 2 MS/s.
-  buffer_size: 16384
+  # Number of IQ samples per buffer (RX and cyclic TX).  2^16 = 65536 ->
+  # 65.5 ms per buffer at 1 MS/s.  Large buffers cut the per-buffer overhead
+  # (USB request, loss-register read, Python calls).
+  buffer_size: 65536
+
+  # Number of RX buffers queued in the Pluto while the host is busy: 16 x
+  # 65.5 ms = 1 s of margin to absorb a dashboard redraw (the libiio default,
+  # 4, gives 0.26 s and still loses samples).
+  rx_kernel_buffers: 16
 
 
 # ---------------------------------------------------------------------------
@@ -71,8 +81,8 @@ tx:
   # Baseband frequency of the TX tone (Hz), "cw_offset" only.  The useful
   # signal appears around offset_hz ± f_breathing in the RX spectrum.
   # The code snaps it to a multiple of sample_rate_hz / buffer_size
-  # (122.07 Hz here) so that the cyclic TX buffer holds a whole number of
-  # periods: 500 Hz requested -> 488.28 Hz transmitted and used by the receiver.
+  # (15.26 Hz here) so that the cyclic TX buffer holds a whole number of
+  # periods: 500 Hz requested -> 503.54 Hz transmitted and used by the receiver.
   offset_hz: 500
 
 
@@ -82,7 +92,7 @@ tx:
 slow_time:
   # Rate of the slow-time signal after mixing the echo to 0 Hz and decimating
   # (Hz).  sample_rate_hz / rate_hz must be an integer made of primes <= 13
-  # (2 MS/s / 20 Hz = 100000) and rate_hz > 2.5 x max(reference band, heart band).
+  # (1 MS/s / 20 Hz = 50000) and rate_hz > 2.5 x max(reference band, heart band).
   rate_hz: 20.0
 
   # Slow time dropped after a (re)start while the decimation filters settle (s).
@@ -243,7 +253,7 @@ simulation:
   lo_offset_hz: 0.0
 
   # Ratio (echo of the person)^2 / noise power per ADC sample (dB), before the
-  # processing gain of the decimation to slow time (+50 dB for 2 MS/s -> 20 Hz).
+  # processing gain of the decimation to slow time (+47 dB for 1 MS/s -> 20 Hz).
   snr_db: -25.0
 
   # Seed of the noise generator (null = different noise at each run).

@@ -81,6 +81,10 @@ class _FakeRxAdc:
     def __init__(self) -> None:
         self.status = 0
         self.writes: list[tuple[int, int]] = []
+        self.kernel_buffers_count: int | None = None
+
+    def set_kernel_buffers_count(self, count: int) -> None:
+        self.kernel_buffers_count = count
 
     def reg_read(self, address: int) -> int:
         assert address == RX_STATUS_REGISTER
@@ -128,7 +132,7 @@ def fake_adi(monkeypatch) -> type:
 
 def test_pluto_configuration_sequence(fake_adi) -> None:
     tx = np.ones(16, dtype=np.complex64)
-    source = PlutoSource("ip:192.168.2.1", 3.5e9, 2e6, 45, -20, 8, tx)
+    source = PlutoSource("ip:192.168.2.1", 3.5e9, 2e6, 45, -20, 8, tx, rx_kernel_buffers=16)
     sdr = fake_adi.instances[0]
     assert sdr.settings == [
         ("uri", "ip:192.168.2.1"),
@@ -144,6 +148,7 @@ def test_pluto_configuration_sequence(fake_adi) -> None:
         ("tx_cyclic_buffer", True),
     ]
     assert sdr.transmitted is tx
+    assert sdr._rxadc.kernel_buffers_count == 16
     assert sdr._rxadc.writes == [(RX_STATUS_REGISTER, 0x6)]  # sticky bits cleared at start
 
     first = source.read_block()

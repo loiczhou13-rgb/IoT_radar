@@ -96,8 +96,8 @@ class PlutoSource:
     drops RX samples and sets a bit of the RX status register.  The bit is
     read (and cleared) after every buffer and reported as ``Block.overflow``.
     If the register cannot be accessed (other firmware), a warning is logged
-    once and ``overflow`` stays ``False``.  This check has not been validated
-    on hardware yet.
+    once and ``overflow`` stays ``False``.  On a Pluto read over USB, the
+    flagged buffers matched the measured throughput deficit.
     """
 
     n_channels: int = 1
@@ -112,8 +112,10 @@ class PlutoSource:
         tx_gain_db: float,
         buffer_size: int,
         tx_buffer: np.ndarray,
+        rx_kernel_buffers: int = 4,
     ) -> None:
-        self._sdr = open_pluto(uri, f_c_hz, f_s_hz, rx_gain_db, tx_gain_db, buffer_size, tx_buffer)
+        self._sdr = open_pluto(uri, f_c_hz, f_s_hz, rx_gain_db, tx_gain_db, buffer_size, tx_buffer,
+                               rx_kernel_buffers)
         self.sample_rate_hz = float(f_s_hz)
         self.firmware_version = _pluto_firmware_version(self._sdr)
         self._n_blocks = 0
@@ -566,4 +568,5 @@ def open_source(cfg: dict[str, Any], simulation: bool) -> PlutoSource | CWSimula
         tx_gain_db=sdr["tx_gain_db"],
         buffer_size=sdr["buffer_size"],
         tx_buffer=tx_buffer,
+        rx_kernel_buffers=sdr.get("rx_kernel_buffers", 4),
     )

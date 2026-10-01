@@ -130,7 +130,7 @@ def snap_tx_offset_hz(requested_offset_hz: float, f_s_hz: float, buffer_size: in
 
     The cyclic TX buffer is continuous only if it holds an integer number of
     periods of the offset tone, i.e. if the offset is a multiple of
-    ``f_s_hz / buffer_size`` (122.07 Hz for 16384 samples at 2 MS/s).
+    ``f_s_hz / buffer_size`` (15.26 Hz for 65536 samples at 1 MS/s).
 
     Parameters
     ----------
@@ -198,6 +198,7 @@ def open_pluto(
     tx_gain_db: float,
     buffer_size: int,
     tx_buffer: np.ndarray,
+    rx_kernel_buffers: int = 4,
 ):
     """Connect to the PlutoSDR, configure it and start the cyclic transmission.
 
@@ -215,6 +216,10 @@ def open_pluto(
     tx_buffer : numpy.ndarray
         Complex64 baseband TX waveform (cyclic), **already scaled to ±2**14**
         (see :func:`cw_tx_buffer`).
+    rx_kernel_buffers : int, optional
+        Number of RX buffers the Pluto queues while the host is busy (libiio
+        default: 4).  They give ``rx_kernel_buffers * buffer_size / f_s_hz``
+        seconds of margin before samples are dropped.
 
     Returns
     -------
@@ -248,6 +253,8 @@ def open_pluto(
     sdr.rx_rf_bandwidth = int(f_s_hz)
     sdr.tx_rf_bandwidth = int(f_s_hz)
     sdr.rx_buffer_size = buffer_size
+    # Must be set before the first rx(), which creates the RX buffer.
+    sdr._rxadc.set_kernel_buffers_count(int(rx_kernel_buffers))
     sdr.gain_control_mode_chan0 = "manual"
     sdr.rx_hardwaregain_chan0 = rx_gain_db
     sdr.tx_hardwaregain_chan0 = tx_gain_db

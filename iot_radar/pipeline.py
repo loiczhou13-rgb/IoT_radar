@@ -330,7 +330,7 @@ class VitalSignsPipeline:
     settings : VitalSignsSettings
         Window-analysis and detection parameters.
     input_rate_hz : float
-        Sampling rate of the blocks (2 MS/s for the PlutoSDR, 2 kHz for the
+        Sampling rate of the blocks (1 MS/s for the PlutoSDR, 2 kHz for the
         converted legacy recordings...).  ``input_rate_hz / slow_time_rate_hz``
         must be an integer made of prime factors ≤ 13.
     tx_offset_hz : float
