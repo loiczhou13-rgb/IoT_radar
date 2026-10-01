@@ -2,13 +2,13 @@
 
 The screen shows three buttons: start the acquisition, toggle the light / dark
 theme, quit.  The launcher does not know the radar code: the function that
-starts the acquisition is given by the caller (``scripts/launcher.py``).
+starts the acquisition is given by the caller (``scripts/launcher.py``, which
+runs the radar in a separate process).
 """
 
 from __future__ import annotations
 
 import sys
-import threading
 from typing import Callable
 
 import pygame
@@ -79,8 +79,8 @@ class HomeScreen:
     Parameters
     ----------
     start_acquisition : callable
-        Function run (in a background thread) by the "Lancer Acquisition"
-        button.
+        Function called by the "Lancer Acquisition" button.  It must return
+        quickly (e.g. start a separate process): the event loop waits for it.
     """
 
     def __init__(self, start_acquisition: Callable[[], None]) -> None:
@@ -173,7 +173,7 @@ class HomeScreen:
         if event.type == pygame.MOUSEBUTTONDOWN:
             if self.btn_acquisition.collidepoint(mouse_pos):
                 self.acquisition_pressed = True
-                threading.Thread(target=self.start_acquisition, daemon=True).start()
+                self.start_acquisition()
             elif self.btn_quit.collidepoint(mouse_pos):
                 return False
             elif self.btn_theme.collidepoint(mouse_pos):
