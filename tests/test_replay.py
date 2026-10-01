@@ -53,3 +53,35 @@ def test_blocks_flags_and_long_blocks(tmp_path: Path) -> None:
     source.close()
     assert source.sample_rate_hz == 100e3 and source.kind == "replay"
     assert pieces == [(0, 10, 0.0, False), (10, 10, 1.0, True), (20, 10, 1.0001, False), (30, 5, 1.0002, False)]
+
+
+def test_replayed_session_gives_the_live_phase_pipeline_output(tmp_path: Path) -> None:
+    from iot_radar.pipeline import VitalSignsPipeline
+
+    cfg = pipeline_config()
+    cfg["sdr"]["center_frequency_hz"] = 3.5e9
+
+    def outputs(source):
+        pipeline = VitalSignsPipeline.from_config(cfg, source.sample_rate_hz, 244.140625)
+        return [o for o in pipeline.run(source)]
+
+    logging.disable(logging.WARNING)
+    live_source = _simulation()
+    live = []
+    pipeline = VitalSignsPipeline.from_config(cfg, live_source.sample_rate_hz, 244.140625)
+    for _ in range(600):  # 600 x 4096 samples = 24.6 s
+        live += pipeline.process_block(live_source.read_block())
+
+    path = tmp_path / "phase.h5"
+    source = _simulation()
+    with SessionWriter(path, RADAR) as writer:
+        for _ in range(600):
+            block = source.read_block()
+            writer.write_block(block.samples, block.host_time_s, block.overflow)
+    replayed = outputs(ReplaySource(path))
+    logging.disable(logging.NOTSET)
+
+    assert len(replayed) == len(live) > 40 and live[-1].analysis is not None
+    for a, b in zip(live, replayed):
+        assert a.t_s == b.t_s and a.breathing.state == b.breathing.state
+        assert a.breathing.confidence == b.breathing.confidence
