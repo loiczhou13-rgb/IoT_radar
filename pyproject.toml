@@ -1,0 +1,5 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Temporary: lets the tests import the current top-level packages until the
+# code is turned into an installable package (see REFACTOR_PLAN.md, step 1).
+pythonpath = ["."]
