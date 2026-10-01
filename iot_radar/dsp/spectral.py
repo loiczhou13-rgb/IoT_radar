@@ -153,3 +153,60 @@ def compute_single_column(
         v_mps=v_mps.astype(np.float64),
         df_hz=df_hz,
     )
+
+
+# ---------------------------------------------------------------------------
+# Whole spectrogram (offline)
+# ---------------------------------------------------------------------------
+
+def compute_spectrogram(
+    iq: np.ndarray,
+    f_s: float,
+    f_c: float,
+    window: np.ndarray,
+    hop: int,
+    skip_frames: int = 0,
+) -> np.ndarray:
+    """Spectrogram of a complete signal, framed exactly like the stream.
+
+    The streaming pipeline keeps a buffer of samples and, whenever it holds
+    ``n_fft`` samples, turns the first ``n_fft`` of them into one column and
+    drops the first ``hop``.  Its segments therefore start at sample
+    ``k * hop`` (k = 0, 1, 2, ...).  This function cuts the whole array the
+    same way, so its columns are identical to the streamed ones.
+
+    Parameters
+    ----------
+    iq : numpy.ndarray
+        Complex IQ samples (1-D) at rate *f_s* — e.g. the decimated and
+        clutter-filtered signal.
+    f_s : float
+        Sampling rate of *iq* (Hz).
+    f_c : float
+        Carrier frequency (Hz), forwarded to :func:`compute_single_column`.
+    window : numpy.ndarray
+        Analysis window; its length is the FFT size ``n_fft``.
+    hop : int
+        Step between the starts of two successive segments (samples).
+    skip_frames : int, optional
+        Number of initial columns to drop (filter warm-up), like the
+        ``skip_warmup`` setting of the stream.
+
+    Returns
+    -------
+    numpy.ndarray
+        Power in dB, shape ``(n_frames, n_fft)``; row ``k`` is the column of
+        the ``(k + skip_frames)``-th segment.  Each column is fftshifted (see
+        :func:`compute_single_column` for the frequency axis).
+    """
+    n_fft = len(window)
+    columns: list[np.ndarray] = []
+    frame_number = 0
+    start = 0
+    while start + n_fft <= len(iq):
+        frame_number += 1
+        if frame_number > skip_frames:
+            segment = iq[start:start + n_fft]
+            columns.append(compute_single_column(segment, f_s, f_c, window).col_db)
+        start += hop
+    return np.array(columns, dtype=np.float64).reshape(len(columns), n_fft)
