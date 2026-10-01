@@ -1,4 +1,8 @@
-"""Real-time matplotlib dashboard for the micro-Doppler radar pipeline."""
+"""Matplotlib dashboard of the micro-Doppler radar (live stream and replay).
+
+Place in the chain: last step.  The dashboard only displays the frames it
+receives (dictionaries produced by :mod:`iot_radar.pipeline` or rebuilt from a
+recording); it does not know where the samples come from."""
 
 from __future__ import annotations
 
@@ -19,7 +23,7 @@ logger = logging.getLogger(__name__)
 class DashboardRadar:
     """Matplotlib dashboard for micro-Doppler monitoring.
 
-    Layout with GridSpec — default ``show_presence_score=True`` (temps réel)::
+    Layout with GridSpec — default ``show_presence_score=True`` (live)::
 
         Row 0 : TX spectrum (full width)
         Row 1 : RX spectrum (full width)
@@ -63,31 +67,31 @@ class DashboardRadar:
         aff = config["display"]
         det_cfg = config.get("detection", {})
 
-        self._N_hist: int = aff["score_history_length"]
-        self._plein_ecran: bool = aff["full_screen"]
-        self._seuil_score: float = aff.get("score_threshold", 0.6)
+        self._score_history_length: int = aff["score_history_length"]
+        self._full_screen: bool = aff["full_screen"]
+        self._score_threshold: float = aff.get("score_threshold", 0.6)
         self._alpha: float = det_cfg.get("false_alarm_probability", 0.01)
 
         self._f_hz: np.ndarray = context["f_hz"]
-        self._f_hz_tx: np.ndarray = context["tx_f_hz"]
-        self._spectre_tx_db: np.ndarray = context["tx_spectrum_db"]
-        self._R_min_m: float = context.get("range_min_m", 0.0)
-        self._R_max_m: float = context.get("range_max_m", 0.0)
-        self._df_hz: float = context.get("frequency_resolution_hz", 0.0)
-        self._dv_mps: float = context.get("velocity_resolution_m_s", 0.0)
+        self._tx_f_hz: np.ndarray = context["tx_f_hz"]
+        self._tx_spectrum_db: np.ndarray = context["tx_spectrum_db"]
+        self._range_min_m: float = context.get("range_min_m", 0.0)
+        self._range_max_m: float = context.get("range_max_m", 0.0)
+        self._frequency_resolution_hz: float = context.get("frequency_resolution_hz", 0.0)
+        self._velocity_resolution_m_s: float = context.get("velocity_resolution_m_s", 0.0)
         self._n_fft: int = context.get("n_fft", 0)
         self._clutter_mode: str = context.get("clutter_mode", "?")
-        self._bande_resp: list = context.get("breathing_band_hz", [0.1, 1.0])
-        self._B_eff_hz: float = context.get("noise_bandwidth_hz", 0.0)
+        self._breathing_band_hz: list = context.get("breathing_band_hz", [0.1, 1.0])
+        self._noise_bandwidth_hz: float = context.get("noise_bandwidth_hz", 0.0)
 
         self._show_presence_score: bool = show_presence_score
 
         self._score_history: list[float] = []
         self._frame_count: int = 0
         self._last_score: float = 0.0
-        self._last_p_value_f: float = 1.0
+        self._last_p_value: float = 1.0
         self._last_acf_peak: float = 0.0
-        self._last_fv_estimated: float | None = None
+        self._last_breathing_rate_hz: float | None = None
         self._rx_limits_initialised: bool = False
 
         self._fig = plt.figure(figsize=(14, 9), constrained_layout=True)
@@ -103,14 +107,14 @@ class DashboardRadar:
             self._ax_info = self._fig.add_subplot(gs[2, :])
 
         self._fig.suptitle(
-            title or "Radar Micro-Doppler — Détection de survivants",
+            title or "Micro-Doppler radar — breathing detection",
             fontsize=13,
             fontweight="bold",
         )
 
         self._init_panels()
 
-        if self._plein_ecran:
+        if self._full_screen:
             mng = plt.get_current_fig_manager()
             if mng is not None:
                 try:
@@ -119,9 +123,9 @@ class DashboardRadar:
                     pass
 
         logger.info(
-            "Dashboard initialisé — backend=%s, score=%s",
+            "Dashboard ready — backend=%s, score panel=%s",
             matplotlib.get_backend(),
-            "oui" if self._show_presence_score else "non",
+            "yes" if self._show_presence_score else "no",
         )
 
     # ------------------------------------------------------------------
@@ -134,21 +138,21 @@ class DashboardRadar:
         ax_info = self._ax_info
 
         # Panel 1 — TX spectrum (static)
-        ax_tx.set_title("Signal émis (domaine fréquentiel)")
-        ax_tx.set_xlabel("Fréquence (Hz)")
-        ax_tx.set_ylabel("Puissance (dB)")
+        ax_tx.set_title("Transmitted signal (frequency domain)")
+        ax_tx.set_xlabel("Frequency (Hz)")
+        ax_tx.set_ylabel("Power (dB)")
         ax_tx.plot(
-            self._f_hz_tx,
-            self._spectre_tx_db,
+            self._tx_f_hz,
+            self._tx_spectrum_db,
             linewidth=0.8,
             color="tab:blue",
         )
-        _auto_ylim(ax_tx, self._spectre_tx_db)
+        _auto_ylim(ax_tx, self._tx_spectrum_db)
 
         # Panel 2 — RX spectrum (live)
-        ax_rx.set_title("Signal reçu (domaine fréquentiel)")
-        ax_rx.set_xlabel("Fréquence Doppler (Hz)")
-        ax_rx.set_ylabel("Puissance (dB)")
+        ax_rx.set_title("Received signal (frequency domain)")
+        ax_rx.set_xlabel("Doppler frequency (Hz)")
+        ax_rx.set_ylabel("Power (dB)")
         (self._line_rx,) = ax_rx.plot(
             self._f_hz,
             np.zeros(len(self._f_hz)),
@@ -160,7 +164,7 @@ class DashboardRadar:
         # Status text drawn on the RX axes (blit-friendly, unlike a
         # figure-level suptitle which cannot be blitted).
         self._status_text = ax_rx.text(
-            0.99, 0.98, "En attente de la première trame…",
+            0.99, 0.98, "Waiting for the first frame…",
             transform=ax_rx.transAxes,
             ha="right", va="top",
             fontsize=11, fontweight="bold", color="grey",
@@ -170,20 +174,20 @@ class DashboardRadar:
 
         if self._show_presence_score and self._ax_score is not None:
             ax_score = self._ax_score
-            ax_score.set_title("Score de présence")
-            ax_score.set_xlabel("Trame")
+            ax_score.set_title("Presence score")
+            ax_score.set_xlabel("Frame")
             ax_score.set_ylabel("Score (Fisher × ACF)")
             ax_score.set_ylim(-0.05, 1.05)
-            ax_score.set_xlim(0, max(self._N_hist, 1))
+            ax_score.set_xlim(0, max(self._score_history_length, 1))
             (self._line_score,) = ax_score.plot(
                 [], [], linewidth=1.2, color="tab:purple",
             )
             ax_score.axhline(
-                self._seuil_score,
+                self._score_threshold,
                 color="grey",
                 linestyle="--",
                 linewidth=1.0,
-                label=f"Seuil score ({self._seuil_score})",
+                label=f"Score threshold ({self._score_threshold})",
             )
             ax_score.legend(loc="upper left", fontsize=8)
         else:
@@ -213,27 +217,27 @@ class DashboardRadar:
     def _update_info_box(self) -> None:
         lines = [
             "╔══════════════════════╗",
-            "║   PARAMÈTRES RADAR   ║",
+            "║   RADAR PARAMETERS   ║",
             "╚══════════════════════╝",
             "",
-            f"  δf     = {self._df_hz:.3f} Hz",
-            f"  δv     = {self._dv_mps * 100:.2f} cm/s",
+            f"  δf     = {self._frequency_resolution_hz:.3f} Hz",
+            f"  δv     = {self._velocity_resolution_m_s * 100:.2f} cm/s",
             f"  N_FFT  = {self._n_fft}",
-            f"  B_eff  = {self._B_eff_hz:.1f} Hz",
+            f"  B_eff  = {self._noise_bandwidth_hz:.1f} Hz",
             f"  Clutter: {self._clutter_mode}",
-            f"  Bande  : ±{self._bande_resp[0]}–{self._bande_resp[1]} Hz",
+            f"  Band   : ±{self._breathing_band_hz[0]}–{self._breathing_band_hz[1]} Hz",
             "",
-            f"  Portée : {self._R_min_m:.1f}–{self._R_max_m:.1f} m",
+            f"  Range  : {self._range_min_m:.1f}–{self._range_max_m:.1f} m",
         ]
         if self._show_presence_score:
-            if self._last_fv_estimated is None:
-                fv_str = "  fv     = —"
+            if self._last_breathing_rate_hz is None:
+                fv_str = "  f_br   = —"
             else:
-                fv_str = f"  fv     = {self._last_fv_estimated:.3f} Hz"
+                fv_str = f"  f_br   = {self._last_breathing_rate_hz:.3f} Hz"
             lines += [
                 "",
                 "─────── LIVE ───────",
-                f"  p_F    = {self._last_p_value_f:.2e}  (α={self._alpha:.0e})",
+                f"  p_F    = {self._last_p_value:.2e}  (α={self._alpha:.0e})",
                 f"  ACF    = {self._last_acf_peak:+.2f}",
                 fv_str,
                 f"  Score  = {self._last_score:.2f}",
@@ -271,7 +275,7 @@ class DashboardRadar:
         self._frame_count += 1
 
         col_db = frame_data["spectrum_column_db"]
-        n_trame = frame_data.get("frame_number", self._frame_count)
+        frame_number = frame_data.get("frame_number", self._frame_count)
 
         # Panel 2 — RX spectrum
         self._line_rx.set_ydata(col_db)
@@ -280,39 +284,39 @@ class DashboardRadar:
             self._rx_limits_initialised = True
 
         if not self._show_presence_score:
-            self._status_text.set_text(f"Trame {n_trame}")
+            self._status_text.set_text(f"Frame {frame_number}")
             self._status_text.set_color("dimgray")
             return artists_bs
 
         assert self._line_score is not None
         score = frame_data["presence_score"]
-        p_value_f = frame_data["p_value"]
+        p_value = frame_data["p_value"]
         acf_peak = frame_data["acf_peak"]
-        fv_estimated = frame_data["breathing_rate_hz"]
-        score_detected = score >= self._seuil_score
+        breathing_rate_hz = frame_data["breathing_rate_hz"]
+        score_detected = score >= self._score_threshold
 
         # Panel 3a — Presence score history
         self._score_history.append(score)
-        if len(self._score_history) > self._N_hist:
-            self._score_history = self._score_history[-self._N_hist:]
+        if len(self._score_history) > self._score_history_length:
+            self._score_history = self._score_history[-self._score_history_length:]
         x_score = np.arange(len(self._score_history))
         self._line_score.set_data(x_score, self._score_history)
 
         # Panel 3b — Info box live values
         self._last_score = score
-        self._last_p_value_f = p_value_f
+        self._last_p_value = p_value
         self._last_acf_peak = acf_peak
-        self._last_fv_estimated = fv_estimated
+        self._last_breathing_rate_hz = breathing_rate_hz
         self._update_info_box()
 
         # Status feedback follows the same fused-score threshold drawn on the
         # score panel.  The raw Fisher alert remains available in frame_data for
         # diagnostics, but it should not override the user-visible score.
         if score_detected:
-            self._status_text.set_text(f"RESPIRATION DÉTECTÉE — Trame {n_trame}")
+            self._status_text.set_text(f"BREATHING DETECTED — Frame {frame_number}")
             self._status_text.set_color("green")
         else:
-            self._status_text.set_text(f"Aucune détection — Trame {n_trame}")
+            self._status_text.set_text(f"No detection — Frame {frame_number}")
             self._status_text.set_color("red")
 
         return artists_bs
@@ -347,7 +351,7 @@ class DashboardRadar:
            thread finishes (which calls ``frames.close()``, if it exists,
            → SDR cleanup).
         """
-        logger.info("Lancement du dashboard")
+        logger.info("Dashboard running")
 
         self._stop_event = threading.Event()
         self._latest_frame: dict[str, Any] | None = None
@@ -371,7 +375,7 @@ class DashboardRadar:
                         # delay the very first window paint.
                         time.sleep(0)
             except Exception:
-                logger.exception("Erreur dans le thread de production")
+                logger.exception("Error in the frame producer thread")
             finally:
                 close = getattr(frames, "close", None)
                 if close is not None:
@@ -379,7 +383,7 @@ class DashboardRadar:
                         close()
                     except Exception:
                         pass
-                logger.info("Producteur de trames arrêté")
+                logger.info("Frame producer stopped")
 
         def _start_producer_once(_event=None) -> None:
             if self._producer_started:
@@ -389,7 +393,7 @@ class DashboardRadar:
                 target=_producer, name="radar-frame-producer", daemon=True,
             )
             self._producer_thread.start()
-            logger.info("Producteur de trames démarré (fenêtre visible)")
+            logger.info("Frame producer started (window visible)")
 
         def _on_close(_event) -> None:
             self._stop_event.set()

@@ -1,4 +1,4 @@
-"""Pygame home screen of the radar ("Radar Modulaire").
+"""Pygame home screen of the radar ("Modular Radar").
 
 The screen shows three buttons: start the acquisition, toggle the light / dark
 theme, quit.  The launcher does not know the radar code: the function that
@@ -79,7 +79,7 @@ class HomeScreen:
     Parameters
     ----------
     start_acquisition : callable
-        Function called by the "Lancer Acquisition" button.  It must return
+        Function called by the "Start acquisition" button.  It must return
         quickly (e.g. start a separate process): the event loop waits for it.
     """
 
@@ -90,7 +90,7 @@ class HomeScreen:
             (WIDTH, HEIGHT),
             pygame.SCALED | pygame.DOUBLEBUF
         )
-        pygame.display.set_caption("Radar Modulaire")
+        pygame.display.set_caption("Modular Radar")
         self.clock = pygame.time.Clock()
         self.fonts = _load_fonts()
         self.start_acquisition = start_acquisition
@@ -140,7 +140,7 @@ class HomeScreen:
         bg = theme["button_hover"] if hovered else theme["button"]
         if accent:
             bg = theme["accent"]
-        if pressed:  # "open" look while the button is pressed
+        if pressed:  # highlighted while the button is held down
             bg = theme["accent_2"]
         self.draw_rounded_rect(rect, bg, 16)
         pygame.draw.rect(self.screen, theme["border"], rect, width=1, border_radius=16)
@@ -191,7 +191,7 @@ class HomeScreen:
         card_rect.center = (WIDTH // 2, HEIGHT // 2)
         self.draw_card(card_rect)
 
-        title_surf, title_rect = self.fonts["title"].render("Radar Modulaire", theme["text"])
+        title_surf, title_rect = self.fonts["title"].render("Modular Radar", theme["text"])
         title_rect.center = (WIDTH // 2, card_rect.y + 70)
         self.screen.blit(title_surf, title_rect)
 
@@ -199,18 +199,18 @@ class HomeScreen:
         subtitle_rect.center = (WIDTH // 2, title_rect.bottom + 30)
         self.screen.blit(subtitle_surf, subtitle_rect)
 
-        self.draw_badge(WIDTH // 2, subtitle_rect.bottom + 45, "Projet S6 - Pôle IoT")
+        self.draw_badge(WIDTH // 2, subtitle_rect.bottom + 45, "S6 project - IoT team")
 
         start_y = card_rect.y + 260
         center_x = WIDTH // 2
         self.btn_acquisition.center = (center_x, start_y)
         self.btn_theme.center = (center_x, start_y + BTN_H + BTN_SPACE)
         self.btn_quit.center = (center_x, start_y + (BTN_H + BTN_SPACE) * 2)
-        self.draw_button(self.btn_acquisition, "Lancer Acquisition",
+        self.draw_button(self.btn_acquisition, "Start acquisition",
                          self.btn_acquisition.collidepoint(mouse_pos), accent=True,
                          pressed=self.acquisition_pressed)
-        self.draw_button(self.btn_theme, "Mode sombre / clair", self.btn_theme.collidepoint(mouse_pos))
-        self.draw_button(self.btn_quit, "Quitter", self.btn_quit.collidepoint(mouse_pos))
+        self.draw_button(self.btn_theme, "Dark / light theme", self.btn_theme.collidepoint(mouse_pos))
+        self.draw_button(self.btn_quit, "Quit", self.btn_quit.collidepoint(mouse_pos))
 
         footer_surf, footer_rect = self.fonts["small"].render("2026", theme["text_secondary"])
         footer_rect.center = (WIDTH // 2, card_rect.bottom - 40)
@@ -219,7 +219,7 @@ class HomeScreen:
         pygame.display.flip()
 
     def run(self) -> None:
-        """Event loop, until the window is closed or "Quitter" is clicked."""
+        """Event loop, until the window is closed or "Quit" is clicked."""
         running = True
         while running:
             mouse_pos = pygame.mouse.get_pos()

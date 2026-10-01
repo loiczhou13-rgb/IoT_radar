@@ -32,9 +32,9 @@ def test_dashboard_updates(frame: dict, show_score: bool) -> None:
     dashboard.update_frame(frame)
     status = dashboard._status_text.get_text()
     if show_score:
-        assert "DÉTECTÉE" in status or "Aucune" in status
+        assert "BREATHING DETECTED" in status or "No detection" in status
     else:
-        assert status == f"Trame {frame['frame_number']}"
+        assert status == f"Frame {frame['frame_number']}"
 
 
 def test_info_box_live_and_replay(frame: dict) -> None:
