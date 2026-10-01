@@ -16,9 +16,9 @@ exactement la même chaîne de traitement.
 > **État.** La chaîne de phase est validée sur le radar simulé (fréquence à
 > ±1 respiration/min près, amplitude du déplacement, apnée, scène vide,
 > discontinuités du flux — voir `tests/test_vital_signs_pipeline.py`).  Elle
-> reste à valider sur de **nouveaux** enregistrements PlutoSDR : les anciens
-> enregistrements ont été stockés après un filtre passe-haut anti-fouillis,
-> qui abîme la phase (voir [Limites connues](#limites-connues)).
+> reste à valider sur le PlutoSDR : sur les anciens enregistrements, elle ne
+> détecte pas la respiration, pour une raison encore inconnue (voir
+> [Limites connues](#limites-connues)).
 
 ---
 
@@ -396,13 +396,19 @@ DSP.
 - **Pas encore de validation sur de nouveaux enregistrements matériels.**
   La détection des débordements du PlutoSDR (registre `0x80000088`) et la
   chaîne temps réel sur le Pluto n'ont pas été testées depuis le refactor.
-- **Anciens enregistrements.**  Les 69 anciens fichiers `.iq` (convertis dans
-  `data/sessions/legacy/`, `iq_stage = "decimated_clutter_filtered"`) ont été
-  stockés **après** le filtre passe-haut anti-fouillis, qui retire une partie
-  du terme de phase utile (bug B3).  Sur eux, la chaîne de phase indique
-  surtout `MOTION` ou `NO_BREATHING` ; ils ne servent pas de référence pour
-  elle.  Les nouveaux enregistrements faits avec `scripts/record.py` stockent
-  l'IQ brut.
+- **Anciens enregistrements.**  Les 69 anciens fichiers `.iq` sont convertis
+  dans `data/sessions/legacy/` (`iq_stage = "decimated_clutter_filtered"`).
+  Leur filtre passe-haut n'agissait qu'autour de 0 Hz, alors que l'écho est
+  à +488 Hz : la phase peut donc être retraitée.  Pourtant, la chaîne de
+  phase **ne détecte pas** la respiration sur ces enregistrements :
+  - sur les sessions `breathing`, seules 2 % des analyses sont en
+    `BREATHING` et 57 % en `MOTION` (plus de 30 mm crête à crête) ;
+  - sur les sessions `empty`, 12 % des analyses sont en `BREATHING`.
+
+  La cause n'est pas établie : sujets qui bougent, ou phase trop bruitée (le
+  résidu de l'ajustement du cercle est proche de celui d'un nuage de bruit).
+  Il faut de nouveaux enregistrements bruts d'une scène contrôlée
+  (`scripts/record.py`).  Détails au §19.3 de `REFACTOR_PLAN.md`.
 - **`ml/`** apprend encore sur les anciens spectrogrammes `.npz` de la chaîne
   micro-Doppler supprimée ; il sera repensé sur le signal de phase des
   sessions HDF5.

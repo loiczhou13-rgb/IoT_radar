@@ -16,8 +16,8 @@ the same processing chain.
 > **Status.** The phase chain is validated on the simulated radar (rate within
 > ±1 breath/min, displacement amplitude, apnea, empty scene, stream
 > discontinuities — see `tests/test_vital_signs_pipeline.py`).  It still has
-> to be validated on **new** PlutoSDR recordings: the legacy recordings were
-> stored after a clutter high-pass filter, which spoils the phase (see
+> to be validated on the PlutoSDR: on the legacy recordings it does not
+> detect breathing, for a reason not yet established (see
 > [Known limitations](#known-limitations)).
 
 ---
@@ -388,12 +388,19 @@ English everywhere, physical names with a unit suffix (`_hz`, `_s`, `_m`,
 - **No validation on new hardware recordings yet.**  The PlutoSDR overflow
   detection (register `0x80000088`) and the real-time chain on the Pluto
   have not been tested since the refactor.
-- **Legacy recordings.**  The 69 old `.iq` files (converted into
-  `data/sessions/legacy/`, `iq_stage = "decimated_clutter_filtered"`) were
-  stored **after** the clutter high-pass filter, which removes part of the
-  useful phase term (bug B3).  On them the phase chain mostly reports
-  `MOTION` or `NO_BREATHING`; they are no benchmark for it.  New recordings with
-  `scripts/record.py` store the raw IQ.
+- **Legacy recordings.**  The 69 old `.iq` files are converted into
+  `data/sessions/legacy/` (`iq_stage = "decimated_clutter_filtered"`).  Their
+  high-pass filter only acted around 0 Hz, while the echo sits at +488 Hz,
+  so the phase can be re-processed.  Yet the phase chain does **not** detect
+  breathing on them:
+  - on the `breathing` sessions, only 2 % of the updates are `BREATHING`
+    and 57 % are `MOTION` (more than 30 mm peak to peak);
+  - on the `empty` sessions, 12 % of the updates are `BREATHING`.
+
+  The cause is not established: moving subjects, or a phase too noisy (the
+  circle-fit residual is close to that of a noise cloud).  New raw
+  recordings of a controlled scene (`scripts/record.py`) are needed.  Details
+  in section 19.3 of `REFACTOR_PLAN.md`.
 - **`ml/`** still learns from the legacy `.npz` spectrograms of the removed
   micro-Doppler chain; it will be redesigned on the phase signal of the HDF5
   sessions.
