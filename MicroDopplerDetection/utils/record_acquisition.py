@@ -25,7 +25,6 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import errno
-import importlib.util
 import json
 import logging
 import sys
@@ -54,6 +53,9 @@ _ensure_paths()
 
 from utils.repo_paths import default_recording_data_root
 
+from iot_radar.config import load_config, setup_logging
+from iot_radar.pipeline import build_context, streaming_frame_generator
+
 _VALID_ENVS: tuple[str, ...] = ("salle",)
 
 
@@ -73,18 +75,6 @@ def _write_iq_stereo_wav(path: Path, iq: np.ndarray, sample_rate_hz: float) -> N
     q = np.asarray(iq.imag, dtype=np.float32)
     stereo = np.column_stack((i, q))
     wavfile.write(path, int(round(float(sample_rate_hz))), stereo)
-
-
-def _load_main_module():
-    """Load the package's ``main.py`` unambiguously w.r.t. a third-party ``main`` module."""
-    path = _ROOT / "main.py"
-    spec = importlib.util.spec_from_file_location("microdoppler_main", path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"Impossible de charger {path}")
-    mod = importlib.util.module_from_spec(spec)
-    _ensure_paths()
-    spec.loader.exec_module(mod)
-    return mod
 
 
 def _next_sample_index(split_dir: Path) -> int:
@@ -210,10 +200,8 @@ def run(args: argparse.Namespace | None = None) -> Path:
     """
     if args is None:
         args = parse_record_args()
-    md = _load_main_module()
-
-    cfg: dict[str, Any] = md._load_config(args.config)
-    log_path = md._setup_logging(
+    cfg: dict[str, Any] = load_config(args.config)
+    log_path = setup_logging(
         cfg,
         log_file=Path(args.log_file) if args.log_file else None,
     )
@@ -253,13 +241,13 @@ def run(args: argparse.Namespace | None = None) -> Path:
         int(args.label),
     )
 
-    context = md._build_context(cfg)
+    context = build_context(cfg)
     f_hz = np.asarray(context["f_hz"], dtype=np.float64)
     f_s_dec = float(context["f_s_dec"])
 
     need_iq_tape = (not args.no_iq_file) or args.wav
     decimated_iq_chunks: list[np.ndarray] | None = [] if need_iq_tape else None
-    gen = md._streaming_frame_generator(
+    gen = streaming_frame_generator(
         cfg,
         simulation=args.simulation,
         decimated_iq_chunks=decimated_iq_chunks,

@@ -19,11 +19,6 @@ from typing import Any, Callable
 
 import numpy as np
 
-from MicroDopplerDetection.main import (
-    _build_context,
-    _compute_range,
-    _streaming_frame_generator,
-)
 from iot_radar.dsp.clutter import ClutterFilter
 from iot_radar.dsp.decimation import Decimator
 from iot_radar.dsp.detection import (
@@ -34,6 +29,8 @@ from iot_radar.dsp.detection import (
 )
 from iot_radar.dsp.spectral import compute_single_column, get_window
 from iot_radar.acquisition.pluto import generate_tx_buffer
+from iot_radar.physics import compute_range
+from iot_radar.pipeline import build_context, streaming_frame_generator
 
 SIMULATION_SEED = 1234
 """Seed of the random generator used by the simulated IQ source."""
@@ -192,12 +189,12 @@ def case_tx_buffer() -> dict[str, np.ndarray]:
 
 def case_link_budget() -> dict[str, np.ndarray]:
     """Pessimistic and optimistic ranges of the radar equation."""
-    return {"range_m": np.array(_compute_range(pipeline_config()))}
+    return {"range_m": np.array(compute_range(pipeline_config()))}
 
 
 def case_dashboard_context() -> dict[str, np.ndarray]:
     """Static quantities shown on the dashboard."""
-    context = _build_context(pipeline_config())
+    context = build_context(pipeline_config())
     return {
         "f_hz": context["f_hz"],
         "spectre_tx_db": context["spectre_tx_db"],
@@ -216,7 +213,7 @@ def case_pipeline() -> dict[str, np.ndarray]:
     the caller must make that generator deterministic (see
     ``seeded_default_rng`` in this module).
     """
-    frames = _streaming_frame_generator(pipeline_config(), simulation=True)
+    frames = streaming_frame_generator(pipeline_config(), simulation=True)
     scalars, columns = [], []
     for k, frame in zip(range(N_PIPELINE_FRAMES), frames):
         scalars.append([

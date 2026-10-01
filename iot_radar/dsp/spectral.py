@@ -14,9 +14,9 @@ from dataclasses import dataclass
 import numpy as np
 from scipy.signal import windows
 
-logger = logging.getLogger(__name__)
+from iot_radar.physics import SPEED_OF_LIGHT
 
-_SPEED_OF_LIGHT: float = 299_792_458.0
+logger = logging.getLogger(__name__)
 
 _VALID_WINDOWS = ("hann", "hamming", "blackman", "flattop")
 
@@ -134,7 +134,7 @@ def compute_single_column(
         Single spectrum column with frequency / velocity axes.
     """
     n_fft = len(segment)
-    wavelength = _SPEED_OF_LIGHT / f_c
+    wavelength = SPEED_OF_LIGHT / f_c
 
     windowed = segment * window
     spectrum = np.fft.fftshift(np.fft.fft(windowed, n=n_fft))

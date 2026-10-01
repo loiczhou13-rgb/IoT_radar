@@ -4,7 +4,7 @@ import pygame
 import pygame.freetype
 import numpy as np
 import matplotlib.pyplot as plt
-from MicroDopplerDetection.main import main
+from scripts.run_radar import main
 
 # =========================================================
 # INIT

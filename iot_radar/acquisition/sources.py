@@ -12,9 +12,9 @@ from typing import Generator
 
 import numpy as np
 
-logger = logging.getLogger(__name__)
+from iot_radar.physics import SPEED_OF_LIGHT
 
-_SPEED_OF_LIGHT: float = 299_792_458.0
+logger = logging.getLogger(__name__)
 
 
 def stream_simulation(
@@ -58,7 +58,7 @@ def stream_simulation(
     continuous waveform, maintaining phase continuity across buffers.
     This mimics the real PlutoSDR streaming behaviour.
     """
-    wavelength = _SPEED_OF_LIGHT / f_c
+    wavelength = SPEED_OF_LIGHT / f_c
     D_m = D_mm * 1e-3
     mod_index = 4.0 * np.pi * D_m / wavelength
 

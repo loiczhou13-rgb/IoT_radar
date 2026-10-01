@@ -1,59 +1,35 @@
-"""CLI entry point for the micro-Doppler radar pipeline.
+"""Micro-Doppler streaming pipeline: IQ source → decimation → clutter → STFT → detection.
 
-Usage
------
-Hardware mode (continuous, default config)::
-    python -m MicroDopplerDetection.main
-
-Simulation mode (continuous)::
-    python -m MicroDopplerDetection.main --simulation
-
-Custom config file::
-    python -m MicroDopplerDetection.main --config MicroDopplerDetection/configs/my.yaml
+:func:`streaming_frame_generator` assembles the DSP bricks of
+:mod:`iot_radar.dsp` around an IQ source of :mod:`iot_radar.acquisition` and
+yields one result dictionary per STFT column.  :func:`build_context` gathers
+the static quantities shown by the dashboard.
 """
 
 from __future__ import annotations
 
-import argparse
-import datetime as _dt
 import logging
 import math
-import sys
-from pathlib import Path
 from typing import Any, Generator
 
-_PACKAGE_ROOT = Path(__file__).resolve().parent
-_REPO_ROOT = _PACKAGE_ROOT.parent
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
-
-import yaml
 import numpy as np
 
 from iot_radar.acquisition.pluto import generate_tx_buffer, stream_pluto
 from iot_radar.acquisition.sources import stream_simulation
-from iot_radar.dsp.decimation import Decimator
 from iot_radar.dsp.clutter import ClutterFilter
-from iot_radar.dsp.spectral import compute_single_column, get_window
+from iot_radar.dsp.decimation import Decimator
 from iot_radar.dsp.detection import detect_presence_column
-from MicroDopplerDetection.utils.display import DashboardRadar
+from iot_radar.dsp.spectral import compute_single_column, get_window
+from iot_radar.physics import SPEED_OF_LIGHT, compute_range
 
 logger = logging.getLogger(__name__)
-
-_SPEED_OF_LIGHT: float = 299_792_458.0
-_BOLTZMANN: float = 1.380649e-23
-_T0: float = 290.0
-
-_PACKAGE_ROOT: Path = Path(__file__).resolve().parent
-_DEFAULT_CONFIG: Path = _PACKAGE_ROOT / "configs" / "config.yaml"
-_LOGS_DIR: Path = _PACKAGE_ROOT / "logs"
 
 
 # ------------------------------------------------------------------
 # Helpers
 # ------------------------------------------------------------------
 
-def _resolve_f_offset(cfg: dict[str, Any]) -> float:
+def resolve_f_offset(cfg: dict[str, Any]) -> float:
     """Return the effective baseband offset (Hz), 0 if not in cw_offset mode."""
     emi = cfg.get("emission", {})
     if emi.get("mode") == "cw_offset":
@@ -61,7 +37,7 @@ def _resolve_f_offset(cfg: dict[str, Any]) -> float:
     return 0.0
 
 
-def _auto_skip_warmup(
+def auto_skip_warmup(
     clu_cfg: dict[str, Any],
     f_s_dec: float,
     hop: int,
@@ -87,135 +63,17 @@ def _auto_skip_warmup(
 
 
 # ------------------------------------------------------------------
-# Radar range equation
-# ------------------------------------------------------------------
-
-def _radar_range(
-    params: dict[str, Any],
-    wavelength: float,
-    B_hz: float,
-) -> float:
-    """Evaluate the monostatic radar range equation."""
-    P_tx = 1e-3 * 10.0 ** (params["P_tx_dBm"] / 10.0)
-    G_tx = 10.0 ** (params["G_tx_dBi"] / 10.0)
-    G_rx = 10.0 ** (params["G_rx_dBi"] / 10.0)
-    sigma = params["sigma_m2"]
-    F = 10.0 ** (params["NF_dB"] / 10.0)
-    L = 10.0 ** (params["L_sys_dB"] / 10.0)
-    SNR_min = 10.0 ** (params["SNR_min_dB"] / 10.0)
-
-    numerator = P_tx * G_tx * G_rx * wavelength**2 * sigma
-    denominator = (4.0 * np.pi)**3 * _BOLTZMANN * _T0 * B_hz * F * L * SNR_min
-    return float((numerator / denominator) ** 0.25)
-
-
-def _compute_range(cfg: dict[str, Any]) -> tuple[float, float]:
-    """Return ``(R_min, R_max)`` — pessimistic and optimistic ranges (m)."""
-    bl = cfg["bilan_liaison"]
-    f_c = float(cfg["sdr"]["f_c"])
-    wavelength = _SPEED_OF_LIGHT / f_c
-    B_hz = float(bl["B_eff_hz"])
-
-    R_max = _radar_range(bl["optimiste"], wavelength, B_hz)
-    R_min = _radar_range(bl["pessimiste"], wavelength, B_hz)
-
-    logger.info(
-        "Portée effective — R_min = %.1f m (pire-cas) / R_max = %.1f m (optimiste) "
-        "(B=%.3f Hz, λ=%.3f m)",
-        R_min,
-        R_max,
-        B_hz,
-        wavelength,
-    )
-    return R_min, R_max
-
-
-# ------------------------------------------------------------------
-# Configuration loading
-# ------------------------------------------------------------------
-
-def _load_config(path: str) -> dict[str, Any]:
-    """Load and return the YAML configuration file."""
-    cfg_path = Path(path)
-    if not cfg_path.is_file():
-        print(f"ERREUR : fichier de configuration introuvable : {path}", file=sys.stderr)
-        sys.exit(1)
-    with open(cfg_path, encoding="utf-8") as fh:
-        return yaml.safe_load(fh)
-
-
-def _setup_logging(cfg: dict[str, Any], log_file: Path | None = None) -> Path | None:
-    """Configure the root logger from the config ``logging`` section.
-
-    A console handler is always installed.  If *log_file* is provided
-    (or if ``logging.to_file`` is true in the config), a parallel
-    ``FileHandler`` writes the same records to disk so that runs can be
-    audited offline.
-
-    Parameters
-    ----------
-    cfg : dict
-        Full configuration dictionary; reads ``logging.level`` and
-        optionally ``logging.to_file`` (default: ``True``).
-    log_file : pathlib.Path or None, optional
-        Explicit log-file path.  When ``None``, a timestamped file is
-        created under ``MicroDopplerDetection/logs/``.
-
-    Returns
-    -------
-    pathlib.Path or None
-        Path of the file handler (``None`` if file logging is disabled).
-    """
-    log_cfg = cfg.get("logging", {})
-    level_name = log_cfg.get("level", "INFO")
-    level = getattr(logging, level_name.upper(), logging.INFO)
-
-    fmt = "%(asctime)s [%(levelname)s] %(name)s — %(message)s"
-    datefmt = "%H:%M:%S"
-
-    root = logging.getLogger()
-    root.setLevel(level)
-    for handler in list(root.handlers):
-        root.removeHandler(handler)
-
-    console = logging.StreamHandler()
-    console.setLevel(level)
-    console.setFormatter(logging.Formatter(fmt, datefmt=datefmt))
-    root.addHandler(console)
-
-    write_to_file = bool(log_cfg.get("to_file", True))
-    if not write_to_file:
-        return None
-
-    if log_file is None:
-        _LOGS_DIR.mkdir(parents=True, exist_ok=True)
-        stamp = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
-        log_file = _LOGS_DIR / f"radar_{stamp}.log"
-    else:
-        log_file.parent.mkdir(parents=True, exist_ok=True)
-
-    file_handler = logging.FileHandler(log_file, mode="w", encoding="utf-8")
-    file_handler.setLevel(level)
-    file_handler.setFormatter(
-        logging.Formatter("%(asctime)s [%(levelname)s] %(name)s — %(message)s")
-    )
-    root.addHandler(file_handler)
-    logger.info("Journal écrit dans %s", log_file)
-    return log_file
-
-
-# ------------------------------------------------------------------
 # Streaming pipeline
 # ------------------------------------------------------------------
 
-def _build_iq_stream(
+def open_iq_stream(
     cfg: dict[str, Any],
     simulation: bool,
 ) -> Generator[np.ndarray, None, None]:
     """Return an infinite IQ-buffer generator (hardware or simulation)."""
     sdr = cfg["sdr"]
     sim = cfg["simulation"]
-    f_off = _resolve_f_offset(cfg)
+    f_off = resolve_f_offset(cfg)
 
     if simulation or sim.get("enable", False):
         logger.info("Mode simulation continu activé (f_offset=%.1f Hz)", f_off)
@@ -248,7 +106,7 @@ def _build_iq_stream(
     )
 
 
-def _streaming_frame_generator(
+def streaming_frame_generator(
     cfg: dict[str, Any],
     simulation: bool,
     *,
@@ -281,7 +139,7 @@ def _streaming_frame_generator(
     D = int(dec_cfg["D"]) if do_decimate else 1
     f_max_utile = float(dec_cfg["f_max_utile"])
 
-    f_off = _resolve_f_offset(cfg)
+    f_off = resolve_f_offset(cfg)
     bande_resp_bb = tuple(det_cfg["bande_respiration"])
     bande_ref_bb = tuple(det_cfg["bande_reference"])
 
@@ -308,11 +166,11 @@ def _streaming_frame_generator(
     acf_len = max(1, int(round(acf_buffer_seconds * f_s_dec)))
 
     user_warmup = spec_cfg.get("skip_warmup")
-    auto_warmup = _auto_skip_warmup(clu_cfg, f_s_dec, hop)
+    auto_warmup = auto_skip_warmup(clu_cfg, f_s_dec, hop)
     skip_warmup = int(user_warmup) if user_warmup is not None else auto_warmup
 
     buf = np.empty(0, dtype=np.complex64)
-    iq_stream = _build_iq_stream(cfg, simulation)
+    iq_stream = open_iq_stream(cfg, simulation)
 
     logger.info(
         "Pipeline streaming — n_fft=%d, hop=%d, f_s_dec=%.1f Hz, "
@@ -410,7 +268,7 @@ def _streaming_frame_generator(
 # Build context for the dashboard
 # ------------------------------------------------------------------
 
-def _build_context(cfg: dict[str, Any]) -> dict[str, Any]:
+def build_context(cfg: dict[str, Any]) -> dict[str, Any]:
     """Build the dashboard context dict from config alone."""
     sdr = cfg["sdr"]
     emi = cfg["emission"]
@@ -426,7 +284,7 @@ def _build_context(cfg: dict[str, Any]) -> dict[str, Any]:
 
     f_hz = np.fft.fftshift(np.fft.fftfreq(n_fft, d=1.0 / f_s_dec)).astype(np.float64)
 
-    f_off = _resolve_f_offset(cfg)
+    f_off = resolve_f_offset(cfg)
     tx_buffer = generate_tx_buffer(
         mode=emi["mode"],
         buffer_size=sdr["buffer_size"],
@@ -440,10 +298,10 @@ def _build_context(cfg: dict[str, Any]) -> dict[str, Any]:
         np.fft.fftfreq(len(tx_buffer), d=1.0 / f_s)
     ).astype(np.float64)
 
-    R_min, R_max = _compute_range(cfg)
+    R_min, R_max = compute_range(cfg)
 
     df_hz = f_s_dec / n_fft
-    wavelength = _SPEED_OF_LIGHT / f_c
+    wavelength = SPEED_OF_LIGHT / f_c
     dv_mps = df_hz * wavelength / 2.0
 
     clutter_mode = cfg["clutter"]["mode"]
@@ -465,59 +323,3 @@ def _build_context(cfg: dict[str, Any]) -> dict[str, Any]:
         "bande_resp": bande_resp_bb,
         "B_eff_hz": B_eff_hz,
     }
-
-
-# ------------------------------------------------------------------
-# CLI
-# ------------------------------------------------------------------
-
-def _parse_args() -> argparse.Namespace:
-    """Parse command-line arguments."""
-    parser = argparse.ArgumentParser(
-        description="Radar micro-Doppler — détection de survivants ensevelis",
-    )
-    parser.add_argument(
-        "--config",
-        default=str(_DEFAULT_CONFIG),
-        help="Chemin vers le fichier de configuration YAML (défaut : %(default)s)",
-    )
-    parser.add_argument(
-        "--simulation",
-        action="store_true",
-        help="Forcer le mode simulation (pas de PlutoSDR requis)",
-    )
-    parser.add_argument(
-        "--log-file",
-        default=None,
-        help=(
-            "Chemin explicite du fichier de log.  Par défaut, "
-            "MicroDopplerDetection/logs/radar_<timestamp>.log."
-        ),
-    )
-    return parser.parse_args()
-
-
-def main() -> None:
-    """Top-level pipeline orchestration (streaming mode)."""
-    args = _parse_args()
-    cfg = _load_config(args.config)
-    log_path = _setup_logging(
-        cfg,
-        log_file=Path(args.log_file) if args.log_file else None,
-    )
-
-    logger.info("=== Démarrage du pipeline micro-Doppler (mode continu) ===")
-    logger.info("Configuration chargée depuis %s", args.config)
-    if log_path is not None:
-        logger.info("Logs persistants : %s", log_path)
-
-    context = _build_context(cfg)
-    dashboard = DashboardRadar(config=cfg, context=context)
-    gen = _streaming_frame_generator(cfg, simulation=args.simulation)
-    dashboard.run(gen)
-
-    logger.info("=== Pipeline terminé ===")
-
-
-if __name__ == "__main__":
-    main()

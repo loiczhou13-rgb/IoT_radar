@@ -16,7 +16,6 @@ The ``.npz`` must contain ``spectrogram_db``. YAML path: ``--config``, the
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import json
 import logging
 import sys
@@ -45,17 +44,8 @@ _ensure_paths()
 
 from utils.repo_paths import default_recording_data_root
 
-
-def _load_main_module():
-    """Load the package's ``main.py`` unambiguously w.r.t. a third-party ``main`` module."""
-    path = _ROOT / "main.py"
-    spec = importlib.util.spec_from_file_location("microdoppler_main", path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"Impossible de charger {path}")
-    mod = importlib.util.module_from_spec(spec)
-    _ensure_paths()
-    spec.loader.exec_module(mod)
-    return mod
+from iot_radar.config import load_config
+from iot_radar.pipeline import build_context
 
 
 def _resolve_npz_path(args: argparse.Namespace) -> Path:
@@ -145,7 +135,7 @@ def _frames_from_npz(data: Any) -> tuple[list[dict[str, Any]], int]:
 def main() -> None:
     """CLI entry point: replay a recorded ``.npz`` in the dashboard."""
     _ensure_paths()
-    from utils.display import DashboardRadar
+    from iot_radar.ui.dashboard import DashboardRadar
 
     logging.basicConfig(
         level=logging.INFO,
@@ -205,9 +195,8 @@ def main() -> None:
         cfg_path = _load_config_path_from_recording(npz_path) or cfg_default
     cfg_path = str(Path(cfg_path).expanduser().resolve())
 
-    md = _load_main_module()
-    cfg: dict[str, Any] = md._load_config(cfg_path)
-    context = md._build_context(cfg)
+    cfg: dict[str, Any] = load_config(cfg_path)
+    context = build_context(cfg)
 
     with np.load(npz_path, allow_pickle=False) as data:
         rec_label: int | None = None
