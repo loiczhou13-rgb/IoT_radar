@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from typing import Any, Generator
+from typing import Any, Iterable
 
 import numpy as np
 import matplotlib
@@ -25,8 +25,9 @@ class DashboardRadar:
         Row 1 : RX spectrum (full width)
         Row 2 : Presence score curve (left 3/5) | Info box (right 2/5)
 
-    With ``show_presence_score=False`` (relecture ``record_visualization``),
-    row 2 is only the info box spanning the full width — no score curve.
+    With ``show_presence_score=False`` (replay of a recording whose frames
+    carry no score), row 2 is only the info box spanning the full width.
+    The same :meth:`run` method serves the live stream and the replay.
 
     When the score panel is shown, the presence score is the fused output of
     the Fisher band-power F-test and the phase-autocorrelation peak.  The
@@ -57,6 +58,7 @@ class DashboardRadar:
         context: dict,
         *,
         show_presence_score: bool = True,
+        title: str | None = None,
     ) -> None:
         aff = config["affichage"]
         det_cfg = config.get("detection", {})
@@ -101,7 +103,7 @@ class DashboardRadar:
             self._ax_info = self._fig.add_subplot(gs[2, :])
 
         self._fig.suptitle(
-            "Radar Micro-Doppler — Détection de survivants",
+            title or "Radar Micro-Doppler — Détection de survivants",
             fontsize=13,
             fontweight="bold",
         )
@@ -209,46 +211,32 @@ class DashboardRadar:
     # ------------------------------------------------------------------
 
     def _update_info_box(self) -> None:
+        lines = [
+            "╔══════════════════════╗",
+            "║   PARAMÈTRES RADAR   ║",
+            "╚══════════════════════╝",
+            "",
+            f"  δf     = {self._df_hz:.3f} Hz",
+            f"  δv     = {self._dv_mps * 100:.2f} cm/s",
+            f"  N_FFT  = {self._n_fft}",
+            f"  B_eff  = {self._B_eff_hz:.1f} Hz",
+            f"  Clutter: {self._clutter_mode}",
+            f"  Bande  : ±{self._bande_resp[0]}–{self._bande_resp[1]} Hz",
+            "",
+            f"  Portée : {self._R_min_m:.1f}–{self._R_max_m:.1f} m",
+        ]
         if self._show_presence_score:
             if self._last_fv_estimated is None:
                 fv_str = "  fv     = —"
             else:
                 fv_str = f"  fv     = {self._last_fv_estimated:.3f} Hz"
-
-            lines = [
-                "╔══════════════════════╗",
-                "║   PARAMÈTRES RADAR   ║",
-                "╚══════════════════════╝",
-                "",
-                f"  δf     = {self._df_hz:.3f} Hz",
-                f"  δv     = {self._dv_mps * 100:.2f} cm/s",
-                f"  N_FFT  = {self._n_fft}",
-                f"  B_eff  = {self._B_eff_hz:.1f} Hz",
-                f"  Clutter: {self._clutter_mode}",
-                f"  Bande  : ±{self._bande_resp[0]}–{self._bande_resp[1]} Hz",
-                "",
-                f"  Portée : {self._R_min_m:.1f}–{self._R_max_m:.1f} m",
+            lines += [
                 "",
                 "─────── LIVE ───────",
                 f"  p_F    = {self._last_p_value_f:.2e}  (α={self._alpha:.0e})",
                 f"  ACF    = {self._last_acf_peak:+.2f}",
                 fv_str,
                 f"  Score  = {self._last_score:.2f}",
-            ]
-        else:
-            lines = [
-                "╔══════════════════════╗",
-                "║   PARAMÈTRES RADAR   ║",
-                "╚══════════════════════╝",
-                "",
-                f"  δf     = {self._df_hz:.3f} Hz",
-                f"  δv     = {self._dv_mps * 100:.2f} cm/s",
-                f"  N_FFT  = {self._n_fft}",
-                f"  B_eff  = {self._B_eff_hz:.1f} Hz",
-                f"  Clutter: {self._clutter_mode}",
-                f"  Bande  : ±{self._bande_resp[0]}–{self._bande_resp[1]} Hz",
-                "",
-                f"  Portée : {self._R_min_m:.1f}–{self._R_max_m:.1f} m",
             ]
         self._info_text.set_text("\n".join(lines))
 
@@ -333,8 +321,17 @@ class DashboardRadar:
     # Animation loop
     # ------------------------------------------------------------------
 
-    def run(self, generator: Generator[dict[str, Any], None, None]) -> None:
-        """Start the live animation driven by a frame generator.
+    def run(
+        self,
+        frames: Iterable[dict[str, Any]],
+        frame_interval_s: float | None = None,
+    ) -> None:
+        """Display *frames* until the window is closed.
+
+        *frames* is the live frame generator of the pipeline, or the frames
+        of a recording for a replay.  With *frame_interval_s*, the frames are
+        paced (one every *frame_interval_s* seconds, for a replay); without
+        it, they are shown as fast as they arrive (live stream).
 
         Lifecycle:
 
@@ -342,17 +339,16 @@ class DashboardRadar:
         2. Schedule ``FuncAnimation`` ticks (drives ``update_frame``).
         3. The first ``draw_event`` (i.e. when the OS window is actually
            painted) starts a daemon producer thread.  The thread iterates
-           the generator and stores the latest frame in ``_latest_frame``.
+           the frames and stores the latest frame in ``_latest_frame``.
         4. Every animation tick, the GUI thread reads ``_latest_frame``
            (newest frame, dropping any older ones) and forwards it to
            ``update_frame``.
         5. On window close, ``_stop_event`` is set and the producer
-           thread finishes (which calls ``generator.close()`` → SDR
-           cleanup).
+           thread finishes (which calls ``frames.close()``, if it exists,
+           → SDR cleanup).
         """
-        logger.info("Lancement du dashboard temps réel")
+        logger.info("Lancement du dashboard")
 
-        self._generator = generator
         self._stop_event = threading.Event()
         self._latest_frame: dict[str, Any] | None = None
         self._producer_thread: threading.Thread | None = None
@@ -360,24 +356,29 @@ class DashboardRadar:
 
         def _producer() -> None:
             try:
-                for frame in generator:
+                for frame in frames:
                     if self._stop_event.is_set():
                         break
                     self._latest_frame = frame
-                    # Yield the GIL so Tk's event loop on the main thread
-                    # can keep processing redraws and user input.  Most
-                    # NumPy / SciPy primitives already release the GIL,
-                    # but the surrounding Python loop does not, and on
-                    # WSLg + TkAgg even small bursts of GIL pressure can
-                    # delay the very first window paint.
-                    time.sleep(0)
+                    if frame_interval_s is not None:
+                        time.sleep(frame_interval_s)  # replay pacing
+                    else:
+                        # Yield the GIL so Tk's event loop on the main thread
+                        # can keep processing redraws and user input.  Most
+                        # NumPy / SciPy primitives already release the GIL,
+                        # but the surrounding Python loop does not, and on
+                        # WSLg + TkAgg even small bursts of GIL pressure can
+                        # delay the very first window paint.
+                        time.sleep(0)
             except Exception:
                 logger.exception("Erreur dans le thread de production")
             finally:
-                try:
-                    generator.close()
-                except Exception:
-                    pass
+                close = getattr(frames, "close", None)
+                if close is not None:
+                    try:
+                        close()
+                    except Exception:
+                        pass
                 logger.info("Producteur de trames arrêté")
 
         def _start_producer_once(_event=None) -> None:

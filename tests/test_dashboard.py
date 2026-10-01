@@ -34,3 +34,14 @@ def test_dashboard_updates(frame: dict, show_score: bool) -> None:
         assert "DÉTECTÉE" in status or "Aucune" in status
     else:
         assert status == f"Trame {frame['n_trame']}"
+
+
+def test_info_box_live_and_replay(frame: dict) -> None:
+    cfg = pipeline_config()
+    live = DashboardRadar(config=cfg, context=build_context(cfg))
+    replay = DashboardRadar(config=cfg, context=build_context(cfg), show_presence_score=False, title="Replay")
+    live_lines = live._info_text.get_text().splitlines()
+    replay_lines = replay._info_text.get_text().splitlines()
+    assert live_lines[:len(replay_lines)] == replay_lines
+    assert "─────── LIVE ───────" in live_lines and "─────── LIVE ───────" not in replay_lines
+    assert replay._fig._suptitle.get_text() == "Replay"

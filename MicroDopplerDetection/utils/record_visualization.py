@@ -16,6 +16,7 @@ The ``.npz`` must contain ``spectrogram_db``. YAML path: ``--config``, the
 from __future__ import annotations
 
 import argparse
+import itertools
 import json
 import logging
 import sys
@@ -23,8 +24,6 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.animation import FuncAnimation
 
 _UTILS_DIR = Path(__file__).resolve().parent
 _ROOT = _UTILS_DIR.parent
@@ -217,37 +216,14 @@ def main() -> None:
         cfg_path,
     )
 
-    dashboard = DashboardRadar(config=cfg, context=context, show_presence_score=False)
     title = "Radar Micro-Doppler — Relecture enregistrement"
     if rec_label is not None:
         title = f"{title}    ·    label {rec_label}"
-
-    dashboard._fig.suptitle(
-        title,
-        fontsize=13,
-        fontweight="bold",
+    dashboard = DashboardRadar(
+        config=cfg, context=context, show_presence_score=False, title=title,
     )
-
-    def _init() -> tuple:
-        return dashboard.update_frame(None)
-
-    def _step(fr: dict[str, Any]) -> tuple:
-        return dashboard.update_frame(fr)
-
-    anim = FuncAnimation(
-        dashboard._fig,
-        _step,
-        init_func=_init,
-        frames=frames,
-        interval=max(1.0, float(args.interval_ms)),
-        blit=True,
-        cache_frame_data=False,
-        repeat=bool(args.loop),
-    )
-    _ = anim
-
-    plt.show()
-
+    replay_frames = itertools.cycle(frames) if args.loop else frames
+    dashboard.run(replay_frames, frame_interval_s=max(1.0, float(args.interval_ms)) / 1000.0)
 
 if __name__ == "__main__":
     main()
