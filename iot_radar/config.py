@@ -1,5 +1,8 @@
 """Repository paths, YAML configuration loading and logging set-up.
 
+Used by every command-line script: they all load their YAML file with
+:func:`load_config` and configure the logs with :func:`setup_logging`.
+
 Paths are resolved from the location of this file, so they do not depend on
 the current working directory (the package is installed in editable mode with
 ``pip install -e .``).
@@ -41,12 +44,12 @@ def load_config(path: str | Path) -> dict[str, Any]:
     """
     cfg_path = Path(path)
     if not cfg_path.is_file():
-        print(f"ERREUR : fichier de configuration introuvable : {path}", file=sys.stderr)
+        print(f"ERROR: configuration file not found: {path}", file=sys.stderr)
         sys.exit(1)
     with open(cfg_path, encoding="utf-8") as fh:
         cfg = yaml.safe_load(fh)
     if not isinstance(cfg, dict):
-        raise ValueError(f"Config invalide (pas un mapping) : {path}")
+        raise ValueError(f"Invalid configuration (not a mapping): {path}")
     return cfg
 
 
@@ -128,4 +131,4 @@ def setup_logging(
     file_handler.setLevel(level_value)
     file_handler.setFormatter(logging.Formatter(fmt))
     root.addHandler(file_handler)
-    logger.info("Journal écrit dans %s", log_file)
+    logger.info("Log file: %s", log_file)

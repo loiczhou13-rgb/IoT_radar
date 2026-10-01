@@ -24,23 +24,23 @@ logger = logging.getLogger(__name__)
 def parse_args() -> argparse.Namespace:
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(
-        description="Radar micro-Doppler — détection de survivants ensevelis",
+        description="CW radar — breathing detection of buried people",
     )
     parser.add_argument(
         "--config",
         default=str(DEFAULT_RADAR_CONFIG),
-        help="Chemin vers le fichier de configuration YAML (défaut : %(default)s)",
+        help="YAML configuration file (default: %(default)s)",
     )
     parser.add_argument(
         "--simulation",
         action="store_true",
-        help="Forcer le mode simulation (pas de PlutoSDR requis)",
+        help="Use the simulated source (no PlutoSDR needed)",
     )
     parser.add_argument(
         "--log-file",
         default=None,
         help=(
-            "Chemin explicite du fichier de log.  Par défaut, "
+            "Explicit log file.  Default: "
             "logs/radar_<timestamp>.log."
         ),
     )
@@ -48,24 +48,24 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
-    """Top-level pipeline orchestration (streaming mode)."""
+    """Open the source, run the pipeline and show its frames until the window is closed."""
     args = parse_args()
     cfg = load_config(args.config)
     log_path = radar_log_file(cfg, args.log_file)
     setup_logging(cfg.get("logging", {}).get("level", "INFO"), log_path)
 
-    logger.info("=== Démarrage du pipeline micro-Doppler (mode continu) ===")
-    logger.info("Configuration chargée depuis %s", args.config)
+    logger.info("=== Micro-Doppler pipeline started (streaming) ===")
+    logger.info("Configuration loaded from %s", args.config)
     if log_path is not None:
-        logger.info("Logs persistants : %s", log_path)
+        logger.info("Log file: %s", log_path)
 
     context = build_context(cfg)
     dashboard = DashboardRadar(config=cfg, context=context)
     source = open_source(cfg, simulation=args.simulation)
-    gen = streaming_frame_generator(cfg, source)
-    dashboard.run(gen)
+    frames = streaming_frame_generator(cfg, source)
+    dashboard.run(frames)
 
-    logger.info("=== Pipeline terminé ===")
+    logger.info("=== Pipeline stopped ===")
 
 
 if __name__ == "__main__":

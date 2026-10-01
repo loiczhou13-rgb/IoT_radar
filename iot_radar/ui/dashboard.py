@@ -69,16 +69,16 @@ class DashboardRadar:
         self._alpha: float = det_cfg.get("false_alarm_probability", 0.01)
 
         self._f_hz: np.ndarray = context["f_hz"]
-        self._f_hz_tx: np.ndarray = context["f_hz_tx"]
-        self._spectre_tx_db: np.ndarray = context["spectre_tx_db"]
-        self._R_min_m: float = context.get("R_min_m", 0.0)
-        self._R_max_m: float = context.get("R_max_m", 0.0)
-        self._df_hz: float = context.get("df_hz", 0.0)
-        self._dv_mps: float = context.get("dv_mps", 0.0)
+        self._f_hz_tx: np.ndarray = context["tx_f_hz"]
+        self._spectre_tx_db: np.ndarray = context["tx_spectrum_db"]
+        self._R_min_m: float = context.get("range_min_m", 0.0)
+        self._R_max_m: float = context.get("range_max_m", 0.0)
+        self._df_hz: float = context.get("frequency_resolution_hz", 0.0)
+        self._dv_mps: float = context.get("velocity_resolution_m_s", 0.0)
         self._n_fft: int = context.get("n_fft", 0)
         self._clutter_mode: str = context.get("clutter_mode", "?")
-        self._bande_resp: list = context.get("bande_resp", [0.1, 1.0])
-        self._B_eff_hz: float = context.get("B_eff_hz", 0.0)
+        self._bande_resp: list = context.get("breathing_band_hz", [0.1, 1.0])
+        self._B_eff_hz: float = context.get("noise_bandwidth_hz", 0.0)
 
         self._show_presence_score: bool = show_presence_score
 
@@ -270,8 +270,8 @@ class DashboardRadar:
 
         self._frame_count += 1
 
-        col_db = frame_data["spectre_colonne"]
-        n_trame = frame_data.get("n_trame", self._frame_count)
+        col_db = frame_data["spectrum_column_db"]
+        n_trame = frame_data.get("frame_number", self._frame_count)
 
         # Panel 2 — RX spectrum
         self._line_rx.set_ydata(col_db)
@@ -285,10 +285,10 @@ class DashboardRadar:
             return artists_bs
 
         assert self._line_score is not None
-        score = frame_data["score_presence"]
-        p_value_f = frame_data["p_value_f"]
+        score = frame_data["presence_score"]
+        p_value_f = frame_data["p_value"]
         acf_peak = frame_data["acf_peak"]
-        fv_estimated = frame_data["fv_estimated"]
+        fv_estimated = frame_data["breathing_rate_hz"]
         score_detected = score >= self._seuil_score
 
         # Panel 3a — Presence score history

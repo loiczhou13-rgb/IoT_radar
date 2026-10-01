@@ -29,7 +29,7 @@ from iot_radar.dsp.detection import (
 )
 from iot_radar.dsp.spectral import compute_single_column, get_window
 from iot_radar.acquisition.pluto import cw_tx_buffer
-from iot_radar.physics import compute_range
+from iot_radar.physics import range_interval_m
 from iot_radar.acquisition.sources import open_source
 from iot_radar.pipeline import build_context, streaming_frame_generator
 
@@ -197,7 +197,7 @@ def case_tx_buffer() -> dict[str, np.ndarray]:
 
 def case_link_budget() -> dict[str, np.ndarray]:
     """Pessimistic and optimistic ranges of the radar equation."""
-    return {"range_m": np.array(compute_range(pipeline_config()))}
+    return {"range_m": np.array(range_interval_m(pipeline_config()))}
 
 
 def case_dashboard_context() -> dict[str, np.ndarray]:
@@ -205,11 +205,11 @@ def case_dashboard_context() -> dict[str, np.ndarray]:
     context = build_context(pipeline_config())
     return {
         "f_hz": context["f_hz"],
-        "spectre_tx_db": context["spectre_tx_db"],
-        "f_hz_tx": context["f_hz_tx"],
+        "spectre_tx_db": context["tx_spectrum_db"],
+        "f_hz_tx": context["tx_f_hz"],
         "scalars": np.array([
-            context["f_s_dec"], context["df_hz"], context["dv_mps"],
-            context["R_min_m"], context["R_max_m"],
+            context["f_s_dec_hz"], context["frequency_resolution_hz"],
+            context["velocity_resolution_m_s"], context["range_min_m"], context["range_max_m"],
         ]),
     }
 
@@ -225,13 +225,13 @@ def case_pipeline() -> dict[str, np.ndarray]:
     scalars, columns = [], []
     for k, frame in zip(range(N_PIPELINE_FRAMES), frames):
         scalars.append([
-            frame["n_trame"], frame["score_presence"], frame["p_value_f"],
+            frame["frame_number"], frame["presence_score"], frame["p_value"],
             frame["acf_peak"],
-            np.nan if frame["fv_estimated"] is None else frame["fv_estimated"],
-            float(frame["detection"]),
+            np.nan if frame["breathing_rate_hz"] is None else frame["breathing_rate_hz"],
+            float(frame["alert"]),
         ])
         if k in (0, N_PIPELINE_FRAMES - 1):
-            columns.append(frame["spectre_colonne"])
+            columns.append(frame["spectrum_column_db"])
     frames.close()
     return {"scalars": np.array(scalars, dtype=np.float64), "columns": np.array(columns)}
 

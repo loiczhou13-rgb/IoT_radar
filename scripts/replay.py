@@ -23,7 +23,7 @@ from typing import Any
 import numpy as np
 
 from iot_radar.acquisition.recording import read_recording_metadata
-from iot_radar.config import DEFAULT_RADAR_CONFIG, RECORDING_DATA_DIR, load_config
+from iot_radar.config import DEFAULT_RADAR_CONFIG, RECORDING_DATA_DIR, load_config, setup_logging
 from iot_radar.pipeline import build_context
 from iot_radar.ui.dashboard import DashboardRadar
 
@@ -34,10 +34,10 @@ def _resolve_npz_path(args: argparse.Namespace) -> Path:
         return Path(args.npz).expanduser().resolve()
     if args.subset is None or args.index is None:
         raise SystemExit(
-            "Fournir --npz CHEMIN.npz ou bien --subset {train,test,val} et --index N (N ≥ 1)."
+            "Give --npz PATH.npz, or --subset {train,test,val} and --index N (N >= 1)."
         )
     if args.index < 1:
-        raise SystemExit("--index doit être >= 1.")
+        raise SystemExit("--index must be >= 1.")
     data_root = (
         Path(args.data_root).expanduser().resolve()
         if args.data_root
@@ -59,8 +59,8 @@ def _choose_config_path(cli_config: str | None, stored_config_path: str | None) 
         return str(Path(stored_config_path).expanduser().resolve())
     if stored_config_path:
         logging.warning(
-            "Configuration de l'enregistrement introuvable (%s) — "
-            "utilisation de la configuration par défaut %s",
+            "Configuration of the recording not found (%s) — "
+            "using the default configuration %s",
             stored_config_path,
             DEFAULT_RADAR_CONFIG,
         )
@@ -74,28 +74,32 @@ def _frames_from_npz(data: Any) -> tuple[list[dict[str, Any]], int]:
     """
     if "spectrogram_db" not in data:
         raise SystemExit(
-            "Ce .npz ne contient pas « spectrogram_db » — "
-            "ré-enregistrer sans l’option « --no-spectrogram »."
+            "This .npz has no 'spectrogram_db' — record it again "
+            "without the --no-spectrogram option."
         )
-    spec = np.asarray(data["spectrogram_db"], dtype=np.float64)
-    n_spec = spec.shape[0]
-    if n_spec == 0:
-        raise SystemExit("Aucune trame exploitable dans le .npz.")
+    spectrogram_db = np.asarray(data["spectrogram_db"], dtype=np.float64)
+    n_columns = spectrogram_db.shape[0]
+    if n_columns == 0:
+        raise SystemExit("No usable frame in the .npz.")
 
+    # "n_trame" is the key of the frame numbers in the legacy .npz format.
     if "n_trame" in data.files:
-        ntr = np.asarray(data["n_trame"], dtype=np.int64).ravel()
-        n = int(min(n_spec, ntr.size))
+        frame_numbers = np.asarray(data["n_trame"], dtype=np.int64).ravel()
+        n = int(min(n_columns, frame_numbers.size))
     else:
-        ntr = None
-        n = n_spec
+        frame_numbers = None
+        n = n_columns
 
     frames: list[dict[str, Any]] = []
     for i in range(n):
-        n_trame_val = int(ntr[i]) if ntr is not None and ntr.size > i else i + 1
+        if frame_numbers is not None and frame_numbers.size > i:
+            frame_number = int(frame_numbers[i])
+        else:
+            frame_number = i + 1
         frames.append(
             {
-                "spectre_colonne": np.asarray(spec[i], dtype=np.float64),
-                "n_trame": n_trame_val,
+                "spectrum_column_db": np.asarray(spectrogram_db[i], dtype=np.float64),
+                "frame_number": frame_number,
             },
         )
     return frames, n
@@ -103,57 +107,53 @@ def _frames_from_npz(data: Any) -> tuple[list[dict[str, Any]], int]:
 
 def main() -> None:
     """CLI entry point: replay a recorded ``.npz`` in the dashboard."""
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(message)s",
-        datefmt="%H:%M:%S",
-    )
+    setup_logging("INFO")
 
     p = argparse.ArgumentParser(
-        description="Visualiser un .npz (record_acquisition) — dashboard comme main.py.",
+        description="Replay a recorded .npz in the radar dashboard.",
     )
-    p.add_argument("--npz", type=Path, default=None, help="Fichier .npz (prioritaire sur --subset/--index).")
+    p.add_argument("--npz", type=Path, default=None, help=".npz file (takes precedence over --subset/--index).")
     p.add_argument(
         "--subset",
         choices=("train", "test", "val"),
         default=None,
         metavar="SUBSET",
-        help="Sous-dossier sous data/ (avec --index).",
+        help="Sub-folder of the data root (with --index).",
     )
     p.add_argument(
         "--index",
         type=int,
         default=None,
         metavar="N",
-        help="Indice échantillon (≥1), avec --subset.",
+        help="Sample index (>= 1), with --subset.",
     )
     p.add_argument(
         "--data-root",
         type=Path,
         default=None,
-        help=f"Racine data (défaut : {RECORDING_DATA_DIR}).",
+        help=f"Data root (default: {RECORDING_DATA_DIR}).",
     )
     p.add_argument(
         "--config",
         default=None,
-        help="YAML (prioritaire sur config_path dans le .npz puis .json hérité).",
+        help="YAML (takes precedence over the config path stored in the .npz or .json).",
     )
     p.add_argument(
         "--interval-ms",
         type=float,
         default=30.0,
-        help="Intervalle entre trames replay (ms).",
+        help="Interval between replayed frames (ms).",
     )
     p.add_argument(
         "--loop",
         action="store_true",
-        help="Reboucler la lecture.",
+        help="Replay in a loop.",
     )
     args = p.parse_args()
 
     npz_path = _resolve_npz_path(args)
     if not npz_path.is_file():
-        raise SystemExit(f"Fichier introuvable : {npz_path}")
+        raise SystemExit(f"File not found: {npz_path}")
 
     stored_config_path, rec_label = read_recording_metadata(npz_path)
     cfg_path = _choose_config_path(args.config, stored_config_path)
@@ -164,17 +164,17 @@ def main() -> None:
     with np.load(npz_path, allow_pickle=False) as data:
         if "f_hz" in data:
             context = {**context, "f_hz": np.asarray(data["f_hz"], dtype=np.float64)}
-        frames, n_tr = _frames_from_npz(data)
+        frames, n_frames = _frames_from_npz(data)
 
     logging.info(
-        "Relecture — %d trames — label=%s — %s — config %s",
-        n_tr,
+        "Replay — %d frames — label=%s — %s — config %s",
+        n_frames,
         rec_label if rec_label is not None else "?",
         npz_path,
         cfg_path,
     )
 
-    title = "Radar Micro-Doppler — Relecture enregistrement"
+    title = "Micro-Doppler radar — recording replay"
     if rec_label is not None:
         title = f"{title}    ·    label {rec_label}"
     dashboard = DashboardRadar(

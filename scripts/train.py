@@ -25,25 +25,27 @@ from iot_radar.ml.train import train
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Parse the command line (*argv* defaults to ``sys.argv``)."""
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     p.add_argument(
         "--config",
         type=Path,
         default=DEFAULT_TRAINING_CONFIG,
-        help="Fichier YAML (défaut : configs/training.yaml)",
+        help="YAML file (default: configs/training.yaml)",
     )
     p.add_argument("--epochs", type=int, default=None,
-                   help="Surcharge training.epochs.")
+                   help="Overrides training.epochs.")
     p.add_argument("--batch-size", type=int, default=None,
-                   help="Surcharge dataloader.batch_size.")
+                   help="Overrides dataloader.batch_size.")
     p.add_argument("--lr", type=float, default=None,
-                   help="Surcharge training.optimizer.learning_rate.")
+                   help="Overrides training.optimizer.learning_rate.")
     p.add_argument("--device", default=None,
-                   help="Surcharge le device (auto|cpu|cuda).")
+                   help="Overrides the device (auto|cpu|cuda).")
     return p.parse_args(argv)
 
 
 def apply_cli_overrides(cfg: dict[str, Any], args: argparse.Namespace) -> None:
+    """Replace the configuration values given on the command line."""
     if args.epochs is not None:
         cfg["training"]["epochs"] = int(args.epochs)
     if args.batch_size is not None:
@@ -55,6 +57,7 @@ def apply_cli_overrides(cfg: dict[str, Any], args: argparse.Namespace) -> None:
 
 
 def main(argv: list[str] | None = None) -> None:
+    """Load the configuration, apply the overrides and train."""
     args = parse_args(argv)
     cfg = load_config(args.config)
     apply_cli_overrides(cfg, args)

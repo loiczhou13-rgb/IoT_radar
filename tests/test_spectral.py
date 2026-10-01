@@ -18,7 +18,7 @@ def test_offline_spectrogram_equals_stream() -> None:
     logging.disable(logging.WARNING)
     with seeded_default_rng():
         frames = streaming_frame_generator(cfg, open_source(cfg, simulation=True), decimated_iq_chunks=chunks)
-        streamed = [frame["spectre_colonne"] for _, frame in zip(range(5), frames)]
+        streamed = [frame["spectrum_column_db"] for _, frame in zip(range(5), frames)]
         frames.close()
     logging.disable(logging.NOTSET)
 

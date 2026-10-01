@@ -46,7 +46,7 @@ def test_record_and_replay_helpers(tmp_path: Path) -> None:
     with np.load(npz_path) as z:
         frames, n = replay._frames_from_npz(z)
     assert n == n_frames and len(frames) == n_frames
-    assert frames[0]["spectre_colonne"].shape == (4096,)
+    assert frames[0]["spectrum_column_db"].shape == (4096,)
 
 
 def test_metadata_falls_back_on_json_sidecar(tmp_path: Path) -> None:

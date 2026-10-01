@@ -65,8 +65,8 @@ def build_record_argument_parser(
 ) -> argparse.ArgumentParser:
     """Build the CLI parser of one acquisition (without the repetition options)."""
     desc = description or (
-        "Acquisition micro-Doppler : enregistrer spectrogramme, paramètres, "
-        "étiquettes, métadonnées et signal IQ décimé sous "
+        "Micro-Doppler acquisition: record the spectrogram, settings, labels, "
+        "metadata and decimated IQ under "
         "AICalibration/data/<train|test|val>/<index>.*"
     )
     p = argparse.ArgumentParser(description=desc)
@@ -75,14 +75,14 @@ def build_record_argument_parser(
         required=True,
         choices=("train", "test", "val"),
         metavar="SUBSET",
-        help="Sous-dossier sous la racine données (train, test ou val).",
+        help="Sub-folder of the data root (train, test or val).",
     )
     p.add_argument(
         "--env",
         required=True,
         choices=_VALID_ENVS,
         metavar="ENV",
-        help=f"Environnement de la mesure ({', '.join(_VALID_ENVS)}).",
+        help=f"Measurement environment ({', '.join(_VALID_ENVS)}).",
     )
     p.add_argument(
         "--label",
@@ -90,7 +90,7 @@ def build_record_argument_parser(
         type=int,
         choices=(0, 1),
         metavar="{0,1}",
-        help="Étiquette de classe : 0 = sans cible (ex. salle vide), 1 = présence / respiration.",
+        help="Class label: 0 = no target (e.g. empty room), 1 = presence / breathing.",
     )
     p.add_argument(
         "--index",
@@ -98,7 +98,7 @@ def build_record_argument_parser(
         default=None,
         metavar="N",
         help=(
-            "Numéro d’échantillon (≥1). Omis : prochain indice libre sous "
+            "Sample number (>= 1). Default: next free index under "
             "<data-root>/<subset>/."
         ),
     )
@@ -107,7 +107,7 @@ def build_record_argument_parser(
         type=Path,
         default=None,
         help=(
-            "Répertoire racine des données (défaut : "
+            "Root folder of the data (default: "
             f"{_DEFAULT_DATA_HELP})."
         ),
     )
@@ -115,37 +115,37 @@ def build_record_argument_parser(
         "--duration",
         type=float,
         default=120.0,
-        help="Durée d'enregistrement en secondes (défaut : 120 = 2 min).",
+        help="Recording duration in seconds (default: 120 = 2 min).",
     )
     p.add_argument(
         "--config",
         default=str(DEFAULT_RADAR_CONFIG),
-        help="Chemin vers le fichier YAML de configuration.",
+        help="YAML configuration file.",
     )
     p.add_argument(
         "--simulation",
         action="store_true",
-        help="Forcer le mode simulation (pas de PlutoSDR).",
+        help="Use the simulated source (no PlutoSDR).",
     )
     p.add_argument(
         "--no-spectrogram",
         action="store_true",
-        help="Ne pas stocker les colonnes du spectrogramme (fichier plus léger).",
+        help="Do not store the spectrogram columns (lighter file).",
     )
     p.add_argument(
         "--no-iq-file",
         action="store_true",
-        help="Ne pas écrire le fichier .iq (complex64 brut ; désactive la collecte IQ si sans --wav).",
+        help="Do not write the .iq file (raw complex64; no IQ is kept without --wav).",
     )
     p.add_argument(
         "--wav",
         action="store_true",
-        help="Écrire en complément un .wav stéréo float32 (I canal 0, Q canal 1).",
+        help="Also write a stereo float32 .wav (I channel 0, Q channel 1).",
     )
     p.add_argument(
         "--log-file",
         default=None,
-        help="Fichier de log (voir main.py). Par défaut selon la config.",
+        help="Log file (default: from the configuration).",
     )
     return p
 
@@ -160,9 +160,9 @@ def run(args: argparse.Namespace) -> Path:
     setup_logging(cfg.get("logging", {}).get("level", "INFO"), log_path)
 
     logger = logging.getLogger(__name__)
-    dur = float(args.duration)
-    if dur <= 0:
-        raise SystemExit("--duration doit être > 0.")
+    duration_s = float(args.duration)
+    if duration_s <= 0:
+        raise SystemExit("--duration must be > 0.")
 
     data_root = (
         Path(args.data_root).expanduser().resolve()
@@ -174,7 +174,7 @@ def run(args: argparse.Namespace) -> Path:
 
     if args.index is not None:
         if args.index < 1:
-            raise SystemExit("--index doit être >= 1.")
+            raise SystemExit("--index must be >= 1.")
         sample_index = int(args.index)
     else:
         sample_index = next_sample_index(split_dir)
@@ -186,7 +186,7 @@ def run(args: argparse.Namespace) -> Path:
     wav_path = split_dir / f"{stem}.wav"
 
     logger.info(
-        "Enregistrement — data_root=%s subset=%s env=%s index=%s label=%d",
+        "Recording — data_root=%s subset=%s env=%s index=%s label=%d",
         data_root,
         args.subset,
         args.env,
@@ -196,7 +196,7 @@ def run(args: argparse.Namespace) -> Path:
 
     context = build_context(cfg)
     f_hz = np.asarray(context["f_hz"], dtype=np.float64)
-    f_s_dec = float(context["f_s_dec"])
+    f_s_dec_hz = float(context["f_s_dec_hz"])
 
     need_iq_tape = (not args.no_iq_file) or args.wav
     decimated_iq_chunks: list[np.ndarray] | None = [] if need_iq_tape else None
@@ -207,21 +207,21 @@ def run(args: argparse.Namespace) -> Path:
     )
 
     t_wall: list[float] = []
-    n_trame: list[int] = []
-    spectre_cols: list[np.ndarray] | None = [] if not args.no_spectrogram else None
+    frame_numbers: list[int] = []
+    spectrum_columns: list[np.ndarray] | None = [] if not args.no_spectrogram else None
 
-    _outs = [str(npz_path), str(json_path)]
+    output_files = [str(npz_path), str(json_path)]
     if not args.no_iq_file:
-        _outs.append(str(iq_path))
+        output_files.append(str(iq_path))
     if args.wav:
-        _outs.append(str(wav_path))
+        output_files.append(str(wav_path))
     logger.info(
-        "Enregistrement pendant %.1f s — fichiers : %s",
-        dur,
-        ", ".join(_outs),
+        "Recording for %.1f s — files: %s",
+        duration_s,
+        ", ".join(output_files),
     )
     if log_path:
-        logger.info("Journal : %s", log_path)
+        logger.info("Log: %s", log_path)
 
     t0 = time.monotonic()
     n_frames = 0
@@ -230,20 +230,20 @@ def run(args: argparse.Namespace) -> Path:
     try:
         for frame in gen:
             elapsed = time.monotonic() - t0
-            if elapsed >= dur:
+            if elapsed >= duration_s:
                 break
 
             t_wall.append(elapsed)
-            n_trame.append(int(frame["n_trame"]))
-            if spectre_cols is not None:
-                spectre_cols.append(
-                    np.asarray(frame["spectre_colonne"], dtype=np.float64)
+            frame_numbers.append(int(frame["frame_number"]))
+            if spectrum_columns is not None:
+                spectrum_columns.append(
+                    np.asarray(frame["spectrum_column_db"], dtype=np.float64)
                 )
             n_frames += 1
     except KeyboardInterrupt:
         stop_reason = "keyboard_interrupt"
         logger.warning(
-            "Interruption clavier — sauvegarde partielle (%d trames).", n_frames,
+            "Keyboard interrupt — saving %d frames.", n_frames,
         )
     except OSError as exc:
         en = getattr(exc, "errno", None)
@@ -256,11 +256,10 @@ def run(args: argparse.Namespace) -> Path:
         if link_lost:
             stop_reason = "pluto_link_lost"
             logger.error(
-                "Liaison PlutoSDR / libiio interrompue (%s). "
-                "Vérifier câble USB ou alimentation, éviter les hubs faibles, "
-                "désactiver la veille USB, l’adresse IP (uri dans config), "
-                "et qu’aucun autre programme n’accède au Pluto. "
-                "Sauvegarde partielle : %d trame(s) STFT.",
+                "PlutoSDR / libiio link lost (%s). Check the USB cable or the "
+                "power supply, avoid weak hubs, disable USB sleep, check the IP "
+                "address (sdr.uri) and that no other program uses the Pluto. "
+                "Saving %d STFT frame(s).",
                 exc,
                 n_frames,
             )
@@ -272,13 +271,13 @@ def run(args: argparse.Namespace) -> Path:
     has_iq_tape = bool(decimated_iq_chunks and len(decimated_iq_chunks) > 0)
     if n_frames == 0 and not has_iq_tape:
         raise SystemExit(
-            "Aucune donnée enregistrée. Augmenter la durée, vérifier le warm-up "
-            "ou la connexion au PlutoSDR."
+            "Nothing recorded. Increase the duration, check the warm-up "
+            "or the PlutoSDR link."
         )
     if n_frames == 0 and has_iq_tape:
         logger.warning(
-            "Aucune colonne STFT (warm-up ou coupure très précoce) — "
-            "fichiers .npz vides côté détection ; fichier .iq / WAV partiel conservé.",
+            "No STFT column (warm-up or very early interruption) — "
+            "empty .npz; the partial .iq / WAV file is kept.",
         )
 
     label_int = int(args.label)
@@ -286,15 +285,15 @@ def run(args: argparse.Namespace) -> Path:
 
     save_kw: dict[str, Any] = {
         "t_wall_s": np.asarray(t_wall, dtype=np.float64),
-        "n_trame": np.asarray(n_trame, dtype=np.int64),
+        "n_trame": np.asarray(frame_numbers, dtype=np.int64),
         "f_hz": f_hz,
-        "duration_requested_s": np.array(dur, dtype=np.float64),
+        "duration_requested_s": np.array(duration_s, dtype=np.float64),
         "n_frames": np.array(n_frames, dtype=np.int64),
         "label": np.array(label_int, dtype=np.int8),
         "env": np.asarray(str(args.env), dtype=str),
     }
-    if spectre_cols is not None and len(spectre_cols) > 0:
-        save_kw["spectrogram_db"] = np.stack(spectre_cols, axis=0)
+    if spectrum_columns is not None and len(spectrum_columns) > 0:
+        save_kw["spectrogram_db"] = np.stack(spectrum_columns, axis=0)
 
     wrote_iq = False
     wrote_wav = False
@@ -302,7 +301,7 @@ def run(args: argparse.Namespace) -> Path:
 
     if decimated_iq_chunks is not None and len(decimated_iq_chunks) > 0:
         iq_full = np.concatenate(decimated_iq_chunks)
-        n_cap = int(round(dur * f_s_dec))
+        n_cap = int(round(duration_s * f_s_dec_hz))
         if n_cap > 0 and iq_full.size > n_cap:
             iq_full = iq_full[:n_cap]
         iq_num_samples = int(iq_full.size)
@@ -311,26 +310,26 @@ def run(args: argparse.Namespace) -> Path:
             write_iq_complex64(iq_path, iq_full)
             wrote_iq = True
             logger.info(
-                "IQ décimé (.iq) — %d échantillons complexes @ %.1f Hz — %s",
+                "Decimated IQ (.iq) — %d complex samples @ %.1f Hz — %s",
                 iq_full.size,
-                f_s_dec,
+                f_s_dec_hz,
                 iq_path,
             )
 
         if args.wav:
-            write_iq_stereo_wav(wav_path, iq_full, f_s_dec)
+            write_iq_stereo_wav(wav_path, iq_full, f_s_dec_hz)
             wrote_wav = True
             logger.info(
-                "WAV IQ décimé — %d échantillons complexes @ %.1f Hz — %s",
+                "Decimated IQ WAV — %d complex samples @ %.1f Hz — %s",
                 iq_full.size,
-                f_s_dec,
+                f_s_dec_hz,
                 wav_path,
             )
     else:
         if not args.no_iq_file:
-            logger.warning("Aucun bloc IQ collecté — fichier .iq non créé.")
+            logger.warning("No IQ block collected — .iq file not created.")
         if args.wav:
-            logger.warning("Aucun bloc IQ — fichier .wav non créé.")
+            logger.warning("No IQ block — .wav file not created.")
 
     cfg_resolved = str(Path(args.config).resolve())
     utc_finished_iso = dt.datetime.now(dt.timezone.utc).isoformat()
@@ -339,13 +338,13 @@ def run(args: argparse.Namespace) -> Path:
     save_kw["sample_index"] = np.int64(sample_index)
     save_kw["config_path"] = np.asarray(cfg_resolved, dtype=str)
     save_kw["simulation"] = np.array(bool(args.simulation), dtype=np.bool_)
-    save_kw["f_s_dec_hz"] = np.float64(f_s_dec)
+    save_kw["f_s_dec_hz"] = np.float64(f_s_dec_hz)
     save_kw["n_fft"] = np.int64(f_hz.size)
     save_kw["duration_recorded_wall_s"] = np.float64(recorded_wall)
     save_kw["data_root"] = np.asarray(str(data_root.resolve()), dtype=str)
     save_kw["utc_finished"] = np.asarray(utc_finished_iso, dtype=str)
     save_kw["includes_spectrogram"] = np.array(
-        spectre_cols is not None and len(spectre_cols) > 0,
+        spectrum_columns is not None and len(spectrum_columns) > 0,
         dtype=np.bool_,
     )
     save_kw["includes_iq_file"] = np.array(wrote_iq, dtype=np.bool_)
@@ -366,13 +365,13 @@ def run(args: argparse.Namespace) -> Path:
         "npz_file": str(npz_path.resolve()),
         "config_path": cfg_resolved,
         "simulation": bool(args.simulation),
-        "duration_requested_s": dur,
+        "duration_requested_s": duration_s,
         "duration_recorded_wall_s": recorded_wall,
         "n_frames": n_frames,
         "n_fft": int(f_hz.size),
-        "f_s_dec_hz": f_s_dec,
+        "f_s_dec_hz": f_s_dec_hz,
         "includes_spectrogram": bool(
-            spectre_cols is not None and len(spectre_cols) > 0,
+            spectrum_columns is not None and len(spectrum_columns) > 0,
         ),
         "includes_iq_file": wrote_iq,
         "includes_wav_file": wrote_wav,
@@ -403,25 +402,25 @@ def run(args: argparse.Namespace) -> Path:
         fh.write("\n")
 
     logger.info(
-        "%d trames sauvegardées — wall time dernière trame ≈ %.2f s",
+        "%d frames saved — wall time of the last frame ≈ %.2f s",
         n_frames,
         recorded_wall,
     )
-    logger.info("Fichiers : %s, %s", npz_path, json_path)
+    logger.info("Files: %s, %s", npz_path, json_path)
     return npz_path
 
 
 def build_argument_parser() -> argparse.ArgumentParser:
     """Acquisition options plus the repetition options ``-n`` / ``--interval``."""
     p = build_record_argument_parser()
-    g = p.add_argument_group("enchaînement")
+    g = p.add_argument_group("repetition")
     g.add_argument(
         "--samples",
         "-n",
         type=int,
         default=1,
         metavar="N",
-        help="Nombre d’échantillons à enregistrer successivement (défaut : 1).",
+        help="Number of successive recordings (default: 1).",
     )
     g.add_argument(
         "--interval",
@@ -429,8 +428,8 @@ def build_argument_parser() -> argparse.ArgumentParser:
         default=0.0,
         metavar="SEC",
         help=(
-            "Pause en secondes après la fin d’un .npz avant le suivant "
-            "(défaut : 0)."
+            "Pause in seconds after one recording before the next one "
+            "(default: 0)."
         ),
     )
     return p
@@ -440,23 +439,23 @@ def main(argv: list[str] | None = None) -> list[Path]:
     """CLI entry point: run ``--samples`` acquisitions (one by default)."""
     args = build_argument_parser().parse_args(argv)
     if args.samples < 1:
-        raise SystemExit("-n / --samples doit être >= 1.")
+        raise SystemExit("-n / --samples must be >= 1.")
     if args.interval < 0:
-        raise SystemExit("--interval doit être >= 0.")
+        raise SystemExit("--interval must be >= 0.")
     if args.samples > 1 and args.index is not None:
         raise SystemExit(
-            "--index est incompatible avec -n > 1 (indices auto : prochain libre).",
+            "--index is incompatible with -n > 1 (indices are assigned automatically).",
         )
 
     log = logging.getLogger(__name__)
     paths: list[Path] = []
     for k in range(args.samples):
         if k > 0 and args.interval > 0:
-            log.info("Pause %.1f s avant l’échantillon %d / %d", args.interval, k + 1, args.samples)
+            log.info("Pause %.1f s before recording %d / %d", args.interval, k + 1, args.samples)
             time.sleep(args.interval)
         if args.samples > 1:
             log.info(
-                "Début échantillon %d / %d (subset=%s env=%s label=%s)",
+                "Recording %d / %d (subset=%s env=%s label=%s)",
                 k + 1,
                 args.samples,
                 args.subset,
@@ -466,7 +465,7 @@ def main(argv: list[str] | None = None) -> list[Path]:
         paths.append(run(args))
 
     if args.samples > 1:
-        log.info("Terminé — %d fichier(s) .npz : %s", len(paths), ", ".join(str(p) for p in paths))
+        log.info("Done — %d .npz file(s): %s", len(paths), ", ".join(str(p) for p in paths))
     return paths
 
 

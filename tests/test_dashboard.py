@@ -34,7 +34,7 @@ def test_dashboard_updates(frame: dict, show_score: bool) -> None:
     if show_score:
         assert "DÉTECTÉE" in status or "Aucune" in status
     else:
-        assert status == f"Trame {frame['n_trame']}"
+        assert status == f"Trame {frame['frame_number']}"
 
 
 def test_info_box_live_and_replay(frame: dict) -> None:
