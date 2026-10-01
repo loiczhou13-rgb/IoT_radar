@@ -1,5 +1,9 @@
 """Supervised micro-Doppler autoencoder training (library part).
 
+Place in the project: machine-learning side; trains
+:class:`iot_radar.ml.model.SpectrogramAutoencoder` on the windows of
+:class:`iot_radar.ml.dataset.CalibrationDataset`.
+
 No hyperparameters are hard-coded here: everything is read from the training
 configuration (``configs/training.yaml`` by default).  The command-line
 entry point is ``scripts/train.py``, whose options (``--epochs``…) override
@@ -32,6 +36,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 def _set_seed(seed: int) -> None:
+    """Seed Python, NumPy and PyTorch (CPU and CUDA) for reproducible runs."""
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -40,12 +45,13 @@ def _set_seed(seed: int) -> None:
 
 
 def _pick_device(spec: str) -> torch.device:
+    """Torch device from ``auto`` (CUDA if available), ``cpu`` or ``cuda``."""
     spec = (spec or "auto").lower()
     if spec == "cpu":
         return torch.device("cpu")
     if spec == "cuda":
         if not torch.cuda.is_available():
-            raise RuntimeError("CUDA demandé mais indisponible.")
+            raise RuntimeError("CUDA requested but not available.")
         return torch.device("cuda")
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -80,6 +86,7 @@ class MetricsHistory:
     """Append-only CSV writer for per-epoch train/val metrics."""
 
     def __init__(self, path: Path) -> None:
+        """Create the CSV file with its header if it does not exist yet."""
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
         if not self.path.exists():
@@ -93,6 +100,7 @@ class MetricsHistory:
         train_m: dict[str, float],
         val_m: dict[str, float],
     ) -> None:
+        """Append the metrics of one epoch."""
         row = {
             "epoch": epoch,
             "lr": f"{lr:.6e}",
@@ -114,6 +122,7 @@ class MetricsHistory:
 # ---------------------------------------------------------------------------
 
 def _has_npz(directory: Path) -> bool:
+    """``True`` if *directory* exists and contains at least one ``.npz`` file."""
     return directory.is_dir() and any(directory.rglob("*.npz"))
 
 
@@ -147,23 +156,23 @@ def build_loaders(
         train_ds: torch.utils.data.Dataset = CalibrationDataset(train_dir, **ds_kwargs)
         val_ds: torch.utils.data.Dataset = CalibrationDataset(val_dir, **ds_kwargs)
         split_desc = f"train={train_dir.name}/  val={val_dir.name}/"
-        logger.info("Validation depuis %s — train depuis %s", val_dir, train_dir)
+        logger.info("Validation from %s — training from %s", val_dir, train_dir)
     else:
         full = CalibrationDataset(train_dir, **ds_kwargs)
         val_split = float(data_cfg["val_split"])
         if not 0.0 < val_split < 1.0:
-            raise ValueError("data.val_split doit être dans ]0, 1[.")
+            raise ValueError("data.val_split must be in ]0, 1[.")
         n_total = len(full)
         n_val = max(1, int(round(n_total * val_split)))
         n_train = n_total - n_val
         if n_train <= 0:
             raise ValueError(
-                f"Pas assez de fenêtres ({n_total}) pour split {val_split}."
+                f"Not enough windows ({n_total}) for a {val_split} split."
             )
         train_ds, val_ds = random_split(full, [n_train, n_val], generator=generator)
         split_desc = f"auto split {1 - val_split:.0%}/{val_split:.0%} from {train_dir.name}/"
         logger.info(
-            "Split auto depuis %s — train=%d / val=%d (val_split=%.2f)",
+            "Automatic split of %s — train=%d / val=%d (val_split=%.2f)",
             train_dir, n_train, n_val, val_split,
         )
 
@@ -190,15 +199,17 @@ def build_loaders(
 # ---------------------------------------------------------------------------
 
 def build_recon_loss(name: str) -> nn.Module:
+    """Reconstruction loss: ``mse`` (default) or ``l1``."""
     name = (name or "mse").lower()
     if name == "mse":
         return nn.MSELoss()
     if name == "l1":
         return nn.L1Loss()
-    raise ValueError(f"loss.reconstruction inconnu : {name!r} (attendu mse|l1)")
+    raise ValueError(f"Unknown loss.reconstruction: {name!r} (expected mse|l1)")
 
 
 def build_bce_loss(pos_weight: float | None) -> nn.BCEWithLogitsLoss:
+    """Binary cross-entropy on logits, optionally weighting the positive class."""
     if pos_weight is None:
         return nn.BCEWithLogitsLoss()
     return nn.BCEWithLogitsLoss(
@@ -207,10 +218,11 @@ def build_bce_loss(pos_weight: float | None) -> nn.BCEWithLogitsLoss:
 
 
 def build_optimizer(model: nn.Module, cfg: dict[str, Any]) -> torch.optim.Optimizer:
+    """AdamW optimiser from ``training.optimizer``."""
     opt_cfg = cfg["training"]["optimizer"]
     name = (opt_cfg.get("name") or "adamw").lower()
     if name != "adamw":
-        raise ValueError(f"optimizer.name non supporté : {name!r} (attendu adamw)")
+        raise ValueError(f"Unsupported optimizer.name: {name!r} (expected adamw)")
     return torch.optim.AdamW(
         model.parameters(),
         lr=float(opt_cfg["learning_rate"]),
@@ -223,10 +235,11 @@ def build_scheduler(
     optimizer: torch.optim.Optimizer,
     cfg: dict[str, Any],
 ) -> torch.optim.lr_scheduler._LRScheduler:
+    """StepLR learning-rate scheduler from ``training.scheduler``."""
     sch_cfg = cfg["training"]["scheduler"]
     name = (sch_cfg.get("name") or "steplr").lower()
     if name != "steplr":
-        raise ValueError(f"scheduler.name non supporté : {name!r} (attendu steplr)")
+        raise ValueError(f"Unsupported scheduler.name: {name!r} (expected steplr)")
     return torch.optim.lr_scheduler.StepLR(
         optimizer,
         step_size=int(sch_cfg["step_size"]),
@@ -251,6 +264,10 @@ def _run_epoch(
     epoch: int | None = None,
     n_epochs: int | None = None,
 ) -> dict[str, float]:
+    """One pass over *loader*; trains when *optimizer* is given, evaluates otherwise.
+
+    Returns the mean ``total``, ``recon`` and ``bce`` losses and the accuracy ``acc``.
+    """
     is_train = optimizer is not None
     model.train(is_train)
 
@@ -315,6 +332,7 @@ def _run_epoch(
 
 
 def _should_display_epoch(epoch: int, n_epochs: int, interval: int) -> bool:
+    """Show the progress bar every *interval* epochs and at the last one."""
     if interval <= 1:
         return True
     return epoch % interval == 0 or epoch == n_epochs
@@ -353,7 +371,7 @@ def train(cfg: dict[str, Any], config_path: Path) -> None:
     loss_cfg = cfg["training"]["loss"]
     alpha = float(loss_cfg["alpha"])
     if not 0.0 <= alpha <= 1.0:
-        raise ValueError("training.loss.alpha doit être dans [0, 1].")
+        raise ValueError("training.loss.alpha must be in [0, 1].")
     recon_loss_fn = build_recon_loss(loss_cfg["reconstruction"]).to(device)
     bce_loss_fn = build_bce_loss(loss_cfg.get("bce_pos_weight")).to(device)
     optimizer = build_optimizer(model, cfg)
@@ -362,8 +380,8 @@ def train(cfg: dict[str, Any], config_path: Path) -> None:
     best_metric_key = cfg["training"].get("best_metric", "val_total")
     if best_metric_key not in ("val_total", "val_bce", "val_recon"):
         raise ValueError(
-            f"training.best_metric doit être val_total|val_bce|val_recon, "
-            f"reçu {best_metric_key!r}."
+            f"training.best_metric must be val_total|val_bce|val_recon, "
+            f"got {best_metric_key!r}."
         )
     metric_field = best_metric_key.split("_", 1)[1]
 

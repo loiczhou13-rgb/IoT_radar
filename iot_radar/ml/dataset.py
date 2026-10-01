@@ -1,4 +1,8 @@
-"""Calibration dataset for the supervised autoencoder.
+"""Calibration dataset for the supervised autoencoder (legacy .npz spectrograms).
+
+Place in the project: machine-learning side, fed by recordings of the former
+micro-Doppler chain.  It will be redesigned to take the phase signal of the
+HDF5 sessions as input (see ``iot_radar/ml/README.md``).
 
 Source of truth for recordings
 ------------------------------
@@ -100,9 +104,9 @@ class CalibrationDataset(Dataset):
         self.normalise = bool(normalise)
 
         if self.n_cols <= 0:
-            raise ValueError("n_cols doit être > 0.")
+            raise ValueError("n_cols must be > 0.")
         if self.stride <= 0:
-            raise ValueError("stride doit être > 0.")
+            raise ValueError("stride must be > 0.")
 
         self._windows: list[np.ndarray] = []   # (n_fft, n_cols) float32
         self._labels: list[int] = []
@@ -114,16 +118,16 @@ class CalibrationDataset(Dataset):
     # ------------------------------------------------------------------
 
     def _load_all(self) -> None:
+        """Load every ``.npz`` under ``data_dir`` and cut it into windows."""
         if not self.data_dir.is_dir():
             raise FileNotFoundError(
-                f"Répertoire de données introuvable : {self.data_dir}"
+                f"Data directory not found: {self.data_dir}"
             )
 
         npz_files = sorted(self.data_dir.rglob("*.npz"))
         if not npz_files:
             raise FileNotFoundError(
-                f"Aucun fichier .npz trouvé sous {self.data_dir}. "
-                "Lancer d'abord scripts/record.py."
+                f"No .npz file under {self.data_dir}."
             )
 
         n_fft_ref: int | None = None
@@ -133,13 +137,13 @@ class CalibrationDataset(Dataset):
             with np.load(path, allow_pickle=False) as data:
                 if "spectrogram_db" not in data.files:
                     logger.warning(
-                        "%s ignoré — pas de clé 'spectrogram_db' "
+                        "%s skipped — no 'spectrogram_db' key "
                         "(enregistrement fait avec --no-spectrogram ?).",
                         path.name,
                     )
                     continue
                 if "label" not in data.files:
-                    logger.warning("%s ignoré — pas de clé 'label'.", path.name)
+                    logger.warning("%s skipped — no 'label' key.", path.name)
                     continue
 
                 spec = np.asarray(data["spectrogram_db"], dtype=np.float32)
@@ -151,7 +155,7 @@ class CalibrationDataset(Dataset):
 
             if spec.ndim != 2:
                 logger.warning(
-                    "%s ignoré — spectrogram_db de dimension %d (attendu 2).",
+                    "%s skipped — spectrogram_db has %d dimensions (expected 2).",
                     path.name, spec.ndim,
                 )
                 continue
@@ -163,13 +167,13 @@ class CalibrationDataset(Dataset):
                 n_fft_ref = n_fft_file
             elif n_fft_file != n_fft_ref:
                 raise ValueError(
-                    f"n_fft incohérent dans {path.name} : "
-                    f"attendu {n_fft_ref}, trouvé {n_fft_file}."
+                    f"Inconsistent n_fft in {path.name}: "
+                    f"expected {n_fft_ref}, found {n_fft_file}."
                 )
 
             if n_total < self.n_cols:
                 logger.warning(
-                    "%s ignoré — trop court (%d colonnes < n_cols=%d)",
+                    "%s skipped — too short (%d columns < n_cols=%d)",
                     path.name, n_total, self.n_cols,
                 )
                 continue
@@ -183,20 +187,20 @@ class CalibrationDataset(Dataset):
 
             total_windows += windows_in_file
             logger.info(
-                "Chargé %s — env='%s', label=%d, %d colonnes → %d fenêtres",
+                "Loaded %s — env='%s', label=%d, %d columns → %d windows",
                 path.name, env, label, n_total, windows_in_file,
             )
 
         if not self._windows:
             raise RuntimeError(
-                "Aucune fenêtre extraite. Vérifier la durée des enregistrements "
+                "No window extracted. Check the length of the recordings "
                 f"(n_cols={self.n_cols}, stride={self.stride})."
             )
 
         n1 = sum(1 for lbl in self._labels if lbl == 1)
         n0 = len(self._labels) - n1
         logger.info(
-            "Dataset prêt — %d fenêtres total (label=0: %d, label=1: %d, "
+            "Dataset ready — %d windows (label=0: %d, label=1: %d, "
             "ratio 1/0=%.2f)",
             total_windows, n0, n1, n1 / max(n0, 1),
         )
@@ -206,6 +210,7 @@ class CalibrationDataset(Dataset):
     # ------------------------------------------------------------------
 
     def __len__(self) -> int:
+        """Number of windows."""
         return len(self._windows)
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
@@ -245,10 +250,10 @@ class CalibrationDataset(Dataset):
         n1 = sum(self._labels)
         n0 = len(self._labels) - n1
         return (
-            f"CalibrationDataset — {len(self)} fenêtres "
+            f"CalibrationDataset — {len(self)} windows "
             f"(n_fft={self.n_fft}, n_cols={self.n_cols}, stride={self.stride})\n"
-            f"  label=0 (vide)        : {n0}\n"
-            f"  label=1 (respiration) : {n1}\n"
+            f"  label=0 (empty)       : {n0}\n"
+            f"  label=1 (breathing)   : {n1}\n"
             f"  ratio 1/0             : {n1 / max(n0, 1):.2f}\n"
             f"  data_dir              : {self.data_dir}"
         )

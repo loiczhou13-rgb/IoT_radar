@@ -1,5 +1,8 @@
 """Conv2D autoencoder for micro-Doppler spectrograms with a classification head.
 
+Place in the project: machine-learning side (trained by ``scripts/train.py``
+on the legacy .npz spectrograms; to be redesigned for the phase signal).
+
 The architecture is **fully parameterized** by the constructor (and thus
 by the training configuration, ``configs/training.yaml``). Hyperparameters such as channels,
 downsampling factors, kernels, and input sizes must be supplied as
@@ -143,8 +146,8 @@ class Encoder(nn.Module):
         super().__init__()
         if len(channels) != len(downsample_factors) + 2:
             raise ValueError(
-                "channels doit avoir (1 + 1 + n_down) entrées : "
-                f"reçu {len(channels)}, attendu {len(downsample_factors) + 2}."
+                "channels must have (1 + 1 + n_down) entries: "
+                f"got {len(channels)}, expected {len(downsample_factors) + 2}."
             )
 
         in_c, first_c = int(channels[0]), int(channels[1])
@@ -183,7 +186,7 @@ class Decoder(nn.Module):
         super().__init__()
         if len(channels) != len(downsample_factors) + 2:
             raise ValueError(
-                "channels doit avoir la même longueur que pour l'Encoder."
+                "channels must have the same length as for the Encoder."
             )
 
         up_channels = [int(c) for c in channels[1:]]
@@ -212,7 +215,7 @@ class Decoder(nn.Module):
 
 
 # ---------------------------------------------------------------------------
-# Classifier head (sur le latent global-poolé)
+# Classifier head (on the globally pooled latent)
 # ---------------------------------------------------------------------------
 
 class ClassifierHead(nn.Module):
@@ -266,18 +269,18 @@ class SpectrogramAutoencoder(nn.Module):
         expected_input_shape = tuple(int(v) for v in expected_input_shape)
         if len(expected_input_shape) != 3:
             raise ValueError(
-                "expected_input_shape doit être (C, H, W). "
-                f"Reçu {expected_input_shape}."
+                "expected_input_shape must be (C, H, W). "
+                f"Got {expected_input_shape}."
             )
         if int(encoder_channels[0]) != expected_input_shape[0]:
             raise ValueError(
-                "encoder_channels[0] doit valoir C = expected_input_shape[0] "
-                f"({expected_input_shape[0]}) ; reçu {encoder_channels[0]}."
+                "encoder_channels[0] must equal C = expected_input_shape[0] "
+                f"({expected_input_shape[0]}); got {encoder_channels[0]}."
             )
 
         self.expected_input_shape: Tuple[int, int, int] = expected_input_shape
 
-        # Encoder + Decoder (totalement paramétrés)
+        # Encoder + decoder (fully parameterised)
         self.encoder = Encoder(
             channels=encoder_channels,
             downsample_factors=downsample_factors,
@@ -291,20 +294,20 @@ class SpectrogramAutoencoder(nn.Module):
             out_conv_kernel=out_conv_kernel,
         )
 
-        # Calcule la forme latente à partir des facteurs cumulés.
+        # Latent shape from the cumulative downsampling factors.
         _, h, w = expected_input_shape
         for kh, kw in downsample_factors:
             kh_i, kw_i = int(kh), int(kw)
             if h % kh_i != 0 or w % kw_i != 0:
                 raise ValueError(
-                    f"Géométrie incohérente : (H={h}, W={w}) non divisible "
+                    f"Inconsistent geometry: (H={h}, W={w}) not divisible "
                     f"par ({kh_i}, {kw_i})."
                 )
             h //= kh_i
             w //= kw_i
         self.latent_shape: Tuple[int, int, int] = (self.encoder.out_channels, h, w)
 
-        # Tête de classification.
+        # Classification head.
         self.head = ClassifierHead(
             in_channels=self.encoder.out_channels,
             hidden=classifier_hidden,
@@ -336,22 +339,25 @@ class SpectrogramAutoencoder(nn.Module):
     # ------------------------------------------------------------------
 
     def _check_input(self, x: torch.Tensor) -> None:
+        """Raise ``ValueError`` if *x* is not ``(B,) + expected_input_shape``."""
         if x.dim() != 4:
             raise ValueError(
-                f"Entrée 4D attendue (B, C, H, W), reçu dim={x.dim()} "
+                f"Expected a 4-D input (B, C, H, W), got dim={x.dim()} "
                 f"shape={tuple(x.shape)}."
             )
         if tuple(x.shape[1:]) != self.expected_input_shape:
             raise ValueError(
-                f"Forme par échantillon attendue {self.expected_input_shape}, "
-                f"reçu {tuple(x.shape[1:])}."
+                f"Expected per-sample shape {self.expected_input_shape}, "
+                f"got {tuple(x.shape[1:])}."
             )
 
     def encode(self, x: torch.Tensor) -> torch.Tensor:
+        """Latent representation ``(B, C_latent, H', W')`` of a batch."""
         self._check_input(x)
         return self.encoder(x)
 
     def decode(self, z: torch.Tensor) -> torch.Tensor:
+        """Reconstruction of a batch from its latent representation."""
         return self.decoder(z)
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
