@@ -395,6 +395,10 @@ class ReplaySource:
             time.sleep(max(0.0, self._next_delivery_s - time.monotonic()))
         return Block(samples, start, host_time_s, overflow)
 
+    def annotations(self) -> list[tuple[int, int, str]]:
+        """Annotated segments of the session: ``(sample_start, sample_count, label)``."""
+        return self._reader.annotations()
+
     def close(self) -> None:
         """Close the session file."""
         self._reader.close()

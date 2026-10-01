@@ -32,8 +32,6 @@ LOGS_DIR: Path = REPO_ROOT / "logs"
 DEFAULT_TRAINING_CONFIG: Path = REPO_ROOT / "configs" / "training.yaml"
 """Default YAML configuration of the training."""
 
-RECORDING_DATA_DIR: Path = REPO_ROOT / "AICalibration" / "data"
-"""Default root of the labelled recordings (``<train|test|val>/<n>.npz``)."""
 
 
 def load_config(path: str | Path) -> dict[str, Any]:

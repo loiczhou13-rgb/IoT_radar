@@ -31,7 +31,6 @@ Missing metadata are stored as ``""`` (text) or ``NaN`` (numbers).
 from __future__ import annotations
 
 import datetime as dt
-import json
 import logging
 import math
 import os
@@ -409,45 +408,3 @@ def _python_value(value: Any) -> Any:
     if isinstance(value, np.generic):
         return value.item()
     return value
-
-
-# ---------------------------------------------------------------------------
-# Legacy .npz recordings (read by the replay until it switches to sessions)
-# ---------------------------------------------------------------------------
-
-def read_recording_metadata(npz_path: Path) -> tuple[str | None, int | None]:
-    """Return ``(config_path, label)`` of a recording.
-
-    Each value is read from the ``.npz`` first and, when missing there, from
-    the ``.json`` sidecar written next to it.  A missing or unreadable value
-    is returned as ``None``.
-    """
-    config_path: str | None = None
-    label: int | None = None
-    with np.load(npz_path, allow_pickle=False) as data:
-        if "config_path" in data.files:
-            config_path = str(np.asarray(data["config_path"]).item())
-        if "label" in data.files:
-            label = int(np.asarray(data["label"]).item())
-    if config_path is not None and label is not None:
-        return config_path, label
-
-    sidecar = npz_path.with_suffix(".json")
-    if not sidecar.is_file():
-        return config_path, label
-    try:
-        with open(sidecar, encoding="utf-8") as fh:
-            meta: dict[str, Any] = json.load(fh)
-    except json.JSONDecodeError:
-        logger.warning("Unreadable JSON — %s", sidecar)
-        return config_path, label
-    if config_path is None:
-        stored = meta.get("config_path")
-        config_path = str(stored) if isinstance(stored, str) and stored else None
-    if label is None:
-        try:
-            stored_label = meta.get("label")
-            label = int(stored_label) if stored_label is not None else None
-        except (TypeError, ValueError):
-            label = None
-    return config_path, label
