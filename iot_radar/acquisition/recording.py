@@ -1,4 +1,7 @@
-"""Files written by an acquisition and read back by the replay.
+"""Files written by an acquisition and read back by the replay (legacy .npz format).
+
+Place in the chain: next to the acquisition — a recording stores what the
+pipeline computed during a session.
 
 A recording ``<n>`` of the subset ``<train|test|val>`` is made of
 ``<data-root>/<subset>/<n>.npz`` (spectrogram + metadata), ``<n>.json``
@@ -22,7 +25,7 @@ logger = logging.getLogger(__name__)
 def write_iq_complex64(path: Path, iq: np.ndarray) -> None:
     """Write IQ samples to a raw ``.iq`` file (dtype complex64 / float32×2)."""
     if iq.size == 0:
-        raise ValueError("Signal IQ vide — impossible d'écrire le .iq.")
+        raise ValueError("Empty IQ signal — cannot write the .iq file.")
     z = np.asarray(iq, dtype=np.complex64)
     z.tofile(path)
 
@@ -30,7 +33,7 @@ def write_iq_complex64(path: Path, iq: np.ndarray) -> None:
 def write_iq_stereo_wav(path: Path, iq: np.ndarray, sample_rate_hz: float) -> None:
     """Write complex IQ to a stereo float32 WAV (I = channel 0, Q = channel 1)."""
     if iq.size == 0:
-        raise ValueError("Signal IQ vide — impossible d'écrire le WAV.")
+        raise ValueError("Empty IQ signal — cannot write the WAV file.")
     i = np.asarray(iq.real, dtype=np.float32)
     q = np.asarray(iq.imag, dtype=np.float32)
     stereo = np.column_stack((i, q))
@@ -78,7 +81,7 @@ def read_recording_metadata(npz_path: Path) -> tuple[str | None, int | None]:
         with open(sidecar, encoding="utf-8") as fh:
             meta: dict[str, Any] = json.load(fh)
     except json.JSONDecodeError:
-        logger.warning("JSON illisible — %s", sidecar)
+        logger.warning("Unreadable JSON — %s", sidecar)
         return config_path, label
     if config_path is None:
         stored = meta.get("config_path")

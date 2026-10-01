@@ -1,8 +1,9 @@
 """IQ sources: every place the samples can come from, behind one interface.
 
-The pipeline reads consecutive :class:`Block` objects from a *source* and
-does not know whether they come from the PlutoSDR (:class:`PlutoSource`) or
-from the numerical simulation (:class:`CWSimulationSource`).
+Place in the chain: first step.  The pipeline reads consecutive
+:class:`Block` objects from a *source* and does not know whether they come
+from the PlutoSDR (:class:`PlutoSource`) or from the numerical simulation
+(:class:`CWSimulationSource`).
 
 A block carries what is needed to detect a discontinuity of the stream: the
 index of its first sample, the host clock when it was received and an
@@ -19,12 +20,13 @@ from typing import Any, Protocol
 import numpy as np
 
 from iot_radar.acquisition.pluto import (
+    ADC_FULL_SCALE,
     check_saturation,
     clear_rx_overflow,
     cw_tx_buffer,
+    effective_tx_offset_hz,
     open_pluto,
     read_and_clear_rx_overflow,
-    effective_tx_offset_hz,
 )
 from iot_radar.physics import SPEED_OF_LIGHT
 
@@ -95,15 +97,15 @@ class PlutoSource:
     def __init__(
         self,
         uri: str,
-        f_c: float,
-        f_s: float,
-        rx_gain: float,
-        tx_gain: float,
+        f_c_hz: float,
+        f_s_hz: float,
+        rx_gain_db: float,
+        tx_gain_db: float,
         buffer_size: int,
         tx_buffer: np.ndarray,
     ) -> None:
-        self._sdr = open_pluto(uri, f_c, f_s, rx_gain, tx_gain, buffer_size, tx_buffer)
-        self.sample_rate_hz = float(f_s)
+        self._sdr = open_pluto(uri, f_c_hz, f_s_hz, rx_gain_db, tx_gain_db, buffer_size, tx_buffer)
+        self.sample_rate_hz = float(f_s_hz)
         self._n_blocks = 0
         self._n_samples = 0
         self._overflow_check_available = True
@@ -112,9 +114,9 @@ class PlutoSource:
         except Exception as exc:
             self._disable_overflow_check(exc)
         logger.info(
-            "Streaming PlutoSDR — buffer_size=%d à %.0f Hz (continu)",
+            "PlutoSDR streaming — %d-sample buffers at %.0f Hz",
             buffer_size,
-            f_s,
+            f_s_hz,
         )
 
     def read_block(self) -> Block:
@@ -135,7 +137,7 @@ class PlutoSource:
             self._sdr.tx_destroy_buffer()
         except Exception:
             pass
-        logger.info("Streaming PlutoSDR arrêté après %d trames", self._n_blocks)
+        logger.info("PlutoSDR streaming stopped after %d buffers", self._n_blocks)
 
     def _overflow_since_last_block(self) -> bool:
         if not self._overflow_check_available:
@@ -146,12 +148,12 @@ class PlutoSource:
             self._disable_overflow_check(exc)
             return False
         if overflow:
-            logger.warning("PlutoSDR : échantillons RX perdus avant la trame %d", self._n_blocks)
+            logger.warning("PlutoSDR: RX samples lost before buffer %d", self._n_blocks)
         return overflow
 
     def _disable_overflow_check(self, exc: Exception) -> None:
         self._overflow_check_available = False
-        logger.warning("Détection des pertes RX indisponible (%s) — overflow toujours False", exc)
+        logger.warning("RX loss detection unavailable (%s) — overflow always False", exc)
 
 
 # ---------------------------------------------------------------------------
@@ -181,11 +183,11 @@ class CWSimulationSource:
 
     Parameters
     ----------
-    f_c, f_s : float
+    f_c_hz, f_s_hz : float
         Carrier frequency (Hz) and sampling rate (Hz).
     buffer_size : int
         Samples per block.
-    f_offset : float
+    tx_offset_hz : float
         Effective baseband TX offset (Hz); 0 in pure CW.
     breath_rate_hz : float
         Breathing frequency ``f_b`` (Hz).
@@ -217,15 +219,12 @@ class CWSimulationSource:
 
     n_channels: int = 1
 
-    _ADC_MIN: int = -2048
-    _ADC_MAX: int = 2047
-
     def __init__(
         self,
-        f_c: float,
-        f_s: float,
+        f_c_hz: float,
+        f_s_hz: float,
         buffer_size: int,
-        f_offset: float,
+        tx_offset_hz: float,
         breath_rate_hz: float,
         breath_amplitude_mm: float,
         presence: bool = True,
@@ -238,11 +237,10 @@ class CWSimulationSource:
         seed: int | None = None,
         realtime: bool = False,
     ) -> None:
-        self.sample_rate_hz = float(f_s)
-        self._f_s = float(f_s)
+        self.sample_rate_hz = float(f_s_hz)
         self._buffer_size = int(buffer_size)
-        self._f_offset = float(f_offset)
-        self._wavelength = SPEED_OF_LIGHT / f_c
+        self._tx_offset_hz = float(tx_offset_hz)
+        self._wavelength_m = SPEED_OF_LIGHT / f_c_hz
         self._breath_rate_hz = float(breath_rate_hz)
         self._breath_amplitude_m = float(breath_amplitude_mm) * 1e-3
         self._presence = bool(presence)
@@ -259,24 +257,24 @@ class CWSimulationSource:
         self._next_block_time_s = time.monotonic()
 
         logger.info(
-            "Streaming simulation — f_b=%.2f Hz, D=%.1f mm, présence=%s, "
-            "SNR/échantillon=%.0f dB, f_offset=%.2f Hz, dérive LO=%.3f Hz",
+            "Simulated stream — breathing %.2f Hz, %.1f mm, presence=%s, "
+            "SNR per sample %.0f dB, TX offset %.2f Hz, LO offset %.3f Hz",
             breath_rate_hz,
             breath_amplitude_mm,
             self._presence,
             snr_db,
-            self._f_offset,
+            self._tx_offset_hz,
             self._lo_offset_hz,
         )
 
     def read_block(self) -> Block:
         """Generate the next block of the simulated reception."""
         n = self._buffer_size
-        t = (np.arange(n, dtype=np.float64) + self._sample_idx) / self._f_s
+        t = (np.arange(n, dtype=np.float64) + self._sample_idx) / self.sample_rate_hz
 
-        tx_tone = np.exp(2j * np.pi * self._f_offset * t)
+        tx_tone = np.exp(2j * np.pi * self._tx_offset_hz * t)
         displacement_m = self._breath_amplitude_m * np.sin(2.0 * np.pi * self._breath_rate_hz * t)
-        target_phase = -4.0 * np.pi * (self._target_range_m + displacement_m) / self._wavelength
+        target_phase = -4.0 * np.pi * (self._target_range_m + displacement_m) / self._wavelength_m
         target_echo = self._target_amplitude * np.exp(1j * target_phase) if self._presence else 0.0
         echoes = (self._static_clutter + target_echo) * tx_tone
         if self._lo_offset_hz != 0.0:
@@ -297,13 +295,13 @@ class CWSimulationSource:
 
     def _wait_for_real_time(self, n_samples: int) -> None:
         """Sleep until the block of *n_samples* would be complete on hardware."""
-        self._next_block_time_s += n_samples / self._f_s
+        self._next_block_time_s += n_samples / self.sample_rate_hz
         time.sleep(max(0.0, self._next_block_time_s - time.monotonic()))
 
     def _quantize(self, x: np.ndarray) -> np.ndarray:
         """Round I and Q to the integer ADC levels and clip them (complex64)."""
-        i = np.clip(np.round(x.real), self._ADC_MIN, self._ADC_MAX)
-        q = np.clip(np.round(x.imag), self._ADC_MIN, self._ADC_MAX)
+        i = np.clip(np.round(x.real), -ADC_FULL_SCALE, ADC_FULL_SCALE - 1)
+        q = np.clip(np.round(x.imag), -ADC_FULL_SCALE, ADC_FULL_SCALE - 1)
         return (i + 1j * q).astype(np.complex64)
 
 
@@ -320,15 +318,15 @@ def open_source(cfg: dict[str, Any], simulation: bool) -> PlutoSource | CWSimula
     """
     sdr = cfg["sdr"]
     sim = cfg["simulation"]
-    f_off = effective_tx_offset_hz(cfg)
+    tx_offset_hz = effective_tx_offset_hz(cfg)
 
     if simulation or sim.get("enabled", False):
-        logger.info("Mode simulation continu activé (f_offset=%.1f Hz)", f_off)
+        logger.info("Simulated source (TX offset %.1f Hz)", tx_offset_hz)
         return CWSimulationSource(
-            f_c=sdr["center_frequency_hz"],
-            f_s=sdr["sample_rate_hz"],
+            f_c_hz=sdr["center_frequency_hz"],
+            f_s_hz=sdr["sample_rate_hz"],
             buffer_size=sdr["buffer_size"],
-            f_offset=f_off,
+            tx_offset_hz=tx_offset_hz,
             breath_rate_hz=sim["breath_rate_hz"],
             breath_amplitude_mm=sim["breath_amplitude_mm"],
             presence=sim.get("presence", True),
@@ -342,19 +340,19 @@ def open_source(cfg: dict[str, Any], simulation: bool) -> PlutoSource | CWSimula
             realtime=sim.get("realtime", True),
         )
 
-    logger.info("Mode matériel continu — connexion au PlutoSDR")
+    logger.info("Hardware source — connecting to the PlutoSDR")
     tx_buffer = cw_tx_buffer(
         waveform=cfg["tx"]["waveform"],
         buffer_size=sdr["buffer_size"],
         f_s_hz=sdr["sample_rate_hz"],
-        offset_hz=f_off,
+        offset_hz=tx_offset_hz,
     )
     return PlutoSource(
         uri=sdr["uri"],
-        f_c=sdr["center_frequency_hz"],
-        f_s=sdr["sample_rate_hz"],
-        rx_gain=sdr["rx_gain_db"],
-        tx_gain=sdr["tx_gain_db"],
+        f_c_hz=sdr["center_frequency_hz"],
+        f_s_hz=sdr["sample_rate_hz"],
+        rx_gain_db=sdr["rx_gain_db"],
+        tx_gain_db=sdr["tx_gain_db"],
         buffer_size=sdr["buffer_size"],
         tx_buffer=tx_buffer,
     )

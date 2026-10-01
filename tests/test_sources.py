@@ -14,7 +14,7 @@ from iot_radar.acquisition.sources import CWSimulationSource, PlutoSource
 
 def _simulation(seed: int | None = 7, **scene) -> CWSimulationSource:
     parameters = dict(
-        f_c=3.5e9, f_s=100e3, buffer_size=1024, f_offset=244.140625,
+        f_c_hz=3.5e9, f_s_hz=100e3, buffer_size=1024, tx_offset_hz=244.140625,
         breath_rate_hz=0.3, breath_amplitude_mm=10, seed=seed,
     )
     parameters.update(scene)
@@ -43,7 +43,7 @@ def test_simulated_echoes_sit_at_the_tx_frequency() -> None:
     """Bug B2: leakage and static clutter are copies of the TX tone."""
     f_offset = 244.140625
     source = _simulation(
-        f_offset=f_offset, presence=False, receiver_dc_amplitude=400.0,
+        tx_offset_hz=f_offset, presence=False, receiver_dc_amplitude=400.0,
         static_clutter_amplitude=800.0, snr_db=40.0,
     )
     x = np.concatenate([source.read_block().samples[0] for _ in range(8)])
