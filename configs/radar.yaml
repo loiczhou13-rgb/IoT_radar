@@ -186,6 +186,79 @@ detection:
 
 
 # ---------------------------------------------------------------------------
+# Phase-demodulation chain: slow time
+# ---------------------------------------------------------------------------
+slow_time:
+  # Rate of the slow-time signal after mixing the echo to 0 Hz and decimating
+  # (Hz).  sample_rate_hz / rate_hz must be an integer made of primes <= 13
+  # (2 MS/s / 20 Hz = 100000) and rate_hz > 2.5 x max(reference band, heart band).
+  rate_hz: 20.0
+
+  # Slow time dropped after a (re)start while the decimation filters settle (s).
+  warmup_s: 1.0
+
+
+# ---------------------------------------------------------------------------
+# Phase-demodulation chain: window analysis and breathing detection
+# ---------------------------------------------------------------------------
+vital_signs:
+  # Analysis window (s): at least 2 periods of the slowest breath (0.1 Hz).
+  window_s: 20.0
+
+  # Time between two analyses (s).
+  update_period_s: 0.5
+
+  breathing_band_hz: [0.1, 0.5]   # 6–30 breaths/min (adult at rest)
+  heart_band_hz: [0.8, 2.0]       # 48–120 beats/min (indicative only)
+  reference_band_hz: [2.5, 5.0]   # noise-only band, above the heart band
+
+  # DC-offset compensation before the angle: "circle" (circle fitting,
+  # recommended), "mean" or "none".  Never a high-pass filter (bug B3).
+  dc_compensation: "circle"
+
+  # Phase demodulation: "arctan" (unwrapped angle), "dacm" or "linear".
+  demodulation: "arctan"
+
+  # Validity of the circle fit: below this arc span (rad) or above this
+  # relative residual (a noise cloud gives ~0.4) the fit is rejected and the
+  # linear demodulation (arbitrary units) is used instead.
+  min_arc_rad: 0.3
+  max_circle_residual: 0.3
+
+  # Remove a common phase ramp (residual TX/RX LO offset) before the circle fit.
+  lo_drift_compensation: true
+
+  # Butterworth order of the breathing / heartbeat band-pass filters.
+  bandpass_order: 4
+
+  detection:
+    snr_min_db: 8.0            # band SNR (peak / reference-band noise floor) -> score 0 ...
+    snr_good_db: 16.0          # ... -> score 1
+    peak_halfwidth_hz: 0.1     # half-width of the peak window of the concentration metric
+    concentration_floor: 0.55  # peak energy share ~0.5 for noise -> score 0 ...
+    concentration_good: 0.85   # ... clean periodic breathing -> score 1
+    motion_ptp_mm: 30.0        # peak-to-peak displacement above which a window is "MOTION"
+    motion_window_s: 5.0       # recent segment also checked for motion (fast reaction)
+    motion_hold_s: 3.0         # MOTION state held after the last corrupted window
+    smoothing_tau_s: 4.0       # time constant of the confidence smoothing
+    threshold_on: 0.6          # smoothed confidence entering BREATHING
+    threshold_off: 0.4         # smoothed confidence leaving BREATHING (hysteresis)
+    rate_median_len: 5         # reported rate = median of the last N reliable estimates
+    apnea_s: 10.0              # no inhalation for this long after breathing -> apnea alert
+    apnea_memory_s: 30.0       # ... only if breathing was detected within this delay
+
+
+# ---------------------------------------------------------------------------
+# Phase-demodulation chain: micro-Doppler view of the slow time (display only)
+# ---------------------------------------------------------------------------
+micro_doppler_view:
+  window_s: 3.2          # slow-time segment of one column (64 samples at 20 Hz)
+  n_fft: 256             # zero-padded FFT size
+  window: "hann"
+  display_max_hz: 3.0    # Doppler span shown on the dashboard (±)
+
+
+# ---------------------------------------------------------------------------
 # Dashboard (matplotlib)
 # ---------------------------------------------------------------------------
 display:

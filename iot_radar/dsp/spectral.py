@@ -119,25 +119,29 @@ def compute_single_column(
     segment: np.ndarray,
     f_s_hz: float,
     window: np.ndarray,
+    n_fft: int | None = None,
 ) -> ColumnOutput:
     """Power spectrum of one windowed time segment (one STFT column).
 
     Parameters
     ----------
     segment : numpy.ndarray
-        Complex IQ segment, shape ``(n_fft,)``.
+        Complex IQ segment, 1-D.
     f_s_hz : float
         Sampling rate (Hz) of *segment* (decimated rate).
     window : numpy.ndarray
         Pre-computed window, same length as *segment*.
+    n_fft : int or None, optional
+        FFT size; ``None`` (default) = ``len(segment)``.  A larger size
+        zero-pads the segment (interpolated spectrum, same resolution).
 
     Returns
     -------
     ColumnOutput
-        Power in dB and its frequency axis.  No normalisation by the window
-        sum is applied.
+        Power in dB and its frequency axis, ``n_fft`` points.  No
+        normalisation by the window sum is applied.
     """
-    n_fft = len(segment)
+    n_fft = len(segment) if n_fft is None else int(n_fft)
 
     windowed = segment * window
     spectrum = np.fft.fftshift(np.fft.fft(windowed, n=n_fft))
