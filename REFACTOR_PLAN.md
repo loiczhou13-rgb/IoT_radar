@@ -1,518 +1,641 @@
-# Plan de restructuration — IoT_radar (étape 1 : exploration)
+# Plan de restructuration — IoT_radar
 
-> Branche `refactor`, créée depuis `main` = `origin/main` = `8189bbd` (vérifié par `git fetch`).
-> À ce stade, **aucun fichier de code n'a été modifié**. Seul ce document a été ajouté.
-> Les mesures citées ci-dessous ont été faites en lecture seule, avec des scripts temporaires
-> hors du dépôt. Les lignes citées renvoient aux fichiers de `8189bbd`.
+> **Version 2** : périmètre validé après vos réponses du 2026-10-01 ; elle remplace la v1.
+> Branche `refactor`, créée depuis `main` = `origin/main` = `8189bbd`.
+> Les mesures citées ont été faites en lecture seule, avec des scripts temporaires hors du dépôt.
+> Les numéros de ligne renvoient aux fichiers de `8189bbd`.
 
 ## Sommaire
 
-0. [Décisions attendues avant l'étape 2](#0-décisions-attendues-avant-létape-2)
-1. [État Git et nature réelle de `.claude/`](#1-état-git-et-nature-réelle-de-claude)
+0. [Décisions validées](#0-décisions-validées)
+1. [État Git et `.claude/`](#1-état-git-et-claude)
 2. [Carte des modules actuels et dépendances](#2-carte-des-modules-actuels-et-dépendances)
 3. [Redondances](#3-redondances)
 4. [Code mort](#4-code-mort)
-5. [Bugs et hypothèses physiques ou matérielles discutables](#5-bugs-et-hypothèses-physiques-ou-matérielles-discutables)
-6. [Section `.claude/`](#6-section-claude)
-7. [Structure cible](#7-structure-cible)
-8. [Destination de chaque fichier](#8-destination-de-chaque-fichier)
-9. [Fusions prévues (étape 3)](#9-fusions-prévues-étape-3)
-10. [Interface `Source`](#10-interface-source)
-11. [Stratégie de test](#11-stratégie-de-test)
-12. [Commits prévus](#12-commits-prévus)
-13. [Risques](#13-risques)
+5. [Bugs et hypothèses discutables](#5-bugs-et-hypothèses-discutables)
+6. [`.claude/` : inventaire et décisions](#6-claude--inventaire-et-décisions)
+7. [FMCW: findings](#7-fmcw-findings)
+8. [Architecture cible](#8-architecture-cible)
+9. [Destination de chaque fichier](#9-destination-de-chaque-fichier)
+10. [Interface `Source` et blocs](#10-interface-source-et-blocs)
+11. [Chaîne de démodulation de phase](#11-chaîne-de-démodulation-de-phase)
+12. [Format d'enregistrement HDF5 (schéma v1)](#12-format-denregistrement-hdf5-schéma-v1)
+13. [Convention de nommage et renommages](#13-convention-de-nommage-et-renommages)
+14. [Dashboard de phase et lanceur](#14-dashboard-de-phase-et-lanceur)
+15. [Fonctionnalités retirées](#15-fonctionnalités-retirées)
+16. [Tests](#16-tests)
+17. [Étapes et commits](#17-étapes-et-commits)
+18. [Risques](#18-risques)
 
 ---
 
-## 0. Décisions attendues avant l'étape 2
+## 0. Décisions validées
 
-| # | Question | Ma recommandation |
-|---|----------|-------------------|
-| **Q1** | Les consignes se contredisent : « copie ce qui est utile, et supprime l'original en place » (section Git) et « Ne supprime pas `.claude/` : je le ferai moi-même » (étape 4). Or `.claude/` contient un **worktree Git avec ~4 400 lignes de travail non commité** (§1) : le supprimer, c'est le perdre définitivement. | Ne rien supprimer ; je n'y touche qu'en lecture. Si vous le souhaitez, je peux d'abord figer ce travail dans un commit **sur sa propre branche** `claude/radar-breath-detection-cleanup-4ec226` (jamais fusionnée), ce qui vous permettra ensuite de faire `git worktree remove` sans rien perdre. |
-| **Q2** | `.claude/` n'est pas qu'un module FMCW. La chaîne FMCW y repose sur **VitalSigns** : démodulation de phase arctangente/DACM, nouveau détecteur et nouveau dashboard. Or c'est précisément l'évolution que vous avez exclue de cette tâche. Que faut-il intégrer à l'étape 4 ? | **(A)** Intégrer le **frontal FMCW** : chirp, simulation, dechirping, FFT en distance et sélection de la case distance. Intégrer aussi les **éléments de visualisation génériques** dans le dashboard existant : waterfall Doppler-temps en CW, carte distance-temps avec marqueur de la case retenue en FMCW, et panneau de paramètres. Le pipeline FMCW produirait alors la carte distance-temps, la distance retenue et le signal temps lent de cette case, **sans détection de respiration** pour l'instant. VitalSigns resterait dans `.claude/` (testé, 27 tests verts) pour la future tâche « démodulation de phase », et la structure cible lui réserve sa place (§7). Autres options : **(B)** tout intégrer dès maintenant, VitalSigns compris ; **(C)** ne rien intégrer du FMCW. |
-| **Q3** | Quels bugs corriger ? Chaque correctif serait un commit `fix:` séparé, après l'étape 3, car il modifie des résultats. | Corriger **B1** (critique, confirmé sur les enregistrements réels), **B4** et **B5**. Pour **B2**, corriger seulement si vous voulez une simulation fidèle au matériel ; c'est conseillé, mais cela change le comportement simulé. **B6** est rendu nécessaire par le déplacement des fichiers et n'est pas numérique : je propose de l'inclure dans l'étape 2. |
-| **Q4** | La relecture comme `Source` : aujourd'hui, la relecture rejoue des **colonnes de spectrogramme** stockées, pas de l'IQ. Une `ReplaySource` qui produit de l'IQ suppose donc de retraiter le fichier `.iq`. Or ce fichier est enregistré **après** le filtre clutter (`main.py` L350-353) : le pipeline le filtrerait une seconde fois. | Enregistrer désormais l'IQ décimé **avant** le filtre clutter. Cela change le contenu des futurs `.iq` ; un champ `iq_stage` serait ajouté au `.json`. La `ReplaySource` le retraite alors exactement comme en direct, résultats identiques au bit près et score affiché. Sans `.iq`, la relecture des colonnes stockées reste le comportement par défaut. Pour les 69 anciens `.iq` (filtrés), un avertissement signale le double filtrage. Cela prépare aussi la démodulation de phase, qui exige un IQ non filtré passe-haut (B3). |
-| **Q5** | Décisions par défaut (dites-moi si l'une ne vous convient pas). | Les données restent dans `AICalibration/data/` et `AICalibration/results/`, sans y toucher. Les YAML vont dans `configs/`, le notebook dans `notebooks/`, les journaux dans `logs/` à la racine. Commentaires, docstrings, messages de log, d'exception et aide CLI passent en anglais ; les **libellés affichés à l'utilisateur final** (dashboard, lanceur) restent en français. J'ajoute `.claude/worktrees/` au `.gitignore`. `ui/` garde 2 fichiers, comme dans votre proposition, ce qui est à la limite de la règle des 3 fichiers. |
+| # | Décision |
+|---|---|
+| Q1 | J'ajoute `.claude/` au `.gitignore`. Aucun fichier n'est commité directement depuis `.claude/` : le code utile est **recopié** dans le paquet (puis adapté), et l'original reste en place. Le code mort est supprimé. |
+| Q2 | L'équipe passe à la **démodulation de phase**. La chaîne micro-Doppler par spectrogramme sera retirée une fois la chaîne de phase en place et testée. **Le FMCW n'est pas intégré** ; ses conclusions sont consignées au §7. Le dashboard de phase est intégré, sans panneau distance-temps. |
+| Q3 | Les correctifs B1 à B5 sont acceptés, un commit par correctif. Pour B2 et B5 seulement, les références de caractérisation peuvent être régénérées dans le même commit (seule exception). |
+| Q4 | Les enregistrements passent en **HDF5** (h5py). Le schéma est au §12, les labels au §12.4. Plus aucune écriture de `.npz`, `.iq` ni `.wav`. Les anciens `.npz` restent lisibles par `ml/` ; les anciens `.iq` sont convertibles. |
+| Q5 | Tout passe en anglais : code, identifiants, commentaires, docstrings, logs, clés de configuration et **libellés de l'interface**. Convention `snake_case`, unité en suffixe, classes en `CamelCase` (§13). README bilingues. Traduction et renommages font l'objet de commits dédiés, sans changement de logique. |
 
 ---
 
-## 1. État Git et nature réelle de `.claude/`
+## 1. État Git et `.claude/`
 
-- `git status` : l'arbre est propre ; seul `.claude/` apparaît comme non suivi, ce qui est la situation que vous aviez annoncée.
-- `git ls-files .claude` renvoie une liste vide : **`.claude/` n'est pas suivi** par Git.
-- `git worktree list` révèle que `.claude/worktrees/radar-breath-detection-cleanup-4ec226/` est un **worktree enregistré**. Il porte la branche `claude/radar-breath-detection-cleanup-4ec226`, qui pointe sur `8189bbd`, le même commit que `main`. Cette branche n'a donc **aucun commit propre** : tout le travail est dans l'arbre de travail du worktree, soit 20 fichiers modifiés, 13 renommés (dont 11 vers `deletion/`) et une trentaine de fichiers nouveaux non suivis (`FMCWDetection/`, `VitalSigns/`, `tests/`…).
-- `main` est à jour avec `origin/main`.
-- `ed_branch` contient 2 commits absents de `main`, qui ajoutent `MicroDopplerDetection/accueil_2.py` et `accueil_tk.py`. Ces chemins vont disparaître ; voir les risques (§13).
-- Pour éviter tout ajout accidentel du worktree, je n'utiliserai **jamais** `git add -A` : chaque commit indique ses fichiers explicitement.
+- L'arbre de travail est propre, à part `.claude/` qui n'est pas suivi (`git ls-files .claude` renvoie une liste vide).
+- `.claude/worktrees/radar-breath-detection-cleanup-4ec226/` est un **worktree Git enregistré**. Il porte la branche `claude/radar-breath-detection-cleanup-4ec226`, qui pointe sur `8189bbd`. Tout son travail (≈ 4 400 lignes) est **non commité** : supprimer ce dossier le ferait perdre. Je n'y touche pas ; vous le supprimerez vous-même (`git worktree remove --force …`).
+- `.claude/` est ajouté au `.gitignore`, et `git add` est toujours utilisé avec des chemins explicites.
+- `ed_branch` contient 2 commits absents de `main` (`MicroDopplerDetection/accueil_2.py`, `accueil_tk.py`) : risque de conflit (§18).
 
 ---
 
 ## 2. Carte des modules actuels et dépendances
 
-### 2.1 Fichiers (≈ 5 100 lignes Python suivies)
+Il y a environ 5 100 lignes de Python suivies.
 
-| Fichier | Lignes | Rôle | Importe (interne) | Importé par |
-|---|---:|---|---|---|
-| `MicroDopplerDetection/main.py` | 527 | CLI temps réel **et** tout le reste : chargement YAML (L141), logging (L151), bilan de liaison (L97-134), choix de la source (L215), générateur streaming (L255-410), contexte du dashboard (L417) | `pipeline.*`, `utils.display` | `accueil_pg.py` ; `record_acquisition` et `record_visualization`, qui le chargent via `importlib` pour appeler ses fonctions **privées** |
-| `pipeline/emission.py` | 94 | Buffer TX `cw` ou `cw_offset`, mis à l'échelle ×2¹⁴ | — | `main`, `legacy/acquisition_batch` |
-| `pipeline/acquisition.py` | 202 | `stream_pluto`, `stream_simulation`, `_check_saturation` | — | `main` |
-| `pipeline/decimation.py` | 190 | `Decimator` à état (Chebyshev en cascade) | — | `main`, `legacy/decimation_batch` |
-| `pipeline/clutter.py` | 179 | `ClutterFilter` à état (`mean`, `iir`, `mti`, `butterworth`) | — | `main` |
-| `pipeline/windowing.py` | 67 | `get_window` | — | `main`, `legacy/spectrogramme_batch` |
-| `pipeline/spectrogramme.py` | 87 | `compute_single_column` (une colonne STFT) | — | `main` |
-| `pipeline/detection.py` | 269 | Test F de Fisher, ACF de phase, fusion des scores | — | `main`, `legacy/detection_batch` |
-| `utils/display.py` | 451 | `DashboardRadar` (mode temps réel et mode relecture) | — | `main`, `record_visualization` |
-| `utils/record_acquisition.py` | 480 | CLI d'enregistrement `.npz`, `.json`, `.iq` (et `.wav` en option) | `utils.repo_paths`, `main` (importlib) | `auto_record` |
-| `utils/auto_record.py` | 105 | CLI qui enchaîne N enregistrements | `record_acquisition` | — |
-| `utils/record_visualization.py` | 264 | CLI de relecture d'un `.npz` | `utils.repo_paths`, `utils.display`, `main` (importlib) | — |
-| `utils/repo_paths.py` | 14 | `default_recording_data_root()` | — | les deux CLI précédentes |
-| `legacy/*.py` (5 fichiers) | 585 | Versions « batch » | `pipeline.*` | **rien** |
-| `AICalibration/dataset.py` | 270 | `CalibrationDataset` (fenêtres de colonnes STFT) | — | `train`, notebook |
-| `AICalibration/model.py` | 399 | `SpectrogramAutoencoder` et test de fumée | — | `train`, notebook |
-| `AICalibration/train.py` | 563 | CLI d'entraînement | `dataset`, `model` | — |
-| `AICalibration/inference.ipynb` | — | Courbes, matrice de confusion, reconstructions | `dataset`, `model` | — |
-| `accueil_pg.py` | 368 | Lanceur pygame | `MicroDopplerDetection.main.main` | — |
-
-### 2.2 Graphe de dépendances
+| Fichier | Lignes | Rôle | Importé par |
+|---|---:|---|---|
+| `MicroDopplerDetection/main.py` | 527 | CLI temps réel et presque tout le reste : YAML (L141), logging (L151), bilan de liaison (L97-134), choix de la source (L215), générateur streaming (L255-410), contexte du dashboard (L417) | `accueil_pg.py` ; `record_acquisition` et `record_visualization`, qui le chargent via `importlib` et appellent ses fonctions **privées** |
+| `pipeline/emission.py` | 94 | Buffer TX `cw` ou `cw_offset` (×2¹⁴) | `main`, `legacy` |
+| `pipeline/acquisition.py` | 202 | `stream_pluto`, `stream_simulation`, `_check_saturation` | `main` |
+| `pipeline/decimation.py` | 190 | `Decimator` à état | `main`, `legacy` |
+| `pipeline/clutter.py` | 179 | `ClutterFilter` à état | `main` |
+| `pipeline/windowing.py` | 67 | `get_window` | `main`, `legacy` |
+| `pipeline/spectrogramme.py` | 87 | `compute_single_column` | `main` |
+| `pipeline/detection.py` | 269 | Test F de Fisher, ACF de phase, fusion des scores | `main`, `legacy` |
+| `utils/display.py` | 451 | `DashboardRadar` (temps réel et relecture) | `main`, `record_visualization` |
+| `utils/record_acquisition.py` | 480 | Enregistrement `.npz`, `.json`, `.iq`, `.wav` | `auto_record` |
+| `utils/auto_record.py` | 105 | N enregistrements successifs | — |
+| `utils/record_visualization.py` | 264 | Relecture des colonnes d'un `.npz` | — |
+| `utils/repo_paths.py` | 14 | Racine des données | les CLI d'enregistrement et de relecture |
+| `legacy/*.py` | 585 | Versions « batch » | **aucun appelant** |
+| `AICalibration/dataset.py`, `model.py`, `train.py`, `inference.ipynb` | 1 232 | Dataset de spectrogrammes, autoencodeur, entraînement, notebook | — |
+| `accueil_pg.py` | 368 | Lanceur pygame | — |
 
 ```
-accueil_pg.py ──► main.main  (dans un thread, voir B4)
-
-record_acquisition ─┐  importlib("main.py") : _load_config, _setup_logging,
-record_visualization┘                         _build_context, _streaming_frame_generator
-auto_record ──► record_acquisition.run
-
-main.py ──► emission ─┐
-        ├─► acquisition (Pluto | simulation)
-        ├─► decimation ─► clutter ─► windowing + spectrogramme ─► detection
-        └─► utils.display
-
-legacy/* ──► pipeline.*   (aucun appelant)
-
-record_acquisition ══ .npz/.json/.iq ══► AICalibration/dataset ──► train ──► results/best.pt ──► notebook
+accueil_pg ──► main.main (dans un thread : B4)
+record_acquisition / record_visualization ──importlib──► main (fonctions privées)
+main ──► emission, acquisition ──► decimation ──► clutter ──► windowing + spectrogramme ──► detection ──► display
+record_acquisition ══ .npz ══► AICalibration/dataset ──► train ──► results/best.pt ──► notebook
+legacy/* ──► pipeline/*        (aucun appelant)
 ```
-
-### 2.3 Flux de données (CW, configuration actuelle)
-
-Pluto ou simulation (2 MS/s, buffers de 16 384 échantillons) → `Decimator` (D = 1000, soit 2 kHz) → `ClutterFilter` (passe-haut Butterworth à 0,05 Hz) → anneau de `n_fft` = 8192 échantillons avec un pas de 819 → fenêtre de Hann → colonne STFT en dB → détection (test F autour de `f_offset` et ACF de la phase démodulée sur 20 s) → dashboard, ou enregistrement `.npz`.
 
 ---
 
 ## 3. Redondances
 
-Chaque piste suggérée a été vérifiée ; le verdict figure à chaque fois.
-
-**R1 — `legacy/*_batch.py` et leurs équivalents streaming.** *Confirmé.* Ces fichiers sont du code mort (aucun import hors de `legacy/`, vérifié avec `git grep` dans les `.py` et `.ipynb`).
-- `acquisition_batch.acquire_pluto` (L46-131) recopie `acquisition.stream_pluto` (L22-110), y compris le bloc de configuration du Pluto. `_check_saturation` existe deux fois (`acquisition_batch` L185, `acquisition` L190). `synthesize_iq` (L134) applique le même modèle que `stream_simulation` (L113).
-- `decimation_batch.decimate_iq` (L24) utilise `scipy.signal.decimate`, à phase nulle : ses résultats **diffèrent numériquement** du `Decimator` causal. `detection_batch` (L38-172) ne contient que des variantes inutilisées. `spectrogramme_batch.compute_spectrogram` (L37) passe par `scipy.signal.stft`, qui normalise par la somme de la fenêtre et complète les bords par des zéros : ses résultats **diffèrent** donc des colonnes streaming.
-- Les briques streaming savent **déjà** traiter un tableau complet comme un seul bloc ; je l'ai vérifié :
-  - `Decimator` donne le même résultat au bit près pour 1 bloc, 20 blocs égaux ou 37 blocs inégaux ;
-  - `ClutterFilter` donne le même résultat au bit près en modes `butterworth` et `mti` ;
-  - en modes `iir` et `mean`, l'état initial est la moyenne du **premier bloc** (`clutter.py` L137 et L151-153), d'où un écart de 1,7·10⁻³ sur le transitoire initial. C'est une propriété du filtre, que je documenterai ; ce n'est pas un bug.
-- Il manque seulement un spectrogramme hors ligne. Il sera ajouté (F1) en découpant le signal **exactement** comme la boucle streaming, donc avec des colonnes identiques par construction.
-
-**R2 — Calculs de spectrogramme dupliqués entre enregistrement, relecture et dataset.** *Piste en grande partie infirmée.* L'enregistrement stocke les colonnes streaming ; la relecture et le dataset **relisent** le `.npz` sans rien recalculer. Le seul calcul en double est `legacy/spectrogramme_batch` (voir R1). En revanche, l'axe des fréquences est recalculé dans `main._build_context` (L431), à l'identique de `spectrogramme.py` (L77) : une seule fonction sera partagée (F10).
-
-**R3 — Chargement de la configuration.** *Confirmé.* `main._load_config` (L141-148) et `train._load_yaml` (L49-54) font la même chose. `record_acquisition` (L215) et `record_visualization` (L209) appellent la version de `main.py` via `importlib`.
-
-**R4 — Configuration du logging.** *Confirmé, en 4 versions.* `main._setup_logging` (L151-208), `train._setup_logging` (L84-100), `auto_record` avec `basicConfig` (L79-83, ensuite **écrasé** par `_setup_logging` appelé dans `record_run`) et `record_visualization` avec `basicConfig` (L150-154).
-
-**R5 — `repo_paths.py` et manipulations du `PYTHONPATH`.** *Confirmé, en 7 endroits.* On trouve un `sys.path.insert` dans `main.py` (L25-28, avec `_PACKAGE_ROOT` défini deux fois, L25 et L51), `record_acquisition` (L39-53), `auto_record` (L24-35), `record_visualization` (L30-46), `train` (L34-37) et la cellule 1 du notebook. De plus, `accueil_pg.py` exige un `PYTHONPATH` exporté. `_ensure_paths` est copiée **trois fois à l'identique** et `_load_main_module` **deux fois**.
-
-**R6 — Constantes physiques.** *Confirmé.* `_SPEED_OF_LIGHT` est défini 5 fois (`main` L47, `acquisition` L19, `spectrogramme` L16, `legacy/acquisition_batch` L19, `legacy/spectrogramme_batch` L21). `_ADC_FULL_SCALE` et `_ADC_SATURATION_RATIO` le sont 2 fois.
-
-**R7 — Modes « temps réel » et « relecture » de `display.py`.** *Confirmé.*
-- La même classe porte un drapeau `show_presence_score`, avec deux listes de texte presque identiques pour l'encadré d'informations (L218-237 et L239-252).
-- La relecture pilote sa **propre** `FuncAnimation` (`record_visualization` L248) et accède à l'attribut privé `dashboard._fig` (L236).
-
-**R8 — `record_acquisition.py` et `auto_record.py`.** *Confirmé.* `auto_record` se contente de réutiliser l'analyseur d'arguments de `record_acquisition`, d'y ajouter `-n` et `--interval`, puis d'appeler `run()` en boucle. Une seule commande suffit.
-
-**R9 — Lecture du `.json` compagnon.** `_load_config_path_from_recording` (L79) et `_label_from_json_sidecar` (L97) ouvrent chacune le même fichier.
+| # | Constat (vérifié) | Traitement |
+|---|---|---|
+| R1 | `legacy/*_batch.py` doublonne les briques streaming et ne sert à rien. `decimate_iq` (filtrage à phase nulle) et `compute_spectrogram` (`scipy.signal.stft`, normalisé, bords complétés par des zéros) donnent des résultats **différents** de la chaîne réelle. Les briques streaming traitent déjà un tableau entier en un bloc : `Decimator` donne le même résultat au bit près pour 1, 20 ou 37 blocs ; `ClutterFilter` aussi en modes `butterworth` et `mti`. En modes `iir` et `mean`, l'état initial est la moyenne du premier bloc (`clutter.py` L137, L151-153). | Ajout de `spectral.compute_spectrogram` (hors ligne, identique au flux), puis suppression de `legacy/` |
+| R2 | La piste du spectrogramme calculé en double est **infirmée** : l'enregistrement stocke les colonnes, la relecture et le dataset relisent le `.npz`. Seuls `legacy` et l'axe des fréquences (`main` L431, `spectrogramme` L77) sont recalculés. | `spectral.frequency_axis` |
+| R3 | Chargement du YAML en 2 versions (`main._load_config` L141, `train._load_yaml` L49) | `config.load_config` |
+| R4 | Configuration du logging en 4 versions (`main` L151, `train` L84, `auto_record` L79 avec `basicConfig` ensuite écrasé, `record_visualization` L150) | `config.setup_logging` |
+| R5 | 7 manipulations du `sys.path` (`main` L25-28, `record_acquisition` L39-53, `auto_record` L24-35, `record_visualization` L30-46, `train` L34-37, notebook, `PYTHONPATH` exigé par `accueil_pg`) ; `_ensure_paths` copiée ×3 et `_load_main_module` ×2 | `pip install -e .` et `config.REPO_ROOT` |
+| R6 | Vitesse de la lumière définie ×5, constantes du CAN ×2 | `physics.py`, `acquisition/pluto.py` |
+| R7 | Modes temps réel et relecture de `display.py` : deux encadrés presque identiques (L218-237 et L239-252), une seconde `FuncAnimation` dans `record_visualization` (L248) et l'accès à l'attribut privé `_fig` (L236) | Une seule méthode `run(frames)` |
+| R8 | `auto_record` = `record_acquisition` exécuté en boucle | Un seul script, `scripts/record.py -n N` |
+| R9 | Le `.json` compagnon est ouvert deux fois (`record_visualization` L79, L97) | Une seule fonction de lecture des métadonnées |
 
 ---
 
 ## 4. Code mort
 
-Il s'agit de code jamais importé ni appelé, vérifié avec `git grep` sur les `.py` et `.ipynb`.
+Tout le code mort est supprimé (Q1).
 
-| # | Élément | Décision |
-|---|---|---|
-| D1 | `MicroDopplerDetection/legacy/` (5 fichiers, 585 lignes) | Supprimé à l'étape 3, après l'ajout du spectrogramme hors ligne (F1) |
-| D2 | `accueil_pg.courbe_temps_reel` (L174-206) : sinusoïde de démonstration ; la variable `etat_ecran` (L85) ; les imports `numpy` et `matplotlib` qui ne servent qu'à elle | Supprimés |
-| D3 | Clés `"signal_iq_dec"` et `"detection"` produites par le générateur (`main` L402, L409), qu'aucun consommateur ne lit | `"detection"` est conservée (diagnostic : alerte de Fisher à α) ; `"signal_iq_dec"` est supprimée |
-| D4 | Champs `col_complex`, `v_mps` et `df_hz` de `ColumnOutput`, jamais lus | Conservés : ils sont peu coûteux et documentent la physique (Doppler → vitesse) |
-| D5 | `Decimator.reset()` (L186), `SpectrogramAutoencoder.classify()` (L357), `CalibrationDataset.class_weights` (L246) | Conservés : ce sont des API publiques cohérentes, couvertes par des tests |
-| D6 | Valeur de retour `ratio` de `_fisher_pvalue`, ignorée par l'appelant | Conservée (diagnostic) |
-| D7 | Les 11 fichiers de `.claude/.../deletion/` sont des **copies à l'octet près** de fichiers de `main` | Ignorés |
-
----
-
-## 5. Bugs et hypothèses physiques ou matérielles discutables
-
-Aucun de ces points n'est corrigé sans votre accord (Q3).
-
-**B1 — CRITIQUE, confirmé sur les données réelles : en mode `cw_offset`, le signal émis n'est pas à 500 Hz.**
-- `generate_tx_buffer` (`emission.py` L92-94) remplit le buffer cyclique avec 500 Hz × 16 384 / 2 MS/s = **4,096 périodes**. Il n'y a pas un nombre entier de périodes : à chaque répétition du buffer, la phase saute de 0,60 rad. Le spectre émis devient alors un **spectre de raies** à k·f_s/buffer_size = k·122,07 Hz.
-- Moyenne des colonnes de `AICalibration/data/train/1.npz` : **110,9 dB à 488,28 Hz**, 89,5 dB à 366 Hz, 91,7 dB à 610 Hz, et seulement **39,6 dB à 500 Hz**, soit le plancher de bruit.
-- Conséquences sur le matériel :
-  - le test de Fisher compare deux bandes qui ne contiennent que du bruit (500 ± 0,1-0,8 Hz contre 500 ± 2-5 Hz) ;
-  - la branche ACF démodule à 500 Hz au lieu de 488,28 Hz : la phase dérive en rampe à −11,72 Hz. Sur 6 enregistrements réels (labels 0 **et** 1), j'obtiens `acf_peak = 0,867` et `fv = 0,8 Hz` (le bord de bande), **à l'identique pour tous**.
-
-  Le score ACF est donc saturé à 1, le score fusionné vaut au moins 0,5 en permanence, et la décision ne dépend plus que d'un test de Fisher appliqué à du bruit.
-- Les 69 enregistrements du dataset ont été acquis avec ce défaut. L'autoencodeur voit le spectre complet (8192 points), raie à 488 Hz comprise.
-- Deux correctifs sont possibles :
-  - choisir `f_offset` multiple de 122,07 Hz (par exemple 488,28125 Hz) ;
-  - recaler automatiquement la fréquence et utiliser la valeur effective en réception (version de `.claude/`).
-
-**B2 — La simulation CW est plus optimiste que le matériel.**
-- `stream_simulation` place le fouillis statique à **0 Hz** (`acquisition.py` L179). Physiquement, en `cw_offset`, tout écho (fuite TX→RX, murs) est une copie du signal émis et se trouve donc à +`f_offset`.
-- En simulation, le passe-haut à 0,05 Hz élimine parfaitement ce fouillis ; sur le matériel, il ne le fait pas.
-- Par ailleurs, la simulation émet un ton parfait à 500 Hz et ne reproduit donc pas B1.
-
-**B3 — Hypothèse discutable : passe-haut avant l'extraction de phase.**
-- La branche ACF calcule `np.angle()` **après** le filtre clutter.
-- En mode `cw` pur, le passe-haut retire aussi la moyenne du terme utile, ce qui fausse l'angle ; `.claude/tests` contient un test de régression qui le démontre.
-- Sans importance pour le spectrogramme, qui n'utilise que le module, mais **bloquant pour la future démodulation de phase**. C'est l'un des motifs de Q4.
-
-**B4 — Le lanceur exécute le radar dans un thread** (`accueil_pg.py` L243-246).
-- matplotlib et Tk tournent alors hors du thread principal, ce qui peut geler ou planter la fenêtre.
-- `argparse` lit la ligne de commande du lanceur.
-- Correctif : lancer un sous-processus (version de `.claude/`). Cela supprime aussi la dépendance de `ui/` vers le pipeline.
-
-**B5 — La simulation n'est pas cadencée.**
-- `stream_simulation` produit les données aussi vite que le CPU le permet, alors que `record_acquisition` s'arrête sur le **temps mur**.
-- En simulation, un enregistrement « de 120 s » contient donc bien plus de 120 s de signal. `t_wall_s` ne correspond pas au temps du signal, et le `.iq`, tronqué à `durée × f_s_dec` (L364-366), ne correspond pas aux colonnes enregistrées.
-
-**B6 — Le déplacement des fichiers casse la relecture : à traiter à l'étape 2.**
-- Les 69 `.npz` stockent un `config_path` **absolu** (`/home/zhoul/IoT_radar/MicroDopplerDetection/configs/config.yaml`), et `record_visualization` quitte en erreur si ce fichier n'existe plus.
-- Correctif : se replier sur la configuration par défaut, avec un avertissement. Aucun effet numérique.
-
-**B7 — Hypothèse discutable sur le test F.** Les cases d'une FFT pondérée par une fenêtre de Hann sont corrélées, et les deux bandes latérales sont comptées. Les degrés de liberté `2·n` sont donc surestimés et les p-valeurs trop petites, ce qui favorise les fausses alarmes. Pas de correction prévue ici.
-
-**B8 — Documentation incohérente (corrigée à l'étape 5, commentaires seulement).**
-- `config.yaml` : « λ ≈ 12,5 cm à 2,4 GHz » alors que `f_c` vaut 3,5 GHz (λ = 8,57 cm).
-- « m = 4πD/λ ≈ 1,0 » : la valeur réelle est 1,47 à 3,5 GHz.
-- `skip_warmup` « ≈ 12 trames » : le calcul donne 24.
-- « hop = 820 » : la valeur réelle est 819.
-- Le README indique « f_c ≈ 2,4 GHz ».
-- La docstring de `detect_presence_column` parle de la « même fenêtre temporelle », alors que la phase couvre 20 s et la colonne 4,1 s.
-
-**B9 — À vérifier : débit de `uri: "ip:192.168.2.1"`.** Le lien Ethernet sur USB du Pluto est moins rapide que `usb:` ; à 2 MS/s, la marge est réduite. C'est à vérifier sur le matériel, je ne peux pas le mesurer ici.
+| Élément | Décision |
+|---|---|
+| `legacy/` (5 fichiers, 585 lignes) | Supprimé (étape 1) |
+| `accueil_pg.courbe_temps_reel` (L174-206), `etat_ecran` (L85), imports `numpy` et `matplotlib` du lanceur | Supprimés (étape 1) |
+| Clé `"signal_iq_dec"` produite par `main` (L402), que personne ne lit | Supprimée (étape 1) |
+| Champs `col_complex`, `v_mps`, `df_hz` de `ColumnOutput`, que personne ne lit | Supprimés (étape 1) |
+| `Decimator.reset()` (L186) | **Conservé et désormais utilisé** : réinitialisation du pipeline sur une discontinuité (§11.3) |
+| `SpectrogramAutoencoder.classify()`, `CalibrationDataset.class_weights` | Supprimés (étape 1) : jamais appelés ; `ml/` sera repensé |
+| Valeur `ratio` renvoyée par `_fisher_pvalue` | Disparaît avec Fisher × ACF (étape 6) |
 
 ---
 
-## 6. Section `.claude/`
+## 5. Bugs et hypothèses discutables
 
-### 6.1 Ce que c'est
-
-Une refonte complète, **non commitée**, faite par une session précédente :
-- remplacement de la détection par spectrogramme par une **démodulation de phase**, avec un nouveau détecteur et un nouveau dashboard (`VitalSigns/`) ;
-- ajout d'une **chaîne FMCW** (`FMCWDetection/`) ;
-- réécriture de la chaîne CW (temps lent à 20 Hz, STFT sur 256 points), du lanceur et d'AICalibration (entrée de 256 × 32) ;
-- ajout de tests ;
-- archivage des fichiers retirés dans `deletion/`.
-
-État vérifié :
-- **27 tests sur 27 passent** en simulation (108 s) ;
-- **jamais exécuté sur le matériel** : les journaux présents ne viennent que de la simulation ;
-- **aucun lien** avec le code de `main`.
-
-### 6.2 Inventaire
-
-Légende des catégories : **(a)** doublon d'une fonctionnalité existante ; **(b)** brique générique réutilisable ; **(c)** spécifique au FMCW et fonctionnel en simulation ; **(d)** à ne pas intégrer.
-« Testé » signifie couvert par `.claude/tests`, et « appelé » signifie utilisé par une chaîne de `.claude/`.
-
-#### FMCWDetection/
-
-| Fichier ou fonction | Rôle | Complet | Testé | Appelé | Cat. | Décision |
-|---|---|---|---|---|---|---|
-| `pipeline/emission.py` : `ChirpParams`, `chirp()` | Paramètres de la rampe (pente, ΔR = c/2B, conversion battement → distance) et chirp analytique à des instants arbitraires | oui | oui | oui | **(b)** | → `dsp/fmcw.py`. C'est des maths pures ; `dsp` en a besoin pour la référence de dechirping. |
-| `pipeline/emission.py` : `generate_tx_buffer` | Buffer TX d'un nombre entier de chirps, ×2¹⁴ | oui | indirect | oui | **(c)** | → `acquisition/pluto.py` |
-| `pipeline/acquisition.py` : `stream_simulation` | Simulation physique : retards exacts, fuite, réflecteurs statiques, DC du récepteur, graine, cadence temps réel | oui | oui | oui | **(c)** | → `acquisition/sources.py` (`FMCWSimulationSource`) |
-| `pipeline/acquisition.py` : `stream_hardware` | Pluto en rafales, horodatées | oui | **non** (pas de matériel) | oui | **(c)** | → `PlutoSource`, commune au CW et au FMCW (`buffer_size` = (chirps + 1)·N) |
-| `pipeline/dechirp.py` | `estimate_offset` (alignement sous-échantillon par corrélation circulaire suréchantillonnée), `dechirp`, `lowpass_decimate` (FIR polyphase) | oui | oui (précision < 0,02 échantillon) | oui | **(c)** | → `dsp/fmcw.py` |
-| `pipeline/range_processing.py` | `RangeProcessor` (fenêtre, FFT en distance, moyenne cohérente des chirps), `resample_uniform`, `select_range_bin` (variance maximale en temps lent) | oui | oui | oui | **(b)** pour la FFT en distance, **(c)** pour le reste | → `dsp/fmcw.py` |
-| `pipeline/chain.py` : `FMCWChain` | Orchestration : profil, historique horodaté, grille à 20 Hz, choix de la case, puis `VitalSignsProcessor` | oui | oui | oui | **(c)** | → `pipeline.py`, **jusqu'à la sélection de la case** ; la suite dépend de Q2 |
-| `main.py` | CLI FMCW | oui | non | — | **(c)** | → `scripts/run_fmcw.py` |
-| `configs/config.yaml` et `config_wideband_sim.yaml` | Pluto (B = 18 MHz) et démonstration large bande (24 GHz, B = 1 GHz, simulation seulement) | oui | oui | — | **(c)** | → `configs/fmcw.yaml` et `configs/fmcw_wideband_sim.yaml` (section `vital_signs` selon Q2) |
-| `logs/*.log`, `README.md` | Journal d'une exécution simulée ; documentation | — | — | — | **(d)** | Le contenu du README est réutilisé à l'étape 5 |
-
-#### VitalSigns/
-
-| Fichier | Rôle | Complet | Testé | Appelé | Cat. | Décision |
-|---|---|---|---|---|---|---|
-| `constants.py` | c, k, T0, `wavelength()` ; bandes physiologiques | oui | indirect | oui | **(a)** pour les constantes (doublon de R6), **(d)** pour les bandes, inutilisées par `main` | Constantes → `physics.py` |
-| `paths.py` | `REPO_ROOT`, racine des données | oui | non | oui | **(a)**, doublon exact de `repo_paths.py` | Fusionné dans `config.py` |
-| `runtime.py` | `load_config` (vérifie qu'on obtient bien un dictionnaire) et `setup_logging` (dossier, préfixe ; réduit matplotlib et PIL au niveau WARNING) | oui | non | oui | **(a)**, meilleur que les 4 versions de R3 et R4 | **Base** de `config.py` |
-| `link_budget.py` | Équation radar | oui | non | oui | **(a)** : même formule que `main` L97-134, résultats identiques | Structure en module reprise dans `physics.py` ; clés YAML de `main` conservées (`optimiste`/`pessimiste`) |
-| `pluto.py` | `open_pluto` et `stream_pluto` séparés, `rf_bandwidth`, désactivation du suivi DC, horodatage, `check_saturation` | oui | **non** (matériel) | oui | **(a)**, mieux découpé que `main` | Découpage repris dans `acquisition/pluto.py`. `disable_dc_tracking` est **désactivé par défaut**, pour ne rien changer sur le matériel sans accord. |
-| `filters.py` : `StreamingDecimator` | Même algorithme que `Decimator`, mais en SOS et avec les grands facteurs d'abord | oui | oui | oui | **(a)** | **Non repris.** Résultats différents, et l'argument de stabilité ne tient pas : pour D = 1000, l'écart entre les réponses en forme (b, a) et en SOS est inférieur à 5·10⁻¹¹ et le module des pôles reste ≤ 0,966. `Decimator` est conservé. |
-| `filters.py` : `bandpass`, `widened_band`, `detrend` | Filtrage par fenêtre à phase nulle | oui | indirect | oui | **(b)**, mais lié à la phase | Reporté à l'évolution « phase » (Q2) |
-| `phase.py` | Ajustement de cercle (Kåsa puis Gauss-Newton), arctangente, DACM, démodulation linéaire, rotation commune, phase → déplacement | oui | oui (6 tests) | oui | **(b)** | **Reporté (Q2)**. Place prévue : `dsp/phase.py` |
-| `estimation.py` | Périodogramme, pic FFT, ACF, comptage de pics, passages par zéro, cycles respiratoires | oui | oui | oui | **(b)** | Reporté (Q2) → `dsp/` |
-| `detection.py` | Nouveau détecteur (SNR, concentration, mouvement ; hystérésis, apnée) | oui | oui | oui | **(a)**, remplace le Fisher × ACF de `main` | Non intégré : il **change les résultats** et relève de l'évolution « phase » |
-| `processor.py` | `VitalSignsProcessor` | oui | oui | oui | **(b)** | Reporté (Q2) |
-| `simulation.py` : `target_scene` | Scène simulée : respiration, battements cardiaques, présence, chronologie (vide, mouvement, apnée) | oui | indirect | oui | **(b)** | Partie respiration, cœur et présence → `acquisition/sources.py` pour la simulation FMCW ; la chronologie est reportée |
-| `display.py` : `VitalSignsDashboard` | Dashboard en 9 panneaux | oui | non | oui | **(a)**, doublon de `DashboardRadar` | Repris dans `ui/dashboard.py` : panneau **waterfall** (Doppler-temps ou distance-temps, avec marqueur), **tableau de paramètres** (`_table`, `_fmt`) et file de trames dépilée par minuterie, sans perte de trame. Panneaux propres à la phase (constellation IQ, forme d'onde, confiance, rythme) reportés. |
-
-#### Fichiers modifiés de MicroDopplerDetection/ (dans le worktree)
-
-| Fichier | Cat. | Décision |
+| # | Description | Traitement |
 |---|---|---|
-| `pipeline/emission.py` (`snap_offset`) | **(a)**, meilleur | C'est le correctif de **B1**, à appliquer seulement après accord (Q3) |
-| `pipeline/acquisition.py` (simulation physique : fouillis à la fréquence TX, DC du récepteur, dérive LO, `seed`, `realtime`) | **(a)**, meilleur | Corrige **B2** et **B5** après accord. Le paramètre `seed` est repris tout de suite, avec la valeur `None` par défaut pour ne rien changer. |
-| `pipeline/demodulation.py`, `pipeline/spectrogram.py` | **(d)** pour l'instant | Nouvelle architecture : temps lent à 20 Hz, STFT de 256 points ; change le format d'entrée de l'IA |
-| `pipeline/chain.py` (`CWChain`) | **(a)** | Pas repris tel quel. L'idée de `frames_from_slow_time(blocks)`, où le pipeline consomme n'importe quel itérable, inspire l'interface `Source`. |
-| `utils/record_*.py`, `utils/auto_record.py`, `configs/config.yaml`, `main.py` | **(a)** | Non repris (liés à la nouvelle chaîne). Idées reprises : relecture cadencée (`_paced`) et retraitement du `.iq`. |
-
-#### Autres fichiers du worktree
-
-| Fichier | Cat. | Décision |
-|---|---|---|
-| `accueil_pg.py` (classe, sous-processus, boutons CW et FMCW) | **(a)**, meilleur | Base de `ui/launcher.py`. Le passage au sous-processus corrige **B4** (Q3). |
-| `AICalibration/*` (traduction anglaise, modèle 256 × 32, suppression de `best.pt`) | **(d)** | Je refais la traduction moi-même. 256 × 32 est lié au nouveau spectrogramme. Je ne touche pas à `results/`. |
-| `tests/test_chains.py` | **(c)** pour les tests FMCW, **(d)** pour les tests CW (nouvelle chaîne) | Le test de dechirping (offset et battement → distance) est repris |
-| `tests/test_vitalsigns.py` | **(d)** pour l'instant | Repris avec VitalSigns |
-| `deletion/`, `.gitignore`, `requirements.txt` | **(d)** | Copies identiques ou modifications triviales |
-
-### 6.3 Hypothèses physiques et matérielles discutables (FMCW)
-
-- **Débit USB.** f_s = 20 MS/s en I/Q sur 16 bits représente 80 Mo/s, bien au-delà de l'USB 2.0 (≈ 35-40 Mo/s utiles). En pratique, le Pluto ne tient en continu que quelques MS/s, et moins encore en `ip:`. Le code l'assume : acquisition en **rafales** avec pertes entre les buffers (contigus individuellement), horodatage côté hôte et rééchantillonnage du temps lent. Tout cela n'a **jamais été validé sur le matériel**.
-- **Bande du chirp.** B = 18 MHz atteint presque la limite analogique de l'AD9363 (20 MHz). Les extrémités du chirp tombent dans la transition du filtre analogique, ce qui provoque une atténuation et une distorsion de phase, donc des lobes secondaires en distance.
-- **Résolution en distance de 8,3 m** : pour localiser une victime à quelques mètres, c'est inutilisable. Mesure avec le code de `.claude/` :
-  - le lobe principal de la fuite TX→RX (amplitude 30, à 0,3 m) n'est qu'à −2 dB à 5 m, −10 dB à 10 m et −24 dB à 15 m ;
-  - une cible **statique** à 15 m ou à 25 m est masquée : le maximum est trouvé à 5,2 m ;
-  - la porte `range_gate_m: [5, 40]` commence **dans** le lobe principal de la fuite ;
-  - la sélection de la case ne fonctionne qu'avec le critère de variance en temps lent (cible qui respire, fuite immobile). Sur le matériel, la gigue d'alignement d'un buffer à l'autre rendra la fuite non stationnaire, et la case de fuite risque d'être choisie.
-- **Suivi du DC.** Il est désactivé via les attributs IIO `bb_dc_offset_tracking_en` et `rf_dc_offset_tracking_en`, dont le nom dépend du firmware. Non testé : le code se contente d'un avertissement en cas d'échec.
-- **Configuration `config_wideband_sim`** (1,2 GS/s, 24 GHz) : purement théorique, impossible sur un Pluto. Elle est présentée comme telle, ce qui est correct.
-- **Horodatage côté hôte.** L'heure enregistrée est celle du retour de `rx()`, pas celle de l'acquisition (latence d'environ 4 buffers noyau). La gigue est de l'ordre de la milliseconde, acceptable pour un temps lent à 20 Hz.
+| **B1** | **Critique, confirmé sur les 69 enregistrements réels.** En `cw_offset`, le buffer TX cyclique contient 4,096 périodes (500 Hz × 16 384 / 2 MS/s). La phase saute de 0,60 rad à chaque répétition, ce qui produit un spectre de raies à k·122,07 Hz : **110,9 dB à 488,28 Hz** contre 39,6 dB à 500 Hz. Le test de Fisher compare deux bandes qui ne contiennent que du bruit ; l'ACF démodule à 500 Hz, la phase dérive à −11,72 Hz, et `acf_peak` vaut 0,867 avec fv = 0,8 Hz pour **tous** les enregistrements testés, labels 0 et 1 confondus. | **Étape 2.** Le décalage est recalé sur un nombre entier de périodes par buffer ; la valeur **effective** est utilisée partout (TX, simulation, réception). `cw_tx_buffer` refuse un décalage non entier. |
+| **B2** | Simulation trop optimiste : le fouillis statique est à 0 Hz (`acquisition.py` L179) au lieu de +f_offset, et il n'y a ni DC du récepteur, ni dérive du LO, ni quantification. | **Étape 2.** Simulation physique du worktree, avec en plus la quantification du CAN (§11.4). Références régénérées. |
+| **B3** | `np.angle()` est calculé après le passe-haut clutter, ce qui fausse la phase. | **Étape 5, par conception.** La chaîne de phase n'applique aucun passe-haut avant l'extraction de phase (ajustement de cercle). Corriger la branche ACF de la chaîne micro-Doppler modifierait ses références, alors qu'elle est retirée à l'étape 6 ; il n'y aura donc pas de commit séparé, mais le message du commit du pipeline de phase citera B3. |
+| **B4** | Le lanceur exécute `main()` dans un thread : Tk tourne hors du thread principal et `argparse` lit la ligne de commande du lanceur. | **Étape 2.** Lancement dans un sous-processus. |
+| **B5** | La simulation n'est pas cadencée, alors que l'enregistrement s'arrête sur le temps mur : la durée enregistrée est fausse. | **Étape 2.** Option `realtime` de la simulation. Les valeurs simulées ne changent pas ; les références ne sont régénérées que si un test l'exige. |
+| **B6** | Les `.npz` stockent un `config_path` absolu ; la relecture plante dès que le YAML est déplacé. | **Étape 1.** Repli sur la configuration par défaut (non numérique). Avec HDF5, la configuration complète est **stockée dans la session** (attribut `config_yaml`). |
+| B7 | Test F : les cases de Hann sont corrélées, donc les p-valeurs sont trop petites. | Disparaît avec Fisher × ACF (étape 6) |
+| B8 | Documentation incohérente (λ à 2,4 GHz, `skip_warmup` ≈ 12 au lieu de 24, `hop` 820 au lieu de 819…) | Étape 8 (commentaires seulement) |
+| B9 | Débit de `ip:` (Ethernet sur USB) à 2 MS/s | À vérifier sur le matériel |
 
 ---
 
-## 7. Structure cible
+## 6. `.claude/` : inventaire et décisions
+
+Légende des catégories : **(a)** doublon d'une fonctionnalité existante, **(b)** brique générique, **(c)** spécifique au FMCW, **(d)** à ne pas intégrer.
+État de `.claude/` : 27 tests sur 27 passent en simulation ; aucune exécution sur le matériel.
+
+| Élément de `.claude/` | Cat. | Décision | Destination |
+|---|---|---|---|
+| `VitalSigns/phase.py` (ajustement de cercle Kåsa + Gauss-Newton, arctangente, DACM, démodulation linéaire, rotation commune, phase → déplacement) et ses 6 tests | (b) | **Intégré** (étape 5) | `dsp/phase.py` |
+| `VitalSigns/estimation.py` (périodogramme, pic FFT, ACF, comptage de pics, passages par zéro, cycles respiratoires) et ses tests | (b) | **Intégré** | `dsp/estimation.py` |
+| `VitalSigns/filters.py` : `bandpass`, `widened_band`, `detrend` | (b) | **Intégré** | `dsp/filters.py` |
+| `VitalSigns/filters.py` : `StreamingDecimator` | (a) | **Écarté.** `Decimator` est conservé : pour D = 1000 ou 100 000, l'écart entre les formes (b, a) et SOS est inférieur à 5·10⁻¹¹ et le module des pôles reste ≤ 0,966. | — |
+| `VitalSigns/detection.py` (SNR, concentration, mouvement ; lissage, hystérésis, apnée) et ses tests | (a) | **Intégré** : **remplace Fisher × ACF**, avec coexistence pendant les étapes 5 et 6 | `dsp/detection.py` |
+| `VitalSigns/processor.py` (`VitalSignsProcessor`) et ses tests | (b) | **Base de `pipeline.py`** | `pipeline.py` |
+| `VitalSigns/simulation.py` : `target_scene`, chronologie comprise (vide, mouvement, apnée) | (b) | **Intégré** dans la source de simulation CW (étape 5) | `acquisition/sources.py` |
+| Simulation physique du worktree (`MicroDopplerDetection/pipeline/acquisition.py` : fouillis à la fréquence TX, DC du récepteur, dérive du LO, `seed`, `realtime`) | (a) | **Intégrée** comme correctif de B2 et B5 (étape 2) | `acquisition/sources.py` |
+| `MicroDopplerDetection/pipeline/emission.py` du worktree (`snap_offset`) | (a) | **Intégré** comme correctif de B1 (étape 2) | `acquisition/pluto.py` |
+| `MicroDopplerDetection/pipeline/demodulation.py` (`CWDownConverter` = NCO + `StreamingDecimator`) | (a)/(b) | **Réévalué.** L'oscillateur numérique (NCO) est **indispensable** en `cw_offset` : il ramène l'écho de +f_offset à 0 Hz *avant* le filtre passe-bas vers 20 Hz, sinon ce filtre le supprimerait. Le récepteur DC part alors à −f_offset et la décimation le rejette. On reprend le NCO, avec sa phase continue modulo 2π. On ne reprend pas `StreamingDecimator` : la composition NCO + `Decimator` se fait dans le pipeline. | `dsp/mixer.py` (`Mixer`) |
+| `MicroDopplerDetection/pipeline/spectrogram.py` (`MicroDopplerSTFT` en temps lent, 256 points, moyenne retirée) | (a)/(b) | **Réévalué.** On garde l'**idée** d'un waterfall micro-Doppler de l'IQ en temps lent (segment de 3,2 s, moyenne retirée pour supprimer la raie de fouillis statique, affichage ±3 Hz), mais calculé avec `dsp/spectral.py` (`compute_single_column`) pour éviter un doublon. Son rôle d'entrée pour l'IA n'est pas repris, car `ml/` sera repensé sur le signal de phase. | `pipeline.py`, via `dsp/spectral.py` |
+| `VitalSigns/display.py` (`VitalSignsDashboard`) | (a) | **Intégré** (étape 7), **sans** le panneau distance-temps. Il consomme les dataclasses produites par le pipeline. | `ui/dashboard.py` |
+| `accueil_pg.py` du worktree (classe, sous-processus) | (a) | Base du correctif B4 (étape 2) et du lanceur (étape 7), **sans bouton FMCW** | `ui/launcher.py` |
+| `VitalSigns/runtime.py`, `paths.py`, `constants.py`, `link_budget.py` | (a) | Versions de référence pour `config.py` et `physics.py` (étape 1) | `config.py`, `physics.py` |
+| `VitalSigns/pluto.py` | (a) | Seul le découpage ouverture / flux est repris. La désactivation du suivi DC n'est **pas** reprise (comportement matériel inchangé ; à envisager pour le mode `cw` pur). | `acquisition/pluto.py` |
+| `FMCWDetection/*`, `configs/*fmcw*`, `tests/test_chains.py::TestFMCW` | (c) | **Non intégré** (Q2) ; conclusions au §7 | reste dans `.claude/` |
+| `MicroDopplerDetection/{main,chain,utils/*,configs}.py` du worktree | (a) | Non repris : remplacés par `pipeline.py`, `scripts/`, `configs/` | — |
+| `AICalibration/*` du worktree (modèle 256 × 32) | (d) | Non repris (`ml/` n'est pas redessiné) | — |
+| `deletion/`, journaux, `README` | (d) | Non repris (copies identiques ou documentation, reprise à l'étape 8) | — |
+
+---
+
+## 7. FMCW: findings
+
+Conclusions de l'analyse du code FMCW de `.claude/`, gardées pour une future reprise. Ce code reste dans `.claude/` et n'est pas intégré.
+
+1. **Débit USB.** Le dechirping est numérique, faute de mélangeur analogique : il faut donc échantillonner le chirp brut à f_s > B. À 20 MS/s, l'I/Q sur 16 bits représente **80 Mo/s**, bien au-delà de l'USB 2.0 (≈ 35-40 Mo/s utiles). En pratique, le Pluto ne tient en continu que quelques MS/s, et moins encore via `ip:`.
+   - Conséquence : acquisition par **rafales**, avec pertes entre les buffers (chaque buffer reste contigu).
+   - Le code de `.claude/` réaligne chaque buffer sur le train de chirps, l'horodate avec l'horloge de l'hôte et rééchantillonne le temps lent sur une grille de 20 Hz. **Rien de cela n'a été validé sur le matériel.**
+   - L'horodatage côté hôte est pris au retour de `rx()`, pas au moment de l'acquisition (latence de quelques buffers noyau) : la gigue est de l'ordre de la milliseconde, acceptable à 20 Hz.
+2. **Bande du chirp.** B = 18 MHz frôle la bande analogique de l'AD9363 (20 MHz) : les extrémités du chirp tombent dans la transition du filtre analogique (atténuation, distorsion de phase), ce qui crée des lobes secondaires en distance. La configuration « large bande » (B = 1 GHz, f_s = 1,2 GS/s, 24 GHz) est purement théorique et impossible sur un Pluto.
+3. **Résolution en distance de 8,3 m** (ΔR = c/2B pour B = 18 MHz) : inutilisable pour localiser une victime à quelques mètres. Elle permet au mieux de séparer la fuite TX→RX d'une cible située à plus de 15-20 m.
+4. **Masquage par la fuite TX→RX.** Mesure faite avec le code de `.claude/` (fuite d'amplitude 30 à 0,3 m, fenêtre de Hann, FFT sur 512 points) :
+   - le profil de la fuite n'est qu'à −2,2 dB à 5 m, −6 dB à 8,3 m, −9,9 dB à 10 m, −24 dB à 15 m, −31,5 dB à 20 m et −43,5 dB à 30 m de son maximum ;
+   - une cible **statique** d'amplitude 1 à 15 m ou à 25 m est **masquée** : le maximum dans la porte en distance est trouvé à 5,2 m ;
+   - la porte `range_gate_m: [5, 40]` commence **dans** le lobe principal de la fuite ;
+   - la case de la cible n'est trouvée que grâce au critère de **variance en temps lent** (cible qui respire, fuite immobile). Sur le matériel, la gigue d'alignement d'un buffer à l'autre rendra la fuite non stationnaire, et la case de fuite risque d'être choisie.
+5. **Suivi du DC du récepteur.** Il est désactivé via les attributs IIO `bb_dc_offset_tracking_en` et `rf_dc_offset_tracking_en`, dont le nom dépend du firmware. Non testé.
+6. **Pistes pour la suite** : réduire la fuite (antennes TX et RX séparées, ou isolation) ; faire une calibration de fond (soustraire un profil de référence avant la sélection de la case) ; ou opter pour du CW multi-tons (quelques tons, compatible avec le débit USB) pour estimer la distance par différence de phase entre les tons.
+
+---
+
+## 8. Architecture cible
+
+### 8.1 Arborescence (état final, après l'étape 8)
 
 ```
 IoT_radar/
 ├── iot_radar/
 │   ├── __init__.py
-│   ├── config.py          REPO_ROOT, default paths, load_config(), setup_logging()
-│   ├── physics.py         c, k, T0, wavelength(), radar range equation (link budget)
+│   ├── config.py           REPO_ROOT, default paths, load_config(), setup_logging()
+│   ├── physics.py          speed of light, Boltzmann, T0, wavelength_m(), radar range equation
 │   ├── acquisition/
-│   │   ├── pluto.py       open/configure Pluto, cyclic TX + RX blocks, saturation check,
-│   │   │                  TX waveforms: CW / CW-offset buffer (+ FMCW chirp buffer, step 4)
-│   │   ├── sources.py     Source protocol; PlutoSource, CWSimulationSource, ReplaySource
-│   │   │                  (+ FMCWSimulationSource, step 4)
-│   │   └── recording.py   .npz/.json/.iq/.wav writers, next index, metadata reader
+│   │   ├── pluto.py        Pluto configuration, cyclic TX, RX blocks, overflow and saturation checks,
+│   │   │                   CW / CW-offset TX buffer, snap_tx_offset_hz() (B1)
+│   │   ├── sources.py      Block, Source protocol, PlutoSource, CWSimulationSource (physical model,
+│   │   │                   scene timeline, ADC quantization), ReplaySource (HDF5), open_source()
+│   │   └── recording.py    HDF5 session writer and reader (schema v1), labels, session naming
 │   ├── dsp/
-│   │   ├── decimation.py  Decimator
-│   │   ├── clutter.py     ClutterFilter
-│   │   ├── spectral.py    windows, one STFT column, offline spectrogram, frequency axis
-│   │   ├── detection.py   Fisher F-test, phase ACF, score fusion
-│   │   └── fmcw.py        (step 4) chirp model, dechirp, range FFT, range-bin selection
-│   ├── pipeline.py        CW micro-Doppler pipeline (+ FMCW pipeline, step 4) and dashboard context
+│   │   ├── mixer.py        Mixer: phase-continuous NCO frequency shift
+│   │   ├── decimation.py   Decimator (Chebyshev cascade, stateful, reset())
+│   │   ├── filters.py      bandpass(), widened_band(), detrend()
+│   │   ├── phase.py        circle fit, arctangent, DACM, linear demodulation, LO-drift derotation,
+│   │   │                   phase → displacement
+│   │   ├── estimation.py   periodogram, rate estimators, breath-by-breath cycles
+│   │   ├── detection.py    breathing metrics, BreathingDetector (smoothing, hysteresis, motion, apnea)
+│   │   └── spectral.py     windows, STFT column, offline spectrogram, frequency axis (visualization)
+│   ├── pipeline.py         VitalSignsPipeline: Block → mixer → decimator → slow-time ring →
+│   │                       window analysis → detector → PipelineOutput (dataclasses)
 │   ├── ml/
-│   │   ├── dataset.py
-│   │   ├── model.py
-│   │   └── train.py       training loop (library); CLI in scripts/train.py
+│   │   ├── dataset.py      CalibrationDataset (legacy .npz spectrograms)
+│   │   ├── model.py        SpectrogramAutoencoder
+│   │   └── train.py        training loop (library)
 │   └── ui/
-│       ├── dashboard.py   one dashboard for live and replay (+ waterfall panel)
-│       └── launcher.py    pygame home screen (launches scripts in subprocesses)
-├── scripts/               run_radar.py, record.py, replay.py, train.py, launcher.py (+ run_fmcw.py)
-├── configs/               radar.yaml, training.yaml (+ fmcw.yaml, fmcw_wideband_sim.yaml)
-├── notebooks/             inference.ipynb
-├── tests/                 pytest (+ tests/data/: small golden reference arrays)
-├── logs/                  run logs (git-ignored, .gitkeep)
-├── AICalibration/         data/ and results/ only — unchanged, not touched
-├── pyproject.toml
-├── requirements.txt       pinned versions + "-e ."
-└── README.md
+│       ├── dashboard.py    phase dashboard (consumes PipelineOutput, no pipeline import at run time)
+│       └── launcher.py     pygame home screen (runs scripts in subprocesses)
+├── scripts/                run_radar.py, record.py, replay.py, convert_legacy_iq.py, train.py, launcher.py
+├── configs/                radar.yaml, training.yaml
+├── notebooks/              inference.ipynb
+├── tests/                  pytest, tests/data/ (small golden arrays)
+├── data/sessions/          HDF5 sessions (git-ignored)
+├── logs/                   run logs (git-ignored)
+├── AICalibration/          data/ and results/ only — unchanged
+├── pyproject.toml, requirements.txt
+├── README.md, README.fr.md
+└── REFACTOR_PLAN.md
 ```
 
-**Règles de dépendance**, qui seront vérifiées par un test analysant les imports :
+`dsp/` compte 8 modules. Il n'y aura qu'un pipeline (le CW de phase), donc un seul module `pipeline.py`.
 
-```
-scripts ──► pipeline ──► acquisition ──► dsp ──► physics
-   │           │                           ▲
-   │           └──────────────────────────┘
-   ├──► ui        (ui n'importe ni acquisition, ni pipeline, ni ml)
-   ├──► ml        (ml n'importe ni acquisition, ni dsp)
-   └──► config    (importable partout ; n'importe rien du paquet)
-dsp n'importe ni acquisition, ni ui, ni ml.
-```
+### 8.2 Règles de dépendance
 
-**Écarts à votre proposition, et pourquoi :**
-1. **`physics.py`** est ajouté : il évite 5 copies de `c` (R6) et donne un module propre à l'équation radar, au lieu de l'enfouir dans `pipeline.py`. `dsp/spectral.py` en a besoin pour convertir Doppler → vitesse, ce qui exclut de le placer dans `acquisition/`.
-2. **Le modèle mathématique du chirp va dans `dsp/fmcw.py`** et non dans `acquisition/pluto.py` : le dechirping a besoin du chirp de référence, et `dsp` ne doit pas importer `acquisition`. `pluto.py` ne fait que mettre à l'échelle du CNA et émettre.
-3. **`configs/`, `notebooks/` et `logs/`** sont à la racine : ce sont des fichiers de données ou de sortie, pas du code du paquet.
-4. **`AICalibration/`** ne garde que `data/` et `results/` pour ne pas toucher aux données ; le chemin est configurable dans `training.yaml`.
-5. **`ui/`** ne compte que 2 fichiers. C'est votre proposition ; l'autre option serait d'aplatir en `iot_radar/dashboard.py` et `iot_radar/launcher.py`.
-6. **`pipeline.py`** contiendra 2 pipelines (CW et FMCW). Selon votre règle, cela ne justifie pas encore un dossier `pipelines/`.
-7. **Pas de `[project.scripts]`.** Les commandes sont des fichiers `scripts/*.py` explicites, faciles à lire et à lancer.
+Elles sont vérifiées par un test qui analyse les imports exécutés, y compris transitivement (les imports sous `if TYPE_CHECKING:` sont ignorés).
 
-**Place prévue pour les évolutions futures, sans remettre la structure en cause :**
-- démodulation de phase : `dsp/phase.py` et `dsp/vital_signs.py`, avec un back-end « phase » dans `pipeline.py` ;
-- deux voies de réception : `read_block()` renverra `(n_voies, n)` ;
-- CW multi-tons : `acquisition/pluto.py` (forme d'onde) et `dsp/` (séparation des tons) ;
-- FMCW : déjà prévu.
+| Module | N'importe pas |
+|---|---|
+| `dsp/` | `acquisition`, `ui`, `ml`, `pipeline` |
+| `pipeline.py` | `ui`, `ml`. Il n'utilise `acquisition` que pour les annotations de type : les blocs sont lus par attributs. |
+| `ui/` | `acquisition` (ni directement, ni transitivement), `ml` |
+| `ml/` | `acquisition`, `dsp` |
+| `config.py`, `physics.py` | rien du paquet |
+
+C'est `scripts/` qui assemble `acquisition` → `pipeline` → `ui`. **Le pipeline ne connaît pas l'interface** : il renvoie des dataclasses (§11.2), que `ui/dashboard.py` lit.
+
+### 8.3 Écarts à votre proposition initiale
+
+1. `physics.py` est ajouté : constantes et équation radar, qui existaient en 5 copies.
+2. `dsp/` gagne `mixer.py`, `filters.py`, `phase.py` et `estimation.py` (chaîne de phase), et perd `clutter.py` à l'étape 6.
+3. `configs/`, `notebooks/`, `logs/` et `data/` sont à la racine.
+4. `AICalibration/` ne garde que `data/` et `results/`, qui ne sont pas touchés.
+5. `ui/` garde 2 fichiers, comme dans votre proposition.
 
 ---
 
-## 8. Destination de chaque fichier
+## 9. Destination de chaque fichier
 
-| Actuel | Nouveau |
-|---|---|
-| `MicroDopplerDetection/main.py` | Découpé ainsi : `_load_config` et `_setup_logging` → `config.py` ; `_radar_range`, `_compute_range` et les constantes → `physics.py` ; `_resolve_f_offset`, `_auto_skip_warmup`, `_streaming_frame_generator` et `_build_context` → `pipeline.py` ; `_build_iq_stream` → `acquisition/sources.py` (`open_source`) ; `_parse_args` et `main` → `scripts/run_radar.py` |
-| `pipeline/emission.py` | `acquisition/pluto.py` (`cw_tx_buffer`) |
-| `pipeline/acquisition.py` | `stream_pluto` et `_check_saturation` → `acquisition/pluto.py` ; `stream_simulation` → `acquisition/sources.py` |
-| `pipeline/decimation.py` | `dsp/decimation.py` |
-| `pipeline/clutter.py` | `dsp/clutter.py` |
-| `pipeline/windowing.py` et `pipeline/spectrogramme.py` | `dsp/spectral.py` |
-| `pipeline/detection.py` | `dsp/detection.py` |
-| `utils/display.py` | `ui/dashboard.py` |
-| `utils/record_acquisition.py` et `utils/auto_record.py` | Fonctions d'écriture → `acquisition/recording.py` ; CLI → `scripts/record.py` |
-| `utils/record_visualization.py` | Lecture des métadonnées → `acquisition/recording.py` ; CLI → `scripts/replay.py` |
-| `utils/repo_paths.py` | `config.py` |
-| `legacy/*` | Supprimé (D1) |
-| `MicroDopplerDetection/configs/config.yaml` | `configs/radar.yaml` |
-| `MicroDopplerDetection/README.md` | `iot_radar/README.md` (chaîne de traitement et physique) |
-| `MicroDopplerDetection/logs/.gitkeep` | `logs/.gitkeep` |
-| `AICalibration/dataset.py`, `model.py` | `iot_radar/ml/dataset.py`, `iot_radar/ml/model.py` (le test de fumée devient un test pytest) |
-| `AICalibration/train.py` | Boucle d'entraînement → `iot_radar/ml/train.py` ; CLI → `scripts/train.py` |
-| `AICalibration/config.yaml` | `configs/training.yaml` (les chemins restent relatifs à la racine du dépôt) |
-| `AICalibration/inference.ipynb` | `notebooks/inference.ipynb` (imports `iot_radar.ml.*`, plus de `sys.path`) |
-| `AICalibration/README.md` | `iot_radar/ml/README.md` |
-| `AICalibration/data/`, `AICalibration/results/` | **Inchangés** |
-| `accueil_pg.py` | `iot_radar/ui/launcher.py` et `scripts/launcher.py` |
-| `README.md`, `requirements.txt`, `.gitignore` | Mis à jour ; ajout de `pyproject.toml` |
-
-**Correspondance des commandes :**
-
-| Avant | Après (après `pip install -e .`, depuis la racine) |
-|---|---|
-| `export PYTHONPATH=$(pwd)`, puis `python -m MicroDopplerDetection.main --simulation` | `python scripts/run_radar.py --simulation` (options `--config` et `--log-file` inchangées) |
-| `python utils/record_acquisition.py --subset train --env salle --label 1 --duration 120` | `python scripts/record.py --subset train --env salle --label 1 --duration 120` |
-| `python utils/auto_record.py --subset train -n 10 --interval 30 …` | `python scripts/record.py --subset train -n 10 --interval 30 …` |
-| `python utils/record_visualization.py --subset train --index 5` | `python scripts/replay.py --subset train --index 5` |
-| `python AICalibration/train.py --epochs 100` | `python scripts/train.py --epochs 100` |
-| `python AICalibration/model.py` (test de fumée) | `pytest tests/test_ml.py` |
-| `python accueil_pg.py` | `python scripts/launcher.py` |
-
----
-
-## 9. Fusions prévues (étape 3)
-
-Chaque fusion fait l'objet d'un commit séparé, testé. Les fusions écartées figurent à la fin de la section.
-
-| # | Ce qui est fusionné | Pourquoi la version fusionnée est plus simple |
+| Actuel | Nouveau | Étape |
 |---|---|---|
-| F1 | Ajout de `spectral.compute_spectrogram(iq, …)`, un spectrogramme hors ligne qui découpe le signal comme la boucle streaming ; puis suppression de `legacy/` | Une seule définition du spectrogramme. Un tableau entier se traite en un seul bloc ; un test vérifie que le résultat est identique au flux. |
-| F2 | `main._load_config` et `train._load_yaml` → `config.load_config` | Une seule fonction, qui vérifie aussi que le YAML est bien un dictionnaire ; message d'erreur conservé |
-| F3 | Les 4 configurations du logging → `config.setup_logging(level, log_file, console_level, file_mode)` | Un seul format. L'entraînement garde une console silencieuse (WARNING) et un fichier `train.log` en ajout. |
-| F4 | `repo_paths`, les 7 manipulations de `sys.path`, `_ensure_paths` (×3) et `_load_main_module` (×2) → `pip install -e .` et `config.REPO_ROOT` | Supprime environ 80 lignes de code fragile et les accès aux fonctions privées de `main.py` |
-| F5 | `_build_iq_stream` et les deux générateurs (Pluto, simulation) → interface `Source` (§10) ; `pipeline.frames(source)` | Le pipeline ignore d'où viennent les données |
-| F6 | Modes temps réel et relecture de `DashboardRadar` → une seule méthode `run(frames, frame_interval_s=None)`, un titre public, un seul constructeur de l'encadré d'informations | Supprime la `FuncAnimation` en double et l'accès à `_fig` |
-| F7 | `record_acquisition` et `auto_record` → `scripts/record.py` (`-n`, 1 par défaut ; `--interval` ; `--index` refusé si n > 1) | Une seule commande |
-| F8 | Lecture du `.json` compagnon (R9) → `recording.load_recording_metadata()` | Le fichier n'est plus ouvert deux fois |
-| F9 | `_SPEED_OF_LIGHT` (×5), les constantes du CAN (×2) et l'équation radar → `physics.py` et `pluto.py` | Une seule définition de chaque grandeur |
-| F10 | Axe des fréquences (`_build_context` L431 et `spectrogramme` L77) → `spectral.frequency_axis(n_fft, f_s)` | Une seule définition |
+| `MicroDopplerDetection/main.py` | `config.py` (YAML, logging), `physics.py` (constantes, bilan de liaison), `pipeline.py` (générateur, contexte), `acquisition/sources.py` (`open_source`), `scripts/run_radar.py` (CLI) | 1 |
+| `pipeline/emission.py` | `acquisition/pluto.py` | 1 |
+| `pipeline/acquisition.py` | `acquisition/pluto.py` (Pluto), `acquisition/sources.py` (simulation) | 1 |
+| `pipeline/decimation.py` | `dsp/decimation.py` | 1 |
+| `pipeline/clutter.py` | `dsp/clutter.py`, **supprimé** | 1, puis 6 |
+| `pipeline/windowing.py` et `spectrogramme.py` | `dsp/spectral.py` | 1 |
+| `pipeline/detection.py` | `dsp/detection.py` ; Fisher × ACF remplacé par le nouveau détecteur | 1, puis 5 et 6 |
+| `utils/display.py` | `ui/dashboard.py`, réécrit en dashboard de phase | 1, puis 7 |
+| `utils/record_acquisition.py` et `auto_record.py` | `acquisition/recording.py` et `scripts/record.py` (HDF5 à partir de l'étape 4) | 1, puis 4 |
+| `utils/record_visualization.py` | `scripts/replay.py` (relecture HDF5 via `ReplaySource` à partir de l'étape 4) | 1, puis 4 |
+| `utils/repo_paths.py` | `config.py` | 1 |
+| `legacy/*` | supprimé | 1 |
+| `MicroDopplerDetection/configs/config.yaml` | `configs/radar.yaml` | 1 |
+| `MicroDopplerDetection/README.md` et `AICalibration/README.md` | Contenu repris dans `README.md`, `README.fr.md`, `iot_radar/ml/README.md` et `README.fr.md` | 8 |
+| `MicroDopplerDetection/logs/.gitkeep` | `logs/.gitkeep` | 1 |
+| `AICalibration/dataset.py`, `model.py` | `iot_radar/ml/` | 1 |
+| `AICalibration/train.py` | `iot_radar/ml/train.py` et `scripts/train.py` | 1 |
+| `AICalibration/config.yaml` | `configs/training.yaml` | 1 |
+| `AICalibration/inference.ipynb` | `notebooks/inference.ipynb` | 1 |
+| `accueil_pg.py` | `iot_radar/ui/launcher.py` et `scripts/launcher.py` | 1, puis 2 (B4) et 7 |
+| `AICalibration/data/`, `AICalibration/results/` | **Inchangés** | — |
 
-**Fusions écartées :**
-- **Spectre TX** (`20·log10(|X|+ε)`) et **colonne RX** (`10·log10(|X|²+ε)`) : les deux formules diffèrent près du plancher ; les fusionner modifierait les valeurs.
-- **`Decimator`** (IIR causal, du CAN au temps lent) et **`lowpass_decimate` du FMCW** (FIR sur le temps rapide d'un chirp) : physiquement différents.
-- **Retrait de la moyenne dans `select_range_bin`** et **`ClutterFilter`** : rôles différents.
+**Correspondance des commandes** (après `pip install -e .`) :
+
+| Avant | Après |
+|---|---|
+| `python -m MicroDopplerDetection.main --simulation` | `python scripts/run_radar.py --simulation` |
+| `python utils/record_acquisition.py --subset train --env salle --label 1 --duration 120` | `python scripts/record.py --label breathing --room salle --duration-s 120` (session HDF5) |
+| `python utils/auto_record.py … -n 10 --interval 30` | `python scripts/record.py … -n 10 --interval-s 30` |
+| `python utils/record_visualization.py --subset train --index 5` | `python scripts/replay.py data/sessions/session_0005_….h5` |
+| `python AICalibration/train.py --epochs 100` | `python scripts/train.py --epochs 100` |
+| `python AICalibration/model.py` | `pytest tests/test_ml.py` |
+| `python accueil_pg.py` | `python scripts/launcher.py` |
+| — | `python scripts/convert_legacy_iq.py AICalibration/data/train` (anciens `.iq` → HDF5) |
 
 ---
 
-## 10. Interface `Source`
+## 10. Interface `Source` et blocs
 
 ```python
+@dataclass
+class Block:
+    """One block of consecutive IQ samples delivered by a source."""
+    samples: np.ndarray   # complex64, shape (n_channels, n_samples), in ADC LSB
+    sample_start: int     # index of samples[:, 0] in the stream of delivered samples
+    host_time_s: float    # host monotonic clock when the block was received (s)
+    overflow: bool        # True if samples were lost just before this block
+
+
 class Source(Protocol):
-    """Anything that delivers consecutive blocks of complex baseband IQ samples."""
-    sample_rate_hz: float          # rate of the samples returned by read_block()
-    last_block_time_s: float       # time of the first sample of the last block (s)
-
-    def read_block(self) -> np.ndarray:
-        """Next 1-D complex64 block; an empty array means 'end of data'."""
-
-    def close(self) -> None:
-        """Release the hardware or the file."""
+    sample_rate_hz: float
+    n_channels: int
+    def read_block(self) -> Block | None: ...   # None = end of data (replay only)
+    def describe(self) -> dict[str, Any]: ...   # hardware metadata written into sessions
+    def close(self) -> None: ...
 ```
 
-| Implémentation | `sample_rate_hz` | Fin des données | Remarque |
-|---|---|---|---|
-| `PlutoSource` | `sdr.f_s` | jamais | Configuration du Pluto **identique** (même séquence d'attributs, vérifiée par un test avec un faux module `adi`) ; `last_block_time_s` = horloge de l'hôte |
-| `CWSimulationSource` | `sdr.f_s` | jamais | Modèle actuel inchangé ; `seed` optionnel (`None` par défaut, comme aujourd'hui) |
-| `ReplaySource` | `f_s_dec_hz` lu dans le `.json` | fin du `.iq` | Le pipeline calcule D = `sample_rate_hz / f_s_dec`, soit D = 1 en relecture. Le `Decimator` vaut alors l'identité. |
+| Implémentation | Détection d'une discontinuité |
+|---|---|
+| `PlutoSource` | Avant chaque `rx()`, lecture du registre d'état `0x80000088` du périphérique `cf-ad9361-lpc`, via `sdr._rxadc.reg_read`. Le bit 2 signale une perte d'échantillons ; on l'efface ensuite en réécrivant `0x6`. Si ce registre est inaccessible, un avertissement est émis une seule fois et `overflow` vaut toujours `False`. `sample_start` compte les échantillons **reçus**. **Non testable ici** : à valider sur le matériel. Sur les faibles débits, la fiabilité de ce bit est discutée sur EngineerZone. |
+| `CWSimulationSource` | Flux continu ; une perte peut être **injectée** pour les tests (`drop_after_blocks`). |
+| `ReplaySource` | Rejoue exactement la table `/blocks` de la session : mêmes frontières de blocs, mêmes `overflow`, mêmes `host_time_s`. |
 
-Le pipeline ne connaît que `Protocol` : il n'y a pas d'héritage. Pour l'extension à deux voies de réception, `read_block()` renverra `(n_voies, n)`.
-
----
-
-## 11. Stratégie de test
-
-pytest sera installé dans `.venv`, qui ne l'a pas encore.
-
-1. **Avant tout déplacement**, un premier commit ajoutera des **tests de caractérisation**. Les sorties du code actuel, sur des entrées déterministes, seront stockées dans `tests/data/*.npz` (de petite taille : configuration de test réduite). Les fonctions couvertes sont :
-   - `Decimator`, `ClutterFilter` (4 modes), `get_window`, `compute_single_column` ;
-   - `_fisher_pvalue`, `_acf_peak`, `_fusion_score` ;
-   - le générateur streaming complet sur une simulation à graine fixée ;
-   - le buffer TX et le bilan de liaison ;
-   - le découpage en fenêtres de `CalibrationDataset` sur des `.npz` synthétiques ;
-   - les formes de sortie du modèle.
-
-   Chaque commit suivant doit reproduire ces sorties **au bit près**. C'est la preuve qu'aucun résultat numérique n'a changé.
-2. **Tests d'équivalence** :
-   - le spectrogramme hors ligne est identique au flux ;
-   - le `Decimator` donne le même résultat en un ou plusieurs blocs ;
-   - un enregistrement simulé court, relu via `ReplaySource`, reproduit les colonnes stockées (si Q4 = recommandation).
-3. **Tests de structure** : les règles de dépendance de §7, par analyse des imports, et la configuration du Pluto avec un faux module `adi`.
-4. **Étape 4 (FMCW)**, sur données simulées :
-   - paramètres du chirp (ΔR, pente) ;
-   - estimation du décalage à mieux que 0,05 échantillon ;
-   - conversion battement → distance ;
-   - **cible simulée à distance connue retrouvée à la bonne distance**, à ±ΔR/4, en configuration large bande et en configuration Pluto (cible respirante, sélection par variance) ;
-   - case de fuite exclue par la porte en distance.
-5. **Durée** : la suite doit rester sous la minute environ ; les simulations utilisent `realtime = False` et des configurations réduites.
+Le pipeline considère qu'il y a **discontinuité** si `block.overflow` est vrai, ou si `block.sample_start` diffère de l'indice attendu. Il réinitialise alors son état (§11.3).
+La forme `(n_channels, n)` est utilisée dès maintenant, avec une seule voie : le passage à 2 voies ne changera pas l'interface. Le pipeline traite la voie 0 ; l'exploitation de plusieurs voies viendra plus tard.
 
 ---
 
-## 12. Commits prévus
+## 11. Chaîne de démodulation de phase
 
-**Étape 2 : déplacements sans changement de logique, tests verts à chaque commit**
+### 11.1 Traitement
+
+```
+Block (2 MS/s, ADC LSB)
+ → Mixer (NCO à −tx_offset_hz : l'écho passe de +f_offset à 0 Hz)       dsp/mixer.py
+ → Decimator (D = 2 MS/s / 20 Hz = 100 000 = 2⁵·5⁵)                    dsp/decimation.py
+ → anneau du temps lent (fenêtre d'analyse de 20 s ; une sortie toutes les 0,5 s)
+ → analyse de la fenêtre (ex-VitalSignsProcessor) :
+     dérotation de la dérive du LO → ajustement de cercle (compensation du DC, pas de passe-haut : B3)
+     → arctangente / DACM (repli sur la démodulation linéaire si l'arc est trop court)
+     → déplacement d = −λφ/4π → passe-bande respiration / cœur
+     → spectre du déplacement → métriques (fréquence, SNR, concentration, mouvement)  dsp/phase, filters, estimation, detection
+ → BreathingDetector (lissage, hystérésis, MOTION, apnée)                dsp/detection.py
+ → colonne micro-Doppler de l'IQ en temps lent (visualisation)            dsp/spectral.py
+ → PipelineOutput
+```
+
+### 11.2 Dataclasses de résultat
+
+Elles sont définies dans `pipeline.py` ou `dsp/detection.py`, et ne dépendent pas de l'interface.
+
+| Dataclass | Contenu |
+|---|---|
+| `WindowAnalysis` | `t_s`, déplacement brut et filtré (mm), spectre du déplacement, `BreathMetrics`, `BreathCycles`, IQ analysé, `DemodResult` (ajustement de cercle), fréquences des 4 estimateurs, fréquence cardiaque indicative, dérive du LO |
+| `BreathingState` | Sortie du détecteur : état, confiance lissée et instantanée, fréquence (/min), durée de l'épisode, temps depuis la dernière inspiration, apnée |
+| `PipelineOutput` | `update_index`, `t_s`, `discontinuity` (un trou a été détecté depuis la sortie précédente), `analysis: WindowAnalysis \| None` (`None` pendant le remplissage), `breathing: BreathingState`, `micro_doppler_column_db` |
+
+### 11.3 Discontinuités
+
+Sur une discontinuité, le pipeline :
+- remet à zéro la phase du NCO et l'état du `Decimator` (`reset()`) ;
+- vide l'anneau du temps lent et recompte le temps de chauffe ;
+- réinitialise le `BreathingDetector` ;
+- marque `discontinuity = True` dans la sortie suivante.
+
+L'analyse reprend dès que la fenêtre est de nouveau remplie. Raison : un trou d'une durée inconnue rompt la continuité de phase entre le NCO et l'écho ; une fenêtre qui contiendrait ce saut fausserait l'ajustement de cercle et la phase.
+
+### 11.4 Simulation CW (`CWSimulationSource`)
+
+Modèle physique du worktree, exprimé en LSB du CAN :
+
+```
+r[n] = C_rx + (C_static + A · presence(t) · exp(−j4π(R0 + d(t))/λ)) · exp(j2π f_off t) · exp(j2π δf t) + w[n]
+```
+
+- `C_rx` : DC du récepteur ;
+- `C_static` : fuite et fouillis, **à la fréquence du TX** ;
+- `presence(t)` et `d(t)` viennent de `target_scene` : respiration, cœur, chronologie `empty`, `breathing`, `motion`, `apnea` ;
+- `δf` : dérive du LO ;
+- les échantillons sont ensuite **quantifiés sur les niveaux entiers du CAN** et écrêtés à ±2048. C'est l'ajout de B2 : réalisme, et enregistrement int16 sans perte.
+
+Options : `seed` (`None` par défaut), `realtime` (B5, cadence réelle), injection de pertes pour les tests.
+La source expose aussi `ground_truth(t_s)` (déplacement simulé) et `scene_annotations()` (segments étiquetés), écrits dans les sessions simulées.
+
+### 11.5 Sections de `configs/radar.yaml` (état final)
+
+`logging`, `sdr` (`uri`, `center_frequency_hz`, `sample_rate_hz`, `rx_gain_db`, `rx_gain_mode`, `tx_gain_db`, `buffer_size`), `tx` (`waveform`, `offset_hz`), `slow_time` (`rate_hz`, `warmup_s`), `vital_signs` (`window_s`, `update_period_s`, bandes en `_hz`, `dc_compensation`, `demodulation`, `min_arc_rad`, `max_circle_residual`, `lo_drift_compensation`, `bandpass_order`, `detection`), `micro_doppler_view` (`window_s`, `n_fft`, `window`, `display_max_hz`), `display`, `link_budget`, `simulation`, `recording` (`sessions_dir`, `flush_interval_s`).
+
+---
+
+## 12. Format d'enregistrement HDF5 (schéma v1)
+
+### 12.1 Fichier
+
+- **Nom** : `session_<id sur 4 chiffres>_<AAAAMMJJ>_<HHMMSS>.h5`, avec la date et l'heure du début **en UTC**. Exemple : `session_0042_20261005_143012.h5`. `<id>` est le prochain identifiant libre du dossier. La scène ne figure pas dans le nom.
+- **Dossier par défaut** : `data/sessions/` (ignoré par Git).
+- **Un fichier par session, jamais modifié ensuite** :
+  - ouverture en mode `w-`, qui refuse d'écraser un fichier existant ;
+  - le fichier est passé en lecture seule (`chmod 0444`) à la fermeture ;
+  - les lecteurs ouvrent toujours en mode `r`.
+- **Résistance aux coupures** :
+  - le format est `libver="latest"` et le mode **SWMR** (single-writer multiple-readers) est activé une fois tous les objets créés ;
+  - les données sont ajoutées bloc par bloc, avec un `flush()` toutes les `flush_interval_s` (1 s) ;
+  - en cas d'arrêt brutal, le fichier reste lisible jusqu'au dernier `flush()` ;
+  - la coupure du lien Pluto et Ctrl-C sont interceptés : le fichier est fermé proprement.
+
+### 12.2 Contenu
+
+| Objet | Type et forme | Contenu |
+|---|---|---|
+| `/` (attributs) | — | §12.3 |
+| `/iq` | `int16`, `(n_channels, n_samples, 2)`, `maxshape=(n_channels, None, 2)`, `chunks=(n_channels, 65536, 2)` | Échantillons I (indice 0) et Q (indice 1). Attributs : `scale` (LSB du CAN par unité stockée : 1,0 pour un enregistrement brut) et `unit = "adc_lsb"` |
+| `/blocks` | Table extensible : `sample_start` (`int64`), `host_time_s` (`float64`, secondes depuis le début de la session), `overflow` (`uint8`, 0 ou 1) | Une ligne par bloc reçu : sert à retrouver les discontinuités |
+| `/annotations` | Table extensible : `sample_start` (`int64`), `sample_count` (`int64`), `label` (`S16`, ASCII) | Segments étiquetés, écrits à la fin de l'acquisition |
+| `/ground_truth/` (optionnel) | `time_s` (`float64`, `(n,)`) et `chest_displacement_m` (`float64`, `(n,)`), échantillonnés à `slow_time.rate_hz` ; attributs `source` (`"simulation"` ou nom du capteur) et `description` | Signal de référence et son horodatage |
+
+Taille : 2 MS/s × 4 octets = **8 Mo/s par voie**, soit 960 Mo pour 2 minutes, sans compression. La compression gzip est écartée pour ne pas surcharger la boucle temps réel. Pour réduire la taille, on pourra baisser `sdr.sample_rate_hz` (par exemple 1 MS/s avec D = 50 000), car la chaîne de phase n'utilise que quelques Hz.
+
+### 12.3 Attributs de la racine
+
+Les valeurs manquantes sont `""` pour un texte et `NaN` pour un nombre.
+
+| Attribut | Type | Origine |
+|---|---|---|
+| `schema_version` | int | 1 |
+| `sample_rate_hz` | float | Débit de `/iq` |
+| `center_frequency_hz` | float | LO (TX et RX) |
+| `tx_offset_hz` | float | Décalage **effectif** du TX (après correctif B1) ; 0 en `cw` |
+| `tx_gain_db`, `rx_gain_db` | float | Configuration |
+| `rx_gain_mode` | str | `manual`, `slow_attack`, `fast_attack` ou `hybrid` |
+| `n_rx_channels` | int | 1 pour l'instant |
+| `channel_layout` | str | Noms des voies dans l'ordre de `/iq`, séparés par des virgules, par exemple `rx0` |
+| `firmware_version` | str | Attribut `fw_version` du contexte libiio ; `"simulation"` pour une session simulée |
+| `start_time_utc` | str | ISO 8601 |
+| `subject_id`, `distance_m`, `orientation`, `obstacle`, `obstacle_thickness_cm`, `room`, `notes` | str / float | Description de la scène (options de la CLI) |
+| *Ajouts proposés :* `tx_waveform` | str | `cw` ou `cw_offset` |
+| `source_kind` | str | `pluto`, `simulation` ou `legacy_conversion` |
+| `iq_stage` | str | `raw_adc`, ou `decimated_clutter_filtered` pour les anciens `.iq` convertis |
+| `config_yaml` | str | Texte YAML complet de la configuration utilisée (remplace le chemin absolu : B6) |
+| `software_version` | str | Version du paquet et commit Git s'il est disponible |
+| `legacy_source_file` | str | Fichier d'origine (conversions seulement) |
+
+### 12.4 Vocabulaire des labels (proposition)
+
+| Label | Signification |
+|---|---|
+| `empty` | Personne dans le champ du radar |
+| `breathing` | Une personne présente et immobile, qui respire |
+| `apnea` | Une personne présente et immobile, sans mouvement respiratoire (apnée volontaire) |
+| `motion` | Une personne présente, avec des mouvements du corps qui dominent la respiration (mesure impossible) |
+| `unknown` | Segment non annoté ou incertain (exclu de l'apprentissage) |
+
+Correspondance avec les anciennes données : label 0 → `empty`, label 1 → `breathing`. On pourrait ajouter plus tard `shallow_breathing` ou `talking` ; je ne les inclus pas sans votre accord. En simulation, les annotations découlent automatiquement de la chronologie de la scène.
+
+### 12.5 Conversion des anciens `.iq` (`scripts/convert_legacy_iq.py`)
+
+Les anciens `.iq` (69 fichiers dans `AICalibration/data/train/`) contiennent de l'IQ complex64 **décimé à 2 kHz et déjà filtré par le passe-haut clutter**. La conversion :
+- lit chaque paire `.iq` + `.json` et écrit une session dans `data/sessions/legacy/` (les fichiers d'origine ne sont pas modifiés) ;
+- choisit `scale` de sorte que le maximum de `|I|` et `|Q|` corresponde à 30 000. Le bruit est très au-dessus du pas de quantification, d'environ 30 dB d'après les spectres mesurés ;
+- renseigne :
+  - `sample_rate_hz` à 2000 ;
+  - `iq_stage` à `decimated_clutter_filtered` ;
+  - `tx_offset_hz` à 488,28125 Hz : c'est la raie réellement émise à cause de B1, et elle peut être forcée par `--tx-offset-hz` ;
+  - les gains et la fréquence porteuse depuis le YAML d'origine s'il existe encore, `NaN` sinon ;
+  - `room` depuis `env` ;
+  - `start_time_utc` = `utc_finished` − durée ;
+  - une seule ligne dans `/blocks` ;
+  - une annotation par session (0 → `empty`, 1 → `breathing`).
+- **Intérêt** : le passe-haut n'a agi qu'autour de 0 Hz, alors que l'écho est à 488 Hz. Ces enregistrements réels sont donc **retraitables par la chaîne de phase** (D = 100 depuis 2 kHz).
+
+`ml/` continue de lire les anciens `.npz` en l'état.
+
+---
+
+## 13. Convention de nommage et renommages
+
+- **Partout** (fichiers, modules, fonctions, variables, clés de configuration, attributs et datasets HDF5, labels) : anglais, minuscules, mots séparés par `_`, unité en suffixe (`_hz`, `_s`, `_m`, `_mm`, `_db`, `_dbm`, `_dbi`, `_rad`, `_m2`). Les classes sont en `CamelCase`.
+- **Paramètres publics** : par exemple `f_s_hz`, `f_c_hz`, `f_s_dec_hz`, `tx_offset_hz`, `wavelength_m`, `breathing_band_hz`, `decimation_factor`.
+- **Options de la CLI** : par exemple `--duration-s`, `--interval-s`, `--distance-m`, `--obstacle-thickness-cm`.
+
+Renommage des clés YAML existantes (étape 3) :
+
+| Ancienne clé | Nouvelle clé |
+|---|---|
+| `sdr.f_c`, `sdr.f_s` | `sdr.center_frequency_hz`, `sdr.sample_rate_hz` |
+| `sdr.rx_gain`, `sdr.tx_gain` | `sdr.rx_gain_db`, `sdr.tx_gain_db` |
+| `emission.mode`, `emission.f_offset` | `tx.waveform`, `tx.offset_hz` |
+| `decimation.enable`, `.D`, `.f_max_utile` | `decimation.enabled`, `.factor`, `.max_useful_frequency_hz` |
+| `clutter.butterworth_cutoff` | `clutter.butterworth_cutoff_hz` |
+| `windowing.mode` | `spectrogram.window` |
+| `spectrogramme.n_fft`, `.overlap`, `.skip_warmup` | `spectrogram.n_fft`, `.overlap`, `.skip_warmup_frames` |
+| `detection.bande_respiration`, `.bande_reference` | `detection.breathing_band_hz`, `.reference_band_hz` |
+| `detection.alpha`, `.w` | `detection.false_alarm_probability`, `.spectral_weight` |
+| `detection.acf_buffer_seconds` | `detection.acf_buffer_s` |
+| `affichage.N_historique`, `.seuil_proba`, `.plein_ecran` | `display.score_history_length`, `.score_threshold`, `.full_screen` |
+| `bilan_liaison.optimiste`, `.pessimiste`, `.B_eff_hz` | `link_budget.optimistic`, `.pessimistic`, `.noise_bandwidth_hz` |
+| `P_tx_dBm`, `G_tx_dBi`, `G_rx_dBi`, `sigma_m2`, `NF_dB`, `L_sys_dB`, `SNR_min_dB` | `tx_power_dbm`, `tx_antenna_gain_dbi`, `rx_antenna_gain_dbi`, `radar_cross_section_m2`, `noise_figure_db`, `system_losses_db`, `min_snr_db` |
+| `simulation.enable` | `simulation.enabled` |
+
+Dans `training.yaml`, déjà en anglais, seul `optimizer.lr` devient `optimizer.learning_rate`.
+Les sections micro-Doppler (`decimation`, `clutter`, `spectrogram`, `detection`, `display.score_*`) disparaissent à l'étape 6.
+
+---
+
+## 14. Dashboard de phase et lanceur
+
+**Panneaux du dashboard** (repris de `.claude/`, sans le panneau distance-temps) :
+1. état (état du détecteur, fréquence par minute, jauge de confiance avec les seuils ON/OFF, durée de l'épisode, bandeau d'apnée) ;
+2. forme d'onde du déplacement, brute et filtrée, avec repères de fin d'inspiration et d'expiration ;
+3. constellation IQ avec le cercle ajusté et son centre ;
+4. chronologie de la confiance et de ses composantes (SNR, concentration), fond coloré selon l'état ;
+5. historique de la fréquence respiratoire ;
+6. spectre du déplacement (bandes, fenêtre du pic, plancher de bruit) ;
+7. waterfall micro-Doppler de l'IQ en temps lent ;
+8. grandeurs mesurées ;
+9. tableau de paramètres.
+
+Une `discontinuity` est signalée dans le panneau d'état.
+
+Le dashboard est alimenté par un thread producteur qui consomme les `PipelineOutput` et une minuterie qui les dépile, sans perte de trame.
+
+**Lanceur** : boutons « Radar (PlutoSDR) », « Radar (simulation) », « Light / dark theme » et « Quit ». Le radar est lancé en sous-processus (`scripts/run_radar.py`). Il n'y a pas de bouton FMCW.
+
+---
+
+## 15. Fonctionnalités retirées
+
+| Fonctionnalité | Étape | Remplacement |
+|---|---|---|
+| Modules batch `legacy/` | 1 | `spectral.compute_spectrogram`, et le traitement d'un tableau entier comme un seul bloc |
+| Courbe de démonstration du lanceur | 1 | — |
+| Écriture `.npz`, `.iq`, `.wav` ; options `--no-spectrogram`, `--no-iq-file`, `--wav` | 4 | Session HDF5 (IQ brut) |
+| Option `--subset train/val/test` | 4 | La répartition se fera à l'entraînement, quand `ml/` sera repensé |
+| Options `--env` et `--index` | 4 | `--room` et `--session-id` |
+| Chaîne micro-Doppler : décimation à 2 kHz, `ClutterFilter`, spectrogramme de 8192 points, détecteur Fisher × ACF, dashboard TX/RX + score, relecture des colonnes `.npz` dans le dashboard | 6 | Chaîne et dashboard de phase. Les `.npz` restent lisibles par `ml/`. |
+| Test de fumée `python model.py` | 1 | `tests/test_ml.py` |
+
+---
+
+## 16. Tests
+
+pytest est installé dans `.venv` ; h5py l'est à l'étape 4.
+
+1. **Caractérisation** (premier commit, avant tout déplacement) : sorties exactes du code actuel sur des entrées déterministes, stockées dans `tests/data/*.npz`. Fonctions couvertes :
+   - `Decimator`, `ClutterFilter` (4 modes), fenêtres, colonne STFT ;
+   - fonctions de Fisher, d'ACF et de fusion ;
+   - buffer TX, bilan de liaison ;
+   - générateur streaming de bout en bout, sur une configuration réduite (100 kHz, D = 100) avec une simulation à graine fixée.
+
+   Les paramètres utilisent un `f_offset` **déjà multiple** de f_s/buffer_size : le correctif B1 ne modifie donc pas ces références, et il a son propre test. Seuls B2 et B5 peuvent régénérer les références. Les tests propres au micro-Doppler sont retirés à l'étape 6.
+2. **Équivalences** :
+   - spectrogramme hors ligne = flux ;
+   - `Decimator` en un ou plusieurs blocs ;
+   - une session simulée, relue par `ReplaySource` et traitée par le pipeline, donne **exactement** les mêmes sorties qu'en direct.
+3. **Structure** : règles de dépendance (§8.2) ; séquence de configuration du Pluto, avec un faux module `adi`.
+4. **HDF5** :
+   - schéma, attributs, types ;
+   - écriture bloc par bloc ;
+   - mode `w-` et lecture seule ;
+   - relecture après un arrêt simulé ;
+   - conversion d'un ancien `.iq` synthétique.
+5. **Validation de la chaîne de phase sur simulation** :
+   - fréquence respiratoire retrouvée à **±1 cycle/min** ;
+   - **amplitude du déplacement** simulé retrouvée (crête à crête, à ±10 %) ;
+   - **apnée** signalée ;
+   - **absence** → `NO_BREATHING` ;
+   - **mouvement** → `MOTION` ;
+   - **discontinuité** du flux → réinitialisation, puis nouvelle détection ;
+   - tests repris de `.claude/` (`phase`, `estimation`, `detection`, `processor`).
+6. **ml** : formes de sortie du modèle et une époque d'entraînement sur de petites données synthétiques.
+
+---
+
+## 17. Étapes et commits
+
+Chaque commit concerne une modification cohérente, avec la suite de tests verte.
+
+**Étape 1 — Restructuration sans changement de comportement** (références intactes)
 1. `test: add characterization tests pinning current numerical outputs`
-2. `build: add pyproject.toml for editable install (pip install -e .)`
-3. `refactor: move DSP bricks to iot_radar/dsp/`
+2. `build: add pyproject.toml and iot_radar package; move DSP bricks to iot_radar/dsp/`
+3. `feat(dsp): offline spectrogram computed exactly like the stream` puis `refactor: remove dead legacy batch modules`
 4. `refactor: move emission, Pluto streaming and simulation to iot_radar/acquisition/`
 5. `refactor: split main.py into config, physics, pipeline and scripts/run_radar.py`
-6. `refactor: move dashboard and launcher to iot_radar/ui/`
-7. `refactor: move recording helpers to acquisition/recording.py and CLIs to scripts/`
-8. `fix: fall back to the default config when a recording's config path no longer exists` (B6)
-9. `refactor: move AICalibration code to iot_radar/ml/ and scripts/train.py`
-10. `refactor: move configs and notebook; drop PYTHONPATH manipulations`
+6. `refactor: move the dashboard to iot_radar/ui/ and merge live/replay modes`
+7. `refactor: merge record_acquisition and auto_record into scripts/record.py; replay in scripts/replay.py`
+8. `fix(B6): fall back to the default config when a recording's config path no longer exists`
+9. `refactor: move AICalibration code to iot_radar/ml/ and scripts/train.py; single config loader and logging`
+10. `refactor: move configs, notebook and launcher; remove dead launcher code and PYTHONPATH manipulations`
+11. `refactor: introduce Block and the Source interface (Pluto, simulation)`
+12. `test: enforce package dependency rules`
 
-**Étape 3** : F1 à F10, un commit par fusion. **Puis les correctifs validés en Q3**, un commit `fix:` chacun.
+**Étape 2 — Correctifs** :
+- `fix(B1): …`
+- `fix(B2): … (regenerates simulation references)`
+- `fix(B4): …`
+- `fix(B5): …`
 
-**Étape 4** : un commit par élément intégré (modèle du chirp, dechirping, FFT en distance et sélection, sources FMCW, pipeline FMCW, waterfall du dashboard, script `run_fmcw`), chacun avec son test.
+Pour B3, voir §5 : il est corrigé par conception à l'étape 5.
 
-**Étape 5** :
-- traduction en anglais des commentaires et messages restants, un commit par sous-paquet ;
-- docstrings d'en-tête de chaque module ;
-- README de la racine, de `iot_radar/` et de `iot_radar/ml/` ;
-- corrections de B8.
+**Étape 3 — Renommages et traduction** : un commit par sous-paquet (`dsp`, `acquisition`, `pipeline` et `scripts`, `ui`, `ml`), configuration comprise, sans changement de logique.
+
+**Étape 4 — HDF5** :
+- `build: add h5py`
+- `feat(recording): HDF5 session writer/reader (schema v1)`
+- `feat(sources): ReplaySource`
+- `refactor(record): sessions instead of .npz/.iq/.wav`
+- `feat(replay): replay HDF5 sessions`
+- `feat(scripts): convert legacy .iq recordings`
+
+**Étape 5 — Chaîne de phase** :
+- un commit par brique `dsp/` (`phase`, `estimation`, `filters`, `mixer`, nouveau détecteur), avec ses tests ;
+- `feat(sources): scene timeline and ground truth in the CW simulation` ;
+- `feat(pipeline): phase-demodulation pipeline with discontinuity handling (fixes B3 by design)`, avec les tests de validation.
+
+**Étape 6** : `refactor!: remove the micro-Doppler spectrogram chain`, avec le pipeline spectral, Fisher × ACF, `ClutterFilter`, l'ancien dashboard, les tests de caractérisation devenus sans objet et les sections de configuration correspondantes. Entre les étapes 6 et 7, `run_radar.py` et `replay.py` tournent sans interface : ils écrivent l'état dans les logs. L'option `--headless` est conservée ensuite.
+
+**Étape 7** :
+- `feat(ui): phase dashboard`
+- `feat(ui): launcher without FMCW button`
+
+**Étape 8** :
+- docstrings d'en-tête des modules ;
+- `README.md` et `README.fr.md` (racine), `iot_radar/ml/README.md` et `README.fr.md` (dépendance aux anciens `.npz` et refonte prévue) ;
+- corrections de B8 ;
+- résumé final.
+
+Aucune fusion vers `main` sans votre accord.
 
 ---
 
-## 13. Risques
+## 18. Risques
 
 | Risque | Mitigation |
 |---|---|
-| Changement involontaire d'un résultat numérique pendant un déplacement | Tests de référence au bit près (§11.1) exécutés à chaque commit |
-| Relecture des 69 enregistrements existants (chemin absolu de la configuration) | B6 traité à l'étape 2 ; les clés du `.npz` restent inchangées ; `CalibrationDataset` lit les mêmes clés |
-| Pas de Pluto disponible ici, donc la `PlutoSource` refactorisée n'est pas testée sur le matériel | Séquence de configuration conservée à l'identique et vérifiée avec un faux `adi` ; à valider par l'équipe sur le matériel |
-| `AICalibration/results/best.pt` (12 Mo) est suivi par Git malgré le `.gitignore` | Non touché. J'ai vérifié qu'il ne référence aucun module Python (seulement `torch` et `collections`) : le notebook pourra toujours le charger après déplacement. |
-| `ed_branch` modifie des fichiers sous `MicroDopplerDetection/` | Conflits possibles si elle est fusionnée plus tard ; à signaler à son auteur |
-| Ajout accidentel du worktree `.claude/` dans un commit | `git add` toujours avec des chemins explicites ; `.claude/worktrees/` ajouté au `.gitignore` (Q5) |
-| `MicroDopplerDetection/logs/*.log` et `__pycache__/` (non suivis) resteront sur le disque après le déplacement | Je ne supprime pas vos fichiers non suivis ; à effacer à la main si vous le souhaitez |
-| `pip install -e .` nécessite setuptools (présent dans `.venv`) | En cas d'absence de réseau : `pip install -e . --no-build-isolation` |
-| Notebook : `*.ipynb` est ignoré par Git, mais `inference.ipynb` est suivi | Déplacé avec `git mv`, il reste suivi |
+| Changement numérique involontaire pendant une étape « sans logique » | Références au bit près, vérifiées à chaque commit |
+| Pas de Pluto ici : `PlutoSource` (y compris le registre de perte) n'est pas testée sur le matériel | Séquence de configuration identique, vérifiée avec un faux `adi` ; à valider par l'équipe |
+| HDF5 et SWMR : une coupure brutale peut perdre jusqu'à 1 s de données | `flush()` toutes les secondes ; test de relecture après un arrêt |
+| Volume des sessions brutes (≈ 1 Go pour 2 min) | Documenté ; possibilité de baisser `sample_rate_hz` |
+| `ml/` ne peut pas s'entraîner sur les nouvelles sessions HDF5 | Documenté dans son README ; refonte prévue |
+| `AICalibration/results/best.pt` est suivi malgré le `.gitignore` | Non touché ; il ne référence aucun module Python, le notebook le charge toujours |
+| `ed_branch` modifie des chemins qui vont disparaître | À signaler à son auteur |
+| `MicroDopplerDetection/logs/*.log` et les `__pycache__/` (non suivis) restent sur le disque | Je ne supprime pas vos fichiers non suivis |
+| Le passage des libellés de l'interface en anglais peut gêner les utilisateurs francophones | Décision Q5 (« tout le code en anglais ») ; facile à revoir |
