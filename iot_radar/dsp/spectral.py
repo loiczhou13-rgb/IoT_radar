@@ -1,9 +1,10 @@
 """Spectral analysis: analysis windows, STFT columns and spectrograms.
 
-Place in the chain: the micro-Doppler chain turns the decimated signal into
-a spectrogram, one STFT column at a time (:func:`compute_single_column`); a
-complete signal can also be processed offline in one call
-(:func:`compute_spectrogram`), with exactly the same columns.
+Place in the chain: visualisation only — nothing here feeds the breathing
+decision.  The pipeline computes one STFT column of the slow-time IQ at each
+update (:func:`compute_single_column`) for the micro-Doppler waterfall of the
+dashboard; a complete signal (e.g. a replayed session) can be turned offline
+into a spectrogram framed the same way (:func:`compute_spectrogram`).
 """
 
 from __future__ import annotations
@@ -168,17 +169,17 @@ def compute_spectrogram(
 ) -> np.ndarray:
     """Spectrogram of a complete signal, framed exactly like the stream.
 
-    The streaming pipeline keeps a buffer of samples and, whenever it holds
-    ``n_fft`` samples, turns the first ``n_fft`` of them into one column and
-    drops the first ``hop``.  Its segments therefore start at sample
-    ``k * hop`` (k = 0, 1, 2, ...).  This function cuts the whole array the
-    same way, so its columns are identical to the streamed ones.
+    A stream framed with a buffer that, whenever it holds ``n_fft`` samples,
+    turns the first ``n_fft`` of them into one column and drops the first
+    ``hop`` has segments starting at sample ``k * hop`` (k = 0, 1, 2, ...).
+    This function cuts the whole array the same way, so its columns are
+    identical to the streamed ones.
 
     Parameters
     ----------
     iq : numpy.ndarray
-        Complex IQ samples (1-D) at rate *f_s_hz* — e.g. the decimated and
-        clutter-filtered signal.
+        Complex IQ samples (1-D) at rate *f_s_hz* — e.g. the slow-time
+        signal.
     f_s_hz : float
         Sampling rate of *iq* (Hz).
     window : numpy.ndarray
@@ -186,8 +187,8 @@ def compute_spectrogram(
     hop : int
         Step between the starts of two successive segments (samples).
     skip_frames : int, optional
-        Number of initial columns to drop (filter warm-up), like the
-        ``spectrogram.skip_warmup_frames`` setting of the stream.
+        Number of initial columns to drop (e.g. during the warm-up of the
+        decimation filters).
 
     Returns
     -------

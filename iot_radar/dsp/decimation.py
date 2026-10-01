@@ -1,6 +1,7 @@
 """Sample-rate reduction (decimation) of complex IQ streams.
 
-Place in the chain: right after the acquisition.  The PlutoSDR delivers
+Place in the chain: right after the acquisition and the NCO mixer
+(:mod:`iot_radar.dsp.mixer`).  The PlutoSDR delivers
 samples at millions of samples per second, while breathing lives below 1 Hz;
 :class:`Decimator` low-pass filters the stream and keeps one sample out of
 ``decimation_factor``.
