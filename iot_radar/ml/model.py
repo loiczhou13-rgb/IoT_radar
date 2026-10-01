@@ -354,10 +354,6 @@ class SpectrogramAutoencoder(nn.Module):
     def decode(self, z: torch.Tensor) -> torch.Tensor:
         return self.decoder(z)
 
-    def classify(self, z: torch.Tensor) -> torch.Tensor:
-        """Return logits ``(B, 1)`` from a latent tensor."""
-        return self.head(z)
-
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         z = self.encode(x)
         x_hat = self.decode(z)

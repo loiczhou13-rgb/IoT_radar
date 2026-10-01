@@ -147,7 +147,7 @@ def case_windows() -> dict[str, np.ndarray]:
 def case_spectral_column() -> dict[str, np.ndarray]:
     """One STFT column of a windowed segment."""
     segment = _test_signal(1024, 2000.0, seed=3)
-    column = compute_single_column(segment, 2000.0, 3.5e9, get_window("hann", 1024))
+    column = compute_single_column(segment, 2000.0, get_window("hann", 1024))
     return {"col_db": column.col_db, "f_hz": column.f_hz}
 
 

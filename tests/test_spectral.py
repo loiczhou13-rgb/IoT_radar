@@ -24,7 +24,7 @@ def test_offline_spectrogram_equals_stream() -> None:
     n_fft = cfg["spectrogramme"]["n_fft"]
     hop = int(n_fft * (1.0 - cfg["spectrogramme"]["overlap"]))
     offline = compute_spectrogram(
-        np.concatenate(chunks), f_s=1000.0, f_c=cfg["sdr"]["f_c"],
+        np.concatenate(chunks), f_s=1000.0,
         window=get_window("hann", n_fft), hop=hop,
         skip_frames=cfg["spectrogramme"]["skip_warmup"],
     )
@@ -33,5 +33,5 @@ def test_offline_spectrogram_equals_stream() -> None:
 
 
 def test_offline_spectrogram_too_short_signal() -> None:
-    out = compute_spectrogram(np.zeros(10, np.complex64), 1000.0, 3.5e9, get_window("hann", 16), hop=4)
+    out = compute_spectrogram(np.zeros(10, np.complex64), 1000.0, get_window("hann", 16), hop=4)
     assert out.shape == (0, 16)

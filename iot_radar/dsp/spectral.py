@@ -14,8 +14,6 @@ from dataclasses import dataclass
 import numpy as np
 from scipy.signal import windows
 
-from iot_radar.physics import SPEED_OF_LIGHT
-
 logger = logging.getLogger(__name__)
 
 _VALID_WINDOWS = ("hann", "hamming", "blackman", "flattop")
@@ -90,29 +88,19 @@ class ColumnOutput:
 
     Attributes
     ----------
-    col_complex : numpy.ndarray
-        Complex spectrum (complex128), shape ``(n_fft,)``, fftshifted.
     col_db : numpy.ndarray
-        Power in dB, shape ``(n_fft,)``.
+        Power in dB, shape ``(n_fft,)``, fftshifted.
     f_hz : numpy.ndarray
         Doppler frequency axis (Hz), centred.
-    v_mps : numpy.ndarray
-        Radial velocity axis (m/s).
-    df_hz : float
-        Frequency resolution (Hz).
     """
 
-    col_complex: np.ndarray
     col_db: np.ndarray
     f_hz: np.ndarray
-    v_mps: np.ndarray
-    df_hz: float
 
 
 def compute_single_column(
     segment: np.ndarray,
     f_s: float,
-    f_c: float,
     window: np.ndarray,
 ) -> ColumnOutput:
     """Compute one STFT column from a windowed time-domain segment.
@@ -123,18 +111,15 @@ def compute_single_column(
         Complex IQ segment, shape ``(n_fft,)``.
     f_s : float
         Sampling rate (Hz) of *segment* (decimated rate).
-    f_c : float
-        Carrier frequency (Hz), for Doppler-to-velocity conversion.
     window : numpy.ndarray
         Pre-computed window, same length as *segment*.
 
     Returns
     -------
     ColumnOutput
-        Single spectrum column with frequency / velocity axes.
+        Single spectrum column with its frequency axis.
     """
     n_fft = len(segment)
-    wavelength = SPEED_OF_LIGHT / f_c
 
     windowed = segment * window
     spectrum = np.fft.fftshift(np.fft.fft(windowed, n=n_fft))
@@ -143,15 +128,10 @@ def compute_single_column(
     col_db = 10.0 * np.log10(np.abs(spectrum) ** 2 + eps)
 
     f_hz = np.fft.fftshift(np.fft.fftfreq(n_fft, d=1.0 / f_s))
-    v_mps = f_hz * wavelength / 2.0
-    df_hz = f_s / n_fft
 
     return ColumnOutput(
-        col_complex=spectrum,
         col_db=col_db.astype(np.float64),
         f_hz=f_hz.astype(np.float64),
-        v_mps=v_mps.astype(np.float64),
-        df_hz=df_hz,
     )
 
 
@@ -162,7 +142,6 @@ def compute_single_column(
 def compute_spectrogram(
     iq: np.ndarray,
     f_s: float,
-    f_c: float,
     window: np.ndarray,
     hop: int,
     skip_frames: int = 0,
@@ -182,8 +161,6 @@ def compute_spectrogram(
         clutter-filtered signal.
     f_s : float
         Sampling rate of *iq* (Hz).
-    f_c : float
-        Carrier frequency (Hz), forwarded to :func:`compute_single_column`.
     window : numpy.ndarray
         Analysis window; its length is the FFT size ``n_fft``.
     hop : int
@@ -207,6 +184,6 @@ def compute_spectrogram(
         frame_number += 1
         if frame_number > skip_frames:
             segment = iq[start:start + n_fft]
-            columns.append(compute_single_column(segment, f_s, f_c, window).col_db)
+            columns.append(compute_single_column(segment, f_s, window).col_db)
         start += hop
     return np.array(columns, dtype=np.float64).reshape(len(columns), n_fft)

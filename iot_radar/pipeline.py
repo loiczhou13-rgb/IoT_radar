@@ -130,7 +130,6 @@ def streaming_frame_generator(
     det_cfg = cfg["detection"]
 
     f_s = float(sdr_cfg["f_s"])
-    f_c = float(sdr_cfg["f_c"])
     n_fft = int(spec_cfg["n_fft"])
     overlap = float(spec_cfg["overlap"])
     hop = max(1, int(n_fft * (1.0 - overlap)))
@@ -231,7 +230,7 @@ def streaming_frame_generator(
                 )
                 continue
 
-            col = compute_single_column(segment, f_s_dec, f_c, window)
+            col = compute_single_column(segment, f_s_dec, window)
 
             phi_hist = np.unwrap(np.angle(phi_iq_hist))
 
@@ -253,7 +252,6 @@ def streaming_frame_generator(
             alert = bool(p_value_f < alpha_alert)
 
             yield {
-                "signal_iq_dec":   segment,
                 "spectre_colonne": col.col_db,
                 "score_presence":  score_presence,
                 "p_value_f":       p_value_f,

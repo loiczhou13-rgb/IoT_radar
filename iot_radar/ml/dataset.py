@@ -240,20 +240,6 @@ class CalibrationDataset(Dataset):
         """Common frequency dimension (``H``) across all windows."""
         return self._windows[0].shape[0]
 
-    @property
-    def class_weights(self) -> torch.Tensor:
-        """Inverse-frequency weights ``[w0, w1]`` for ``CrossEntropyLoss``.
-
-        Pass to ``torch.nn.CrossEntropyLoss(weight=dataset.class_weights)``
-        when classes are imbalanced.
-        """
-        n_total = len(self._labels)
-        n1 = sum(self._labels)
-        n0 = n_total - n1
-        w0 = n_total / (2.0 * max(n0, 1))
-        w1 = n_total / (2.0 * max(n1, 1))
-        return torch.tensor([w0, w1], dtype=torch.float32)
-
     def summary(self) -> str:
         """Human-readable dataset summary."""
         n1 = sum(self._labels)
