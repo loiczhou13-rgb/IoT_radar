@@ -100,16 +100,11 @@ Thumbs.db
 docs/_build/
 /site
 
-# ===== Micro-Doppler recordings (train/test/val) =====
-AICalibration/data/
-
-# ===== AICalibration training outputs (checkpoints, metrics, logs) =====
-# *.log is already ignored globally.
-AICalibration/results/*
-!AICalibration/results/.gitkeep
-
-# ===== Radar sessions (HDF5 recordings) =====
+# ===== Data: radar sessions (HDF5) and legacy .npz for ml/ =====
 /data/
+
+# ===== Training outputs of ml/ (checkpoints, metrics, logs) =====
+/results/
 
 # ===== Run logs =====
 # *.log is already ignored globally; the folder is kept through .gitkeep.

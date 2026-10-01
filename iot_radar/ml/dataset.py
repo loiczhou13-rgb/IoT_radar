@@ -6,9 +6,12 @@ HDF5 sessions as input (see ``iot_radar/ml/README.md``).
 
 Source of truth for recordings
 ------------------------------
-``.npz`` files are produced by ``scripts/record.py``. Typical layout ::
+The ``.npz`` files were produced by the recording scripts of the former
+micro-Doppler chain, which have been removed: no script of this repository
+produces them any more (``scripts/record.py`` writes HDF5 sessions).
+Expected layout, under ``data.data_root`` of ``configs/training.yaml`` ::
 
-    AICalibration/data/
+    data/ml/
     ├── train/<n>.npz
     ├── test/<n>.npz
     └── val/<n>.npz
@@ -67,8 +70,8 @@ class CalibrationDataset(Dataset):
     ----------
     data_dir : str or Path
         Directory scanned recursively (``rglob("*.npz")``). Point to
-        ``AICalibration/data`` to load everything, or to
-        ``AICalibration/data/train`` for a single split.
+        ``data/ml`` to load everything, or to ``data/ml/train`` for a
+        single split.
     n_cols : int, optional
         Number of STFT columns per window. Default :data:`N_COLS`.
     stride : int, optional

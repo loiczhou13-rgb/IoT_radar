@@ -18,7 +18,7 @@ device: auto
 # Data (legacy .npz spectrogram recordings)
 # ---------------------------------------------------------------------------
 data:
-  data_root: AICalibration/data
+  data_root: data/ml
   train_subdir: train
   val_subdir: val            # used if it contains at least one .npz
   val_split: 0.2             # otherwise: random split of train_subdir
@@ -101,10 +101,10 @@ training:
 # Outputs
 # ---------------------------------------------------------------------------
 output:
-  results_dir: AICalibration/results
+  results_dir: results
   checkpoint_name: best.pt
-  log_file: AICalibration/results/train.log
+  log_file: results/train.log
 
   # Per-epoch metrics history (CSV) for plotting in notebooks/inference.ipynb.
   save_metrics: true
-  metrics_file: AICalibration/results/history.csv
+  metrics_file: results/history.csv

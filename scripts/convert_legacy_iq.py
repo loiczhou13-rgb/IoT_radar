@@ -7,7 +7,7 @@ the clutter high-pass) and a ``<n>.json`` file of metadata.  This script turns
 every such pair into a session file, so that the real recordings can be
 replayed and re-processed by the current pipeline:
 
-    python scripts/convert_legacy_iq.py AICalibration/data
+    python scripts/convert_legacy_iq.py path/to/old/data
     python scripts/convert_legacy_iq.py OLD_DIR --output-dir data/sessions/legacy
 
 What is stored (see ``iot_radar.acquisition.recording``):
