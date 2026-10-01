@@ -72,6 +72,9 @@ emission:
   # Décalage fréquentiel du signal TX en bande de base (Hz).
   # Utilisé uniquement si mode = "cw_offset".
   # Le signal utile apparaîtra autour de f_offset ± f_v dans le spectre RX.
+  # Le code le recale sur un multiple de f_s / buffer_size (122,07 Hz ici)
+  # pour que le buffer TX cyclique contienne un nombre entier de périodes :
+  # 500 Hz demandés → 488,28 Hz émis et utilisés à la réception.
   f_offset: 500
 
 

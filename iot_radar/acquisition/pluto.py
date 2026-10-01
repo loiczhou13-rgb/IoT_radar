@@ -61,8 +61,10 @@ def generate_tx_buffer(
     Raises
     ------
     ValueError
-        If *mode* is not one of ``{"cw", "cw_offset"}``, or if *f_offset*
-        violates the Nyquist criterion (``|f_offset| >= f_s / 2``).
+        If *mode* is not one of ``{"cw", "cw_offset"}``, if *f_offset*
+        violates the Nyquist criterion (``|f_offset| >= f_s / 2``), or if
+        the buffer would not hold a whole number of periods of the offset
+        tone (use :func:`snap_tx_offset`).
 
     Notes
     -----
@@ -71,6 +73,11 @@ def generate_tx_buffer(
     * **CW-offset mode** — baseband samples are
       ``2**14 · exp(j·2π·f_offset·t)``, producing an RF tone at
       ``f_c + f_offset`` and avoiding the DC clutter.
+    * The Pluto replays the buffer back-to-back (cyclic mode).  With a
+      non-integer number of periods per buffer, the phase would jump at
+      every repetition and the emitted spectrum would become a set of lines
+      at multiples of ``f_s / buffer_size`` (bug B1: 500 Hz requested,
+      dominant line at 488.28 Hz).
 
     The ``2**14`` scaling is **mandatory**: without it the DAC effectively
     transmits a zero-amplitude signal (see :data:`_DAC_FULL_SCALE`).
@@ -93,6 +100,15 @@ def generate_tx_buffer(
             f"(f_s/2 = {f_s / 2} Hz). Réduire f_offset ou augmenter f_s."
         )
 
+    periods_per_buffer = f_offset * buffer_size / f_s
+    if abs(periods_per_buffer - round(periods_per_buffer)) > 1e-6:
+        raise ValueError(
+            f"f_offset={f_offset} Hz donne {periods_per_buffer:.4f} périodes par "
+            f"buffer de {buffer_size} échantillons : le buffer cyclique serait "
+            f"discontinu. Utiliser snap_tx_offset() (multiple de "
+            f"{f_s / buffer_size:.4f} Hz)."
+        )
+
     logger.info(
         "Génération du buffer TX — mode CW-offset (f_offset=%.0f Hz, scale=%d)",
         f_offset,
@@ -103,12 +119,65 @@ def generate_tx_buffer(
     return waveform.astype(np.complex64)
 
 
+def snap_tx_offset(f_offset: float, f_s: float, buffer_size: int) -> float:
+    """Nearest offset giving a whole number of periods per TX buffer.
+
+    The cyclic TX buffer is continuous only if it holds an integer number of
+    periods of the offset tone, i.e. if ``f_offset`` is a multiple of
+    ``f_s / buffer_size`` (122.07 Hz for 16384 samples at 2 MS/s).
+
+    Parameters
+    ----------
+    f_offset : float
+        Requested baseband offset (Hz).
+    f_s : float
+        DAC sampling rate (Hz).
+    buffer_size : int
+        Number of samples of the cyclic TX buffer.
+
+    Returns
+    -------
+    float
+        Effective offset (Hz): ``round(f_offset / grid) * grid`` with
+        ``grid = f_s / buffer_size``.
+
+    Raises
+    ------
+    ValueError
+        If the snapped offset is 0 (requested offset below ``grid / 2``).
+    """
+    grid_hz = f_s / buffer_size
+    n_periods = round(f_offset / grid_hz)
+    if n_periods == 0:
+        raise ValueError(
+            f"f_offset={f_offset} Hz est trop faible : le plus petit décalage "
+            f"possible est {grid_hz:.4f} Hz (f_s / buffer_size)."
+        )
+    return n_periods * grid_hz
+
+
 def resolve_f_offset(cfg: dict[str, Any]) -> float:
-    """Return the effective baseband offset (Hz), 0 if not in cw_offset mode."""
+    """Return the effective baseband offset (Hz), 0 if not in cw_offset mode.
+
+    The configured ``emission.f_offset`` is snapped with
+    :func:`snap_tx_offset`; the snapped value is the one transmitted, so it
+    is also the one used by the receiver (bug B1).
+    """
     emi = cfg.get("emission", {})
-    if emi.get("mode") == "cw_offset":
-        return float(emi.get("f_offset", 0.0))
-    return 0.0
+    if emi.get("mode") != "cw_offset":
+        return 0.0
+    requested = float(emi.get("f_offset", 0.0))
+    sdr = cfg["sdr"]
+    effective = snap_tx_offset(requested, float(sdr["f_s"]), int(sdr["buffer_size"]))
+    if effective != requested:
+        logger.info(
+            "f_offset recalé de %.3f Hz à %.5f Hz (nombre entier de périodes "
+            "par buffer TX de %d échantillons)",
+            requested,
+            effective,
+            int(sdr["buffer_size"]),
+        )
+    return effective
 
 
 def open_pluto(
