@@ -46,6 +46,27 @@ def _resolve_npz_path(args: argparse.Namespace) -> Path:
     return (data_root / args.subset / f"{int(args.index)}.npz").resolve()
 
 
+def _choose_config_path(cli_config: str | None, stored_config_path: str | None) -> str:
+    """YAML used for the replay: ``--config``, else the recorded one, else the default.
+
+    Recordings store the **absolute** path of their configuration file.  When
+    that file no longer exists (repository moved or reorganised), the default
+    configuration is used instead, with a warning.
+    """
+    if cli_config is not None:
+        return str(Path(cli_config).expanduser().resolve())
+    if stored_config_path and Path(stored_config_path).expanduser().is_file():
+        return str(Path(stored_config_path).expanduser().resolve())
+    if stored_config_path:
+        logging.warning(
+            "Configuration de l'enregistrement introuvable (%s) — "
+            "utilisation de la configuration par défaut %s",
+            stored_config_path,
+            DEFAULT_RADAR_CONFIG,
+        )
+    return str(DEFAULT_RADAR_CONFIG)
+
+
 def _frames_from_npz(data: Any) -> tuple[list[dict[str, Any]], int]:
     """Build replay frames from a recording's ``spectrogram_db`` array.
 
@@ -134,12 +155,8 @@ def main() -> None:
     if not npz_path.is_file():
         raise SystemExit(f"Fichier introuvable : {npz_path}")
 
-    cfg_default = str(DEFAULT_RADAR_CONFIG)
     stored_config_path, rec_label = read_recording_metadata(npz_path)
-    cfg_path = args.config
-    if cfg_path is None:
-        cfg_path = stored_config_path or cfg_default
-    cfg_path = str(Path(cfg_path).expanduser().resolve())
+    cfg_path = _choose_config_path(args.config, stored_config_path)
 
     cfg: dict[str, Any] = load_config(cfg_path)
     context = build_context(cfg)

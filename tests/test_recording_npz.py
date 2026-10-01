@@ -63,3 +63,15 @@ def test_record_refuses_index_with_several_samples(tmp_path: Path) -> None:
     record = load_script("record")
     with pytest.raises(SystemExit):
         record.main(["--subset", "train", "--env", "salle", "--label", "1", "-n", "2", "--index", "3"])
+
+
+def test_replay_config_falls_back_to_default_when_recorded_path_is_gone(tmp_path: Path) -> None:
+    from iot_radar.config import DEFAULT_RADAR_CONFIG
+
+    replay = load_script("replay")
+    existing = tmp_path / "radar.yaml"
+    existing.write_text("{}", encoding="utf-8")
+    assert replay._choose_config_path(None, str(existing)) == str(existing.resolve())
+    assert replay._choose_config_path(None, "/no/such/config.yaml") == str(DEFAULT_RADAR_CONFIG)
+    assert replay._choose_config_path(None, None) == str(DEFAULT_RADAR_CONFIG)
+    assert replay._choose_config_path(str(existing), "/no/such/config.yaml") == str(existing.resolve())
