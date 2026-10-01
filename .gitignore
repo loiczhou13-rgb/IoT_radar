@@ -108,6 +108,9 @@ AICalibration/data/
 AICalibration/results/*
 !AICalibration/results/.gitkeep
 
+# ===== Radar sessions (HDF5 recordings) =====
+/data/
+
 # ===== Run logs =====
 # *.log is already ignored globally; the folder is kept through .gitkeep.
 logs/*
