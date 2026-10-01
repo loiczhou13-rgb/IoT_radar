@@ -98,15 +98,15 @@ def streaming_frame_generator(
     bande_ref_bb = tuple(det_cfg["reference_band_hz"])
 
     f_max_eff = max(f_max_utile, abs(f_off) + bande_ref_bb[1])
-    decimator = Decimator(f_s=f_s, D=D, f_max_utile=f_max_eff)
-    f_s_dec = decimator.f_s_out
+    decimator = Decimator(f_s_hz=f_s, decimation_factor=D, max_frequency_hz=f_max_eff)
+    f_s_dec = decimator.f_s_out_hz
 
     clutter_filter = ClutterFilter(
         mode=clu_cfg["mode"],
-        fs=f_s_dec,
+        f_s_hz=f_s_dec,
         alpha=float(clu_cfg["alpha"]),
         butterworth_order=int(clu_cfg["butterworth_order"]),
-        butterworth_cutoff=float(clu_cfg["butterworth_cutoff_hz"]),
+        butterworth_cutoff_hz=float(clu_cfg["butterworth_cutoff_hz"]),
     )
     window = get_window(spec_cfg["window"], n_fft)
 
@@ -195,14 +195,14 @@ def streaming_frame_generator(
 
                 score_presence, p_value_f, acf_peak, fv_estimated = (
                     detect_presence_column(
-                        col_db=col.col_db,
+                        column_db=col.power_db,
                         f_hz=col.f_hz,
-                        phi_buffer=phi_hist,
-                        f_s=f_s_dec,
-                        bande_respiration=bande_resp_bb,
-                        bande_reference=bande_ref_bb,
-                        f_center=f_off,
-                        w=w,
+                        phase_rad=phi_hist,
+                        f_s_hz=f_s_dec,
+                        breathing_band_hz=bande_resp_bb,
+                        reference_band_hz=bande_ref_bb,
+                        f_center_hz=f_off,
+                        spectral_weight=w,
                         p_value_decades=p_value_decades,
                         acf_floor=acf_floor,
                         acf_good=acf_good,
@@ -211,7 +211,7 @@ def streaming_frame_generator(
                 alert = bool(p_value_f < alpha_alert)
 
                 yield {
-                    "spectre_colonne": col.col_db,
+                    "spectre_colonne": col.power_db,
                     "score_presence":  score_presence,
                     "p_value_f":       p_value_f,
                     "acf_peak":        acf_peak,

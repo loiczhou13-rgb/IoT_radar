@@ -1,20 +1,25 @@
-"""Streaming sample-rate reduction for IQ signals.
+"""Sample-rate reduction (decimation) of complex IQ streams.
 
-:class:`Decimator` is stateful and causal for real-time streaming pipelines.
-Instantiate once, then call buffer-by-buffer.  Filter state and sub-sampling
-phase are preserved across calls so that buffer boundaries do not reset the
-anti-aliasing filters or the downsampling phase.
+Place in the chain: right after the acquisition.  The PlutoSDR delivers
+samples at millions of samples per second, while breathing lives below 1 Hz;
+:class:`Decimator` low-pass filters the stream and keeps one sample out of
+``decimation_factor``.
 
-The total decimation factor *D* is decomposed into prime factors ≤ 13
-(via :func:`_factorise`) and one Chebyshev type-I order-8 anti-aliasing filter
-is applied per stage, following the ``scipy.signal.decimate`` recommendation.
+:class:`Decimator` is stateful and causal: instantiate it once per stream and
+call it block by block.  The filter states and the sub-sampling phase are kept
+between calls, so block boundaries are invisible in the output — a complete
+recording can also be decimated offline by passing it as a single block (the
+result is identical).
+
+The decimation factor is decomposed into prime factors ≤ 13 and one Chebyshev
+type-I order-8 anti-aliasing filter (cut-off ``0.8 / q`` of the stage Nyquist
+frequency, as in ``scipy.signal.decimate``) is applied per stage.
 
 Note
 ----
-``filtfilt`` (zero-phase) is incompatible with streaming because it requires
-the complete signal.  :class:`Decimator` uses ``lfilter`` (forward-only) which
-introduces a constant group delay — harmless for detection of signals well
-below the cutoff (~0.4 · f_out).
+Zero-phase filtering (``filtfilt``) needs the complete signal, so it cannot be
+used on a stream.  ``lfilter`` (forward only) introduces a constant group
+delay, harmless for signals well below the cut-off (~0.4 x output rate).
 """
 
 from __future__ import annotations
@@ -36,22 +41,22 @@ _CHEBY_RIPPLE_DB = 0.05
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _factorise(D: int) -> list[int]:
-    """Decompose *D* into prime factors ≤ 13 (sorted ascending).
+def _factorise(decimation_factor: int) -> list[int]:
+    """Decompose *decimation_factor* into prime factors ≤ 13 (ascending).
 
     Each factor becomes one decimation stage with its own Chebyshev
-    anti-aliasing filter, maximising stopband rejection per stage.
+    anti-aliasing filter, maximising the stop-band rejection per stage.
 
     Raises
     ------
     ValueError
-        If *D* has a prime factor > 13.
+        If *decimation_factor* has a prime factor > 13.
     """
-    if D <= 1:
+    if decimation_factor <= 1:
         return []
 
     factors: list[int] = []
-    remaining = D
+    remaining = decimation_factor
 
     for p in _PRIMES:
         while remaining % p == 0:
@@ -60,71 +65,68 @@ def _factorise(D: int) -> list[int]:
 
     if remaining > 1:
         raise ValueError(
-            f"D={D} contient un facteur premier > {_MAX_PRIME} (résidu={remaining}). "
-            f"Choisir un D décomposable en petits facteurs ({', '.join(map(str, _PRIMES))})."
+            f"decimation factor {decimation_factor} has a prime factor > {_MAX_PRIME} "
+            f"(residue {remaining}). Choose a factor built from small primes "
+            f"({', '.join(map(str, _PRIMES))})."
         )
 
     factors.sort()
     return factors
 
 
-def _check_shannon(f_s: float, D: int, f_max_utile: float) -> None:
-    """Raise ``ValueError`` if the post-decimation Nyquist margin is violated.
+def _check_shannon(f_s_hz: float, decimation_factor: int, max_frequency_hz: float) -> None:
+    """Raise ``ValueError`` if the output rate cannot represent *max_frequency_hz*.
 
-    The guard band factor 2.5 (instead of the theoretical 2.0) accounts for
-    the transition band of the Chebyshev anti-aliasing filter.
+    The guard factor 2.5 (instead of the theoretical 2.0) accounts for the
+    transition band of the Chebyshev anti-aliasing filter.
     """
-    f_s_out = f_s / D
-    if D > 1 and f_s_out <= 2.5 * f_max_utile:
+    f_s_out_hz = f_s_hz / decimation_factor
+    if decimation_factor > 1 and f_s_out_hz <= 2.5 * max_frequency_hz:
         raise ValueError(
-            f"Critère de Shannon (avec marge filtre anti-repliement) violé : "
-            f"f_s_out = {f_s_out:.1f} Hz ≤ 2.5 × f_max_utile = "
-            f"{2.5 * f_max_utile:.1f} Hz. Réduire D (actuellement {D}) "
-            f"ou augmenter f_s."
+            f"Shannon criterion (with anti-aliasing margin) violated: output rate "
+            f"{f_s_out_hz:.1f} Hz <= 2.5 x max_frequency_hz = "
+            f"{2.5 * max_frequency_hz:.1f} Hz. Reduce the decimation factor "
+            f"(currently {decimation_factor}) or increase the sampling rate."
         )
 
 
+# ---------------------------------------------------------------------------
+# Decimator
+# ---------------------------------------------------------------------------
+
 class Decimator:
-    """Stateful cascaded decimator for streaming complex IQ.
-
-    Instantiate once per stream, then call the instance buffer-by-buffer.
-    Filter state (``zi``) and sub-sampling phase are preserved across calls
-    so that buffer boundaries do not reset the anti-aliasing filters or the
-    downsampling phase.
-
-    A whole recording can be decimated offline by passing it as one block.
+    """Stateful cascaded decimator for complex IQ streams.
 
     Parameters
     ----------
-    f_s : float
+    f_s_hz : float
         Input sampling rate (Hz).
-    D : int
-        Total decimation factor.  Must factor into primes ≤ 13.
-    f_max_utile : float
-        Maximum frequency of interest (Hz), used for the Shannon check.
+    decimation_factor : int
+        Total decimation factor; must factor into primes ≤ 13.  The output
+        rate is ``f_s_hz / decimation_factor``.
+    max_frequency_hz : float
+        Highest frequency of interest (Hz), only used for the Shannon check.
 
     Notes
     -----
     Each stage applies a Chebyshev type-I order-8 low-pass filter with
-    ``Wn = 0.8 / q``, then downsamples by *q*.  Forward IIR (``lfilter``)
-    is used instead of ``filtfilt`` because zero-phase filtering is
-    incompatible with streaming.  The induced group delay is constant and
-    negligible for signals well below the cutoff (~0.4 · f_out).
+    ``Wn = 0.8 / q`` and then keeps one sample out of *q*.  I and Q are
+    filtered separately (real filters), each with its own state.
     """
 
-    def __init__(self, f_s: float, D: int, f_max_utile: float) -> None:
-        self.f_s_in = float(f_s)
-        self.D = int(D)
-        self.f_s_out = self.f_s_in / self.D
+    def __init__(self, f_s_hz: float, decimation_factor: int, max_frequency_hz: float) -> None:
+        self.f_s_in_hz = float(f_s_hz)
+        self.decimation_factor = int(decimation_factor)
+        self.f_s_out_hz = self.f_s_in_hz / self.decimation_factor
 
-        _check_shannon(self.f_s_in, self.D, f_max_utile)
+        _check_shannon(self.f_s_in_hz, self.decimation_factor, max_frequency_hz)
 
         self._stages: list[tuple[np.ndarray, np.ndarray, int]] = []
         self._zi_re: list[np.ndarray] = []
         self._zi_im: list[np.ndarray] = []
         self._phase: list[int] = []
 
-        for q in _factorise(self.D):
+        for q in _factorise(self.decimation_factor):
             b, a = cheby1(_CHEBY_ORDER, _CHEBY_RIPPLE_DB, 0.8 / q)
             n_state = max(len(a), len(b)) - 1
             self._stages.append((b, a, q))
@@ -133,27 +135,27 @@ class Decimator:
             self._phase.append(0)
 
         logger.info(
-            "Decimator — D=%d, %d étage(s), f_s : %.0f → %.1f Hz",
-            self.D, len(self._stages), self.f_s_in, self.f_s_out,
+            "Decimator — factor %d in %d stage(s), %.0f Hz -> %.1f Hz",
+            self.decimation_factor, len(self._stages), self.f_s_in_hz, self.f_s_out_hz,
         )
 
     def __call__(self, iq: np.ndarray) -> np.ndarray:
-        """Decimate one IQ buffer, preserving filter state.
+        """Low-pass filter and down-sample one block, keeping the filter state.
 
         Parameters
         ----------
         iq : numpy.ndarray
-            Complex IQ samples (1-D) at rate ``f_s_in``.
+            Complex IQ samples (1-D) at ``f_s_in_hz``.
 
         Returns
         -------
         numpy.ndarray
-            ``complex64`` vector at rate ``f_s_out``.  Length depends on
-            buffer size and current sub-sampling phase; for a steady stream
-            of equal-sized buffers the average length per call is
-            ``len(iq) / D``.
+            ``complex64`` samples at ``f_s_out_hz``.  For a steady stream of
+            equal blocks the average output length is
+            ``len(iq) / decimation_factor``; one call may differ by one
+            sample, depending on the sub-sampling phase.
         """
-        if self.D == 1:
+        if self.decimation_factor == 1:
             return iq.astype(np.complex64, copy=False)
 
         re = iq.real.astype(np.float64, copy=False)
@@ -166,6 +168,8 @@ class Decimator:
             re, self._zi_re[i] = lfilter(b, a, re, zi=self._zi_re[i])
             im, self._zi_im[i] = lfilter(b, a, im, zi=self._zi_im[i])
 
+            # Index of the first sample to keep in this block, so that the
+            # kept samples stay exactly q apart across block boundaries.
             offset = self._phase[i]
             n = re.size
 
@@ -183,7 +187,7 @@ class Decimator:
         return (re + 1j * im).astype(np.complex64)
 
     def reset(self) -> None:
-        """Reset filter state and phase counters (start a new stream)."""
+        """Clear the filter states and sub-sampling phases (start of a new stream)."""
         for i in range(len(self._stages)):
             self._zi_re[i][:] = 0.0
             self._zi_im[i][:] = 0.0

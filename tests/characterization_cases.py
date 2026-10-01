@@ -23,7 +23,7 @@ from iot_radar.dsp.clutter import ClutterFilter
 from iot_radar.dsp.decimation import Decimator
 from iot_radar.dsp.detection import (
     _acf_peak,
-    _fisher_pvalue,
+    _fisher_p_value,
     _fusion_score,
     detect_presence_column,
 )
@@ -128,7 +128,7 @@ def case_decimator() -> dict[str, np.ndarray]:
     x = _test_signal(300_000, 2e6, seed=1)
     out = {}
     for factor in (1000, 100):
-        decimator = Decimator(f_s=2e6, D=factor, f_max_utile=10.0)
+        decimator = Decimator(f_s_hz=2e6, decimation_factor=factor, max_frequency_hz=10.0)
         blocks = np.array_split(x, 13)
         out[f"d{factor}"] = np.concatenate([decimator(b) for b in blocks])
     return out
@@ -140,8 +140,8 @@ def case_clutter() -> dict[str, np.ndarray]:
     out = {}
     for mode in ("mean", "iir", "mti", "butterworth"):
         clutter_filter = ClutterFilter(
-            mode=mode, fs=2000.0, alpha=0.999,
-            butterworth_order=2, butterworth_cutoff=0.05,
+            mode=mode, f_s_hz=2000.0, alpha=0.999,
+            butterworth_order=2, butterworth_cutoff_hz=0.05,
         )
         out[mode] = np.concatenate([clutter_filter(b) for b in np.array_split(x, 7)])
     return out
@@ -156,7 +156,7 @@ def case_spectral_column() -> dict[str, np.ndarray]:
     """One STFT column of a windowed segment."""
     segment = _test_signal(1024, 2000.0, seed=3)
     column = compute_single_column(segment, 2000.0, get_window("hann", 1024))
-    return {"col_db": column.col_db, "f_hz": column.f_hz}
+    return {"col_db": column.power_db, "f_hz": column.f_hz}
 
 
 def case_detection() -> dict[str, np.ndarray]:
@@ -171,13 +171,13 @@ def case_detection() -> dict[str, np.ndarray]:
     t = np.arange(20_000) / f_s
     phi = 1.5 * np.sin(2 * np.pi * 0.3 * t) + 0.2 * rng.standard_normal(t.size)
 
-    p_value, ratio = _fisher_pvalue(spectrum_lin, f_hz, (0.1, 0.8), (2.0, 5.0), f_center=244.140625)
+    p_value, ratio = _fisher_p_value(spectrum_lin, f_hz, (0.1, 0.8), (2.0, 5.0), f_center_hz=244.140625)
     acf_peak, fv = _acf_peak(phi, f_s, (0.1, 0.8))
-    fused = _fusion_score(p_value, acf_peak, w=0.5, p_value_decades=3.0, acf_floor=0.2, acf_good=0.7)
+    fused = _fusion_score(p_value, acf_peak, spectral_weight=0.5, p_value_decades=3.0, acf_floor=0.2, acf_good=0.7)
     column_result = detect_presence_column(
-        col_db=col_db, f_hz=f_hz, phi_buffer=phi, f_s=f_s,
-        bande_respiration=(0.1, 0.8), bande_reference=(2.0, 5.0), f_center=244.140625,
-        w=0.5, p_value_decades=3.0, acf_floor=0.2, acf_good=0.7,
+        column_db=col_db, f_hz=f_hz, phase_rad=phi, f_s_hz=f_s,
+        breathing_band_hz=(0.1, 0.8), reference_band_hz=(2.0, 5.0), f_center_hz=244.140625,
+        spectral_weight=0.5, p_value_decades=3.0, acf_floor=0.2, acf_good=0.7,
     )
     return {
         "fisher": np.array([p_value, ratio]),

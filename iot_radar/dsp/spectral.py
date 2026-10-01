@@ -1,9 +1,9 @@
-"""Spectral analysis helpers: analysis windows and single STFT columns.
+"""Spectral analysis: analysis windows, STFT columns and spectrograms.
 
-The streaming pipeline computes one STFT column at a time with
-:func:`compute_single_column`; the window applied to each segment comes from
-:func:`get_window`.  (Merged from the former ``pipeline/windowing.py`` and
-``pipeline/spectrogramme.py``.)
+Place in the chain: the micro-Doppler chain turns the decimated signal into
+a spectrogram, one STFT column at a time (:func:`compute_single_column`); a
+complete signal can also be processed offline in one call
+(:func:`compute_spectrogram`), with exactly the same columns.
 """
 
 from __future__ import annotations
@@ -23,58 +23,55 @@ _VALID_WINDOWS = ("hann", "hamming", "blackman", "flattop")
 # Analysis windows
 # ---------------------------------------------------------------------------
 
-def get_window(mode: str, n: int) -> np.ndarray:
-    """Return a real-valued window of length *n*.
+def get_window(window_name: str, n_samples: int) -> np.ndarray:
+    """Return a real-valued analysis window.
 
     Parameters
     ----------
-    mode : str
-        Window type: ``"hann"``, ``"hamming"``, ``"blackman"``,
-        ``"flattop"``, or ``"none"`` (rectangular — all ones).
-    n : int
-        Number of samples in the window.
+    window_name : str
+        ``"hann"``, ``"hamming"``, ``"blackman"``, ``"flattop"``, or
+        ``"none"`` (rectangular — all ones).
+    n_samples : int
+        Length of the window.
 
     Returns
     -------
     numpy.ndarray
-        Float64 array of shape ``(n,)`` with values in [0, 1].
+        Float64 array of shape ``(n_samples,)`` with values in [0, 1]
+        (symmetric windows of ``scipy.signal.windows``).
 
     Raises
     ------
     ValueError
-        If *mode* is not a recognised window name.
+        If *window_name* is not a recognised window.
 
     Notes
     -----
-    In STFT-based micro-Doppler analysis each time segment is multiplied
-    by a tapering window before the FFT.  This reduces **spectral leakage**
-    — energy from strong clutter residuals or harmonics spilling into the
-    weak respiratory bins.  The trade-off is a wider main lobe (lower
-    frequency resolution).
+    Each STFT segment is multiplied by a tapering window before the FFT.
+    This reduces **spectral leakage** — energy of strong clutter residuals
+    spilling into the weak breathing bins — at the cost of a wider main
+    lobe (lower frequency resolution).
 
     * Hann — good general-purpose choice; −31 dB first sidelobe.
-    * Hamming — slightly lower sidelobes (−43 dB) at the cost of a
-      discontinuity at the edges.
+    * Hamming — lower sidelobes (−43 dB), discontinuous at the edges.
     * Blackman — very low sidelobes (−58 dB), ~50 % wider main lobe.
-    * Flat-top — best amplitude accuracy (< 0.01 dB error), useful for
-      measuring Bessel-series harmonic magnitudes, but widest main lobe
-      (~3.8× Hann) — not recommended for detection where frequency
-      resolution is critical.
-    * None (rectangular) — maximum resolution, maximum leakage; useful
-      only when the signal is well-isolated in frequency.
+    * Flat-top — best amplitude accuracy (< 0.01 dB error) but the widest
+      main lobe (~3.8× Hann): not recommended for detection.
+    * None (rectangular) — best resolution, most leakage; only for
+      well-isolated signals.
     """
-    if mode == "none":
-        logger.debug("Fenêtre rectangulaire (none) — %d points", n)
-        return np.ones(n, dtype=np.float64)
+    if window_name == "none":
+        logger.debug("Rectangular window (none) — %d points", n_samples)
+        return np.ones(n_samples, dtype=np.float64)
 
-    if mode not in _VALID_WINDOWS:
+    if window_name not in _VALID_WINDOWS:
         raise ValueError(
-            f"Fenêtre inconnue : '{mode}'. "
-            f"Utiliser {', '.join(repr(m) for m in _VALID_WINDOWS)} ou 'none'."
+            f"Unknown window '{window_name}'. "
+            f"Use {', '.join(repr(m) for m in _VALID_WINDOWS)} or 'none'."
         )
 
-    w = getattr(windows, mode)(n)
-    logger.debug("Fenêtre '%s' — %d points", mode, n)
+    w = getattr(windows, window_name)(n_samples)
+    logger.debug("Window '%s' — %d points", window_name, n_samples)
     return np.asarray(w, dtype=np.float64)
 
 
@@ -82,14 +79,14 @@ def get_window(mode: str, n: int) -> np.ndarray:
 # Single STFT column
 # ---------------------------------------------------------------------------
 
-def frequency_axis(n_fft: int, f_s: float) -> np.ndarray:
+def frequency_axis(n_fft: int, f_s_hz: float) -> np.ndarray:
     """Centred frequency axis (Hz) of an fftshifted ``n_fft``-point spectrum.
 
     Parameters
     ----------
     n_fft : int
         Number of FFT points.
-    f_s : float
+    f_s_hz : float
         Sampling rate (Hz) of the transformed signal.
 
     Returns
@@ -98,38 +95,38 @@ def frequency_axis(n_fft: int, f_s: float) -> np.ndarray:
         Float64 array of shape ``(n_fft,)`` from ``-f_s/2`` up to
         ``f_s/2 - f_s/n_fft``, in steps of ``f_s / n_fft``.
     """
-    frequencies = np.fft.fftfreq(n_fft, d=1.0 / f_s)
+    frequencies = np.fft.fftfreq(n_fft, d=1.0 / f_s_hz)
     return np.fft.fftshift(frequencies).astype(np.float64)
 
 
 @dataclass
 class ColumnOutput:
-    """Container for a single STFT column (one spectral snapshot).
+    """One STFT column (spectral snapshot of one segment).
 
     Attributes
     ----------
-    col_db : numpy.ndarray
-        Power in dB, shape ``(n_fft,)``, fftshifted.
+    power_db : numpy.ndarray
+        Power ``10·log10(|X|² + 1e-12)`` (dB), shape ``(n_fft,)``, fftshifted.
     f_hz : numpy.ndarray
-        Doppler frequency axis (Hz), centred.
+        Matching frequency axis (Hz), centred (see :func:`frequency_axis`).
     """
 
-    col_db: np.ndarray
+    power_db: np.ndarray
     f_hz: np.ndarray
 
 
 def compute_single_column(
     segment: np.ndarray,
-    f_s: float,
+    f_s_hz: float,
     window: np.ndarray,
 ) -> ColumnOutput:
-    """Compute one STFT column from a windowed time-domain segment.
+    """Power spectrum of one windowed time segment (one STFT column).
 
     Parameters
     ----------
     segment : numpy.ndarray
         Complex IQ segment, shape ``(n_fft,)``.
-    f_s : float
+    f_s_hz : float
         Sampling rate (Hz) of *segment* (decimated rate).
     window : numpy.ndarray
         Pre-computed window, same length as *segment*.
@@ -137,7 +134,8 @@ def compute_single_column(
     Returns
     -------
     ColumnOutput
-        Single spectrum column with its frequency axis.
+        Power in dB and its frequency axis.  No normalisation by the window
+        sum is applied.
     """
     n_fft = len(segment)
 
@@ -145,11 +143,11 @@ def compute_single_column(
     spectrum = np.fft.fftshift(np.fft.fft(windowed, n=n_fft))
 
     eps = 1e-12
-    col_db = 10.0 * np.log10(np.abs(spectrum) ** 2 + eps)
+    power_db = 10.0 * np.log10(np.abs(spectrum) ** 2 + eps)
 
     return ColumnOutput(
-        col_db=col_db.astype(np.float64),
-        f_hz=frequency_axis(n_fft, f_s),
+        power_db=power_db.astype(np.float64),
+        f_hz=frequency_axis(n_fft, f_s_hz),
     )
 
 
@@ -159,7 +157,7 @@ def compute_single_column(
 
 def compute_spectrogram(
     iq: np.ndarray,
-    f_s: float,
+    f_s_hz: float,
     window: np.ndarray,
     hop: int,
     skip_frames: int = 0,
@@ -175,9 +173,9 @@ def compute_spectrogram(
     Parameters
     ----------
     iq : numpy.ndarray
-        Complex IQ samples (1-D) at rate *f_s* — e.g. the decimated and
+        Complex IQ samples (1-D) at rate *f_s_hz* — e.g. the decimated and
         clutter-filtered signal.
-    f_s : float
+    f_s_hz : float
         Sampling rate of *iq* (Hz).
     window : numpy.ndarray
         Analysis window; its length is the FFT size ``n_fft``.
@@ -192,7 +190,7 @@ def compute_spectrogram(
     numpy.ndarray
         Power in dB, shape ``(n_frames, n_fft)``; row ``k`` is the column of
         the ``(k + skip_frames)``-th segment.  Each column is fftshifted (see
-        :func:`compute_single_column` for the frequency axis).
+        :func:`frequency_axis` for the frequency axis).
     """
     n_fft = len(window)
     columns: list[np.ndarray] = []
@@ -202,6 +200,6 @@ def compute_spectrogram(
         frame_number += 1
         if frame_number > skip_frames:
             segment = iq[start:start + n_fft]
-            columns.append(compute_single_column(segment, f_s, window).col_db)
+            columns.append(compute_single_column(segment, f_s_hz, window).power_db)
         start += hop
     return np.array(columns, dtype=np.float64).reshape(len(columns), n_fft)

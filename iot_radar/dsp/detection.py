@@ -1,4 +1,14 @@
-"""Streaming respiration detection — Fisher F-test fused with phase ACF."""
+"""Breathing detection of the micro-Doppler chain: Fisher F-test fused with a phase ACF.
+
+Place in the chain: last processing step, run on every STFT column.  Two
+indicators are combined into a presence score in [0, 1]:
+
+* a **spectral** test — is there more power in the breathing band (around the
+  carrier) than in a noise-only reference band?  (Fisher F-test,
+  :func:`_fisher_p_value`);
+* a **temporal** test — is the demodulated phase periodic at a breathing
+  rate?  (normalised autocorrelation peak, :func:`_acf_peak`).
+"""
 
 from __future__ import annotations
 
@@ -6,187 +16,187 @@ import logging
 
 import numpy as np
 from scipy.signal import correlate
-from scipy.stats import f
+from scipy.stats import f as f_distribution
 
 logger = logging.getLogger(__name__)
 
 
 # ----------------------------------------------------------------------
-# Internal building blocks
+# Building blocks
 # ----------------------------------------------------------------------
 
-def _fisher_pvalue(
-    S_lin: np.ndarray,
+def _fisher_p_value(
+    power_lin: np.ndarray,
     f_hz: np.ndarray,
-    bande_respiration: tuple[float, float],
-    bande_reference: tuple[float, float],
-    f_center: float = 0.0,
+    breathing_band_hz: tuple[float, float],
+    reference_band_hz: tuple[float, float],
+    f_center_hz: float = 0.0,
 ) -> tuple[float, float]:
-    """Fisher F-test on the band-power ratio.
+    """Fisher F-test on the ratio of the mean powers of two bands.
 
     Parameters
     ----------
-    S_lin : numpy.ndarray
-        Linear-scale power spectrum (1-D column or 2-D spectrogram in batch mode).
+    power_lin : numpy.ndarray
+        Power spectrum in linear scale, shape ``(n_fft,)``.
     f_hz : numpy.ndarray
-        Centred frequency axis (Hz).
-    bande_respiration, bande_reference : tuple[float, float]
-        Signal and reference bands (Hz), expressed **relative to the carrier**
-        (i.e. as baseband offsets), as in ``config.yaml``.
-    f_center : float, optional
-        Spectral location of the carrier (Hz).  Both bands are taken on the
-        two sidebands around *f_center*, i.e. on ``|f_hz - f_center|``.  In
-        CW-offset mode this is ``f_offset``; in baseband mode it is 0
-        (default), which reduces to ``|f_hz|``.
+        Matching centred frequency axis (Hz).
+    breathing_band_hz, reference_band_hz : tuple[float, float]
+        Signal and reference bands ``(low, high)`` in Hz, **relative to the
+        carrier** (baseband offsets), as in ``configs/radar.yaml``.
+    f_center_hz : float, optional
+        Position of the carrier in the spectrum (Hz).  Both bands are taken
+        on the two sidebands around it, i.e. on ``|f_hz - f_center_hz|``:
+        the TX offset in CW-offset mode, 0 in pure CW.
 
     Returns
     -------
     tuple[float, float]
-        ``(p_value, ratio)`` — F-test p-value and band-power ratio.
+        ``(p_value, ratio)`` — p-value of the F-test and ratio of the mean
+        band powers.
 
     Notes
     -----
-    Under H₀ of complex white Gaussian noise, the FFT-bin powers are
-    proportional to χ²(2) variables, so the ratio of band means follows
-    F(2*n_sig, 2*n_ref).
+    Under H0 (complex white Gaussian noise), the power of each FFT bin is
+    proportional to a χ²(2) variable, so the ratio of the band means follows
+    F(2·n_signal, 2·n_reference).  Adjacent bins of a windowed FFT are in
+    fact correlated, which makes the p-values too small (more false alarms).
     """
-    f_lo_sig, f_hi_sig = bande_respiration
-    f_lo_ref, f_hi_ref = bande_reference
+    signal_low_hz, signal_high_hz = breathing_band_hz
+    reference_low_hz, reference_high_hz = reference_band_hz
 
-    df = np.abs(f_hz - f_center)
-    mask_sig = (df >= f_lo_sig) & (df <= f_hi_sig)
-    mask_ref = (df >= f_lo_ref) & (df <= f_hi_ref)
+    offset_hz = np.abs(f_hz - f_center_hz)
+    signal_mask = (offset_hz >= signal_low_hz) & (offset_hz <= signal_high_hz)
+    reference_mask = (offset_hz >= reference_low_hz) & (offset_hz <= reference_high_hz)
 
-    n_sig = int(np.sum(mask_sig))
-    n_ref = int(np.sum(mask_ref))
+    n_signal = int(np.sum(signal_mask))
+    n_reference = int(np.sum(reference_mask))
 
-    if n_sig == 0:
+    if n_signal == 0:
         raise ValueError(
-            f"Masque bande respiration vide ({f_lo_sig}–{f_hi_sig} Hz)."
+            f"Empty breathing band ({signal_low_hz}–{signal_high_hz} Hz)."
         )
-    if n_ref == 0:
+    if n_reference == 0:
         raise ValueError(
-            f"Masque bande référence vide ({f_lo_ref}–{f_hi_ref} Hz)."
+            f"Empty reference band ({reference_low_hz}–{reference_high_hz} Hz)."
         )
 
-    p_sig = float(np.mean(S_lin[mask_sig]))
-    p_ref = float(np.mean(S_lin[mask_ref]))
+    signal_power = float(np.mean(power_lin[signal_mask]))
+    reference_power = float(np.mean(power_lin[reference_mask]))
 
     eps = 1e-30
-    ratio = p_sig / (p_ref + eps)
-    p_value = float(f.sf(ratio, dfn=2*n_sig, dfd=2*n_ref))
+    ratio = signal_power / (reference_power + eps)
+    p_value = float(f_distribution.sf(ratio, dfn=2*n_signal, dfd=2*n_reference))
     return p_value, ratio
 
 
 def _acf_peak(
-    phi: np.ndarray,
-    f_s: float,
-    bande_respiration: tuple[float, float],
+    phase_rad: np.ndarray,
+    f_s_hz: float,
+    breathing_band_hz: tuple[float, float],
 ) -> tuple[float, float | None]:
-    """Normalised autocorrelation peak inside the respiration delay range.
+    """Normalised autocorrelation peak inside the breathing delay range.
 
     Parameters
     ----------
-    phi : numpy.ndarray
-        Unwrapped instantaneous phase (1-D, radians) of a clutter- and
-        carrier-demodulated IQ segment.  **Length should be at least
-        ``f_s / f_lo``** to capture one full breathing period.
-    f_s : float
-        Sampling rate of *phi* (Hz).
-    bande_respiration : tuple[float, float]
-        ``(f_lo, f_hi)`` — searched delay range is ``[1/f_hi, 1/f_lo]``.
+    phase_rad : numpy.ndarray
+        Unwrapped instantaneous phase (rad, 1-D) of the clutter-filtered,
+        carrier-demodulated IQ.  Its length should be at least
+        ``f_s_hz / breathing_band_hz[0]`` to hold one full breathing period.
+    f_s_hz : float
+        Sampling rate of *phase_rad* (Hz).
+    breathing_band_hz : tuple[float, float]
+        ``(low, high)``: the searched delays are ``[1/high, 1/low]``.
 
     Returns
     -------
     tuple[float, float or None]
-        ``(acf_peak, fv_estimated)`` — normalised ACF value at the best
-        lag and corresponding ``1/τ_max`` estimate.
+        ``(acf_peak, breathing_rate_hz)`` — unbiased normalised ACF at the
+        best delay ``τ`` and the matching rate ``1 / τ`` (``None`` when the
+        estimate is impossible).
     """
-    f_lo, f_hi = bande_respiration
-    if f_lo <= 0 or f_hi <= 0 or f_hi <= f_lo:
+    f_low_hz, f_high_hz = breathing_band_hz
+    if f_low_hz <= 0 or f_high_hz <= 0 or f_high_hz <= f_low_hz:
         return 0.0, None
 
-    phi = np.asarray(phi, dtype=np.float64)
-    n = phi.size
+    phase_rad = np.asarray(phase_rad, dtype=np.float64)
+    n = phase_rad.size
     if n < 4:
         return 0.0, None
 
-    phi_zm = phi - np.mean(phi)
-    R = correlate(phi_zm, phi_zm, mode="full")
-    R0 = R[n - 1]
-    if R0 <= 0:
+    centred = phase_rad - np.mean(phase_rad)
+    acf = correlate(centred, centred, mode="full")
+    acf_at_zero = acf[n - 1]
+    if acf_at_zero <= 0:
         return 0.0, None
 
-    R_pos = R[n - 1:] / R0
+    acf_positive_lags = acf[n - 1:] / acf_at_zero
 
-    lag_min = int(np.ceil(f_s / f_hi))
-    lag_max = int(np.floor(f_s / f_lo))
+    lag_min = int(np.ceil(f_s_hz / f_high_hz))
+    lag_max = int(np.floor(f_s_hz / f_low_hz))
     lag_min = max(lag_min, 1)
     lag_max = min(lag_max, n - 1)
 
     if lag_max <= lag_min:
         return 0.0, None
 
+    # Unbiased estimate: compensate the decreasing number of terms per lag.
     lags = np.arange(lag_min, lag_max + 1)
-    segment = R_pos[lag_min: lag_max + 1] * (n / (n - lags))
-    idx_local = int(np.argmax(segment))
-    tau_max = lag_min + idx_local
-    acf_peak = float(segment[idx_local])
-    fv_estimated = float(f_s / tau_max) if tau_max > 0 else None
-    return acf_peak, fv_estimated
+    searched = acf_positive_lags[lag_min: lag_max + 1] * (n / (n - lags))
+    best_index = int(np.argmax(searched))
+    best_lag = lag_min + best_index
+    acf_peak = float(searched[best_index])
+    breathing_rate_hz = float(f_s_hz / best_lag) if best_lag > 0 else None
+    return acf_peak, breathing_rate_hz
 
 
 def _fusion_score(
-    p_value_f: float,
+    p_value: float,
     acf_peak: float,
-    w: float,
+    spectral_weight: float,
     p_value_decades: float,
     acf_floor: float,
     acf_good: float,
 ) -> float:
-    """Fuse the Fisher and ACF scores into a presence score in [0, 1].
+    """Fuse the Fisher and ACF indicators into a presence score in [0, 1].
 
-    Each raw indicator is mapped to ``[0, 1]`` through an explicit transform
-    before the weighted sum, rather than being clipped as-is:
+    Each raw indicator is first mapped to ``[0, 1]``:
 
-    * spectral — the F-test p-value is mapped on a log scale, so that a
-      p-value of ``10**(-p_value_decades)`` (or smaller) saturates to 1 and a
-      p-value of 1 maps to 0.  This reflects that confidence grows by orders
-      of magnitude, not linearly with ``1 - p``.
-    * temporal — the ACF peak is ramped linearly between a noise floor
-      (``acf_floor`` → 0) and a "strong periodicity" level (``acf_good`` → 1),
-      which is more meaningful than treating the raw peak as a score.
+    * spectral — the F-test p-value on a log scale: a p-value of
+      ``10**(-p_value_decades)`` (or smaller) gives 1 and a p-value of 1
+      gives 0 (confidence grows by orders of magnitude);
+    * temporal — the ACF peak, ramped linearly between a noise floor
+      (``acf_floor`` → 0) and a clear periodicity (``acf_good`` → 1).
+
+    The score is ``spectral_weight · spectral + (1 − spectral_weight) · temporal``.
 
     Parameters
     ----------
-    p_value_f : float
-        P-value of the Fisher F-test.
+    p_value : float
+        p-value of the Fisher F-test.
     acf_peak : float
         Normalised autocorrelation peak (may be negative).
-    w : float
-        Weight of the spectral score.  ``w=1`` → purely spectral,
-        ``w=0`` → purely time-domain.
+    spectral_weight : float
+        Weight of the spectral score, in [0, 1].
     p_value_decades : float
-        Number of decades below 1 at which the spectral score saturates to 1
-        (e.g. ``3.0`` → ``p ≤ 1e-3`` gives score 1).
+        Number of decades below 1 at which the spectral score saturates.
     acf_floor, acf_good : float
-        ACF peak values mapped to 0 and 1 respectively.
+        ACF peak values mapped to 0 and 1.
     """
     if p_value_decades <= 0:
-        raise ValueError("p_value_decades doit être > 0.")
+        raise ValueError("p_value_decades must be > 0.")
     if acf_good <= acf_floor:
-        raise ValueError("acf_good doit être > acf_floor.")
-    if w < 0 or w > 1:
-        raise ValueError("w doit être entre 0 et 1.")
+        raise ValueError("acf_good must be > acf_floor.")
+    if spectral_weight < 0 or spectral_weight > 1:
+        raise ValueError("spectral_weight must be between 0 and 1.")
 
     eps = 1e-30
-    score_F = float(
-        np.clip(-np.log10(p_value_f + eps) / p_value_decades, 0.0, 1.0)
+    spectral_score = float(
+        np.clip(-np.log10(p_value + eps) / p_value_decades, 0.0, 1.0)
     )
-    score_acf = float(
+    temporal_score = float(
         np.clip((acf_peak - acf_floor) / (acf_good - acf_floor), 0.0, 1.0)
     )
-    return float(w * score_F + (1.0 - w) * score_acf)
+    return float(spectral_weight * spectral_score + (1.0 - spectral_weight) * temporal_score)
 
 
 # ----------------------------------------------------------------------
@@ -194,72 +204,69 @@ def _fusion_score(
 # ----------------------------------------------------------------------
 
 def detect_presence_column(
-    col_db: np.ndarray,
+    column_db: np.ndarray,
     f_hz: np.ndarray,
-    phi_buffer: np.ndarray,
-    f_s: float,
-    bande_respiration: tuple[float, float],
-    bande_reference: tuple[float, float],
-    f_center: float,
-    w: float,
+    phase_rad: np.ndarray,
+    f_s_hz: float,
+    breathing_band_hz: tuple[float, float],
+    reference_band_hz: tuple[float, float],
+    f_center_hz: float,
+    spectral_weight: float,
     p_value_decades: float,
     acf_floor: float,
     acf_good: float,
 ) -> tuple[float, float, float, float | None]:
-    """Streaming detection on a single STFT column + matching phase segment.
+    """Breathing detection on one STFT column and the recent phase history.
 
     Parameters
     ----------
-    col_db : numpy.ndarray
-        Power spectrum (dB), 1-D — current STFT column (length n_fft).
+    column_db : numpy.ndarray
+        Power spectrum (dB) of the current STFT column, shape ``(n_fft,)``.
     f_hz : numpy.ndarray
-        Centred frequency axis (Hz), shape matches *col_db*.
-    phi_buffer : numpy.ndarray
-        Unwrapped phase of the **same time window** as *col_db*, after
-        clutter suppression and (in cw_offset mode) carrier demodulation.
-        Length should be ≥ ``f_s / bande_respiration[0]``.
-    f_s : float
-        Sampling rate of *phi_buffer* (Hz), i.e. the decimated rate.
-    bande_respiration, bande_reference : tuple[float, float]
-        Signal and reference bands **relative to the carrier** (Hz), e.g.
-        ``(0.1, 0.8)`` and ``(2.0, 5.0)``.  Used both for the spectral
-        F-test (on the two sidebands around *f_center*) and, for the
-        respiration band, for the time-domain ACF on the demodulated phase.
-    f_center : float
-        Spectral location of the carrier (Hz): ``f_offset`` in CW-offset
-        mode, 0 in baseband mode.  Forwarded to :func:`_fisher_pvalue`.
-    w : float
-        Fusion weight (see :func:`_fusion_score`).
-    p_value_decades, acf_floor, acf_good : float
-        Score-mapping parameters forwarded to :func:`_fusion_score`.
+        Matching centred frequency axis (Hz).
+    phase_rad : numpy.ndarray
+        Unwrapped phase (rad) of the clutter-filtered, carrier-demodulated
+        IQ over the last ``detection.acf_buffer_s`` seconds (longer than the
+        STFT segment).  Its length should be ≥ ``f_s_hz / breathing_band_hz[0]``.
+    f_s_hz : float
+        Sampling rate of *phase_rad* (Hz), i.e. the decimated rate.
+    breathing_band_hz, reference_band_hz : tuple[float, float]
+        Bands **relative to the carrier** (Hz), e.g. ``(0.1, 0.8)`` and
+        ``(2.0, 5.0)``; the breathing band also sets the delays searched by
+        the ACF.
+    f_center_hz : float
+        Position of the carrier in the spectrum (Hz): the TX offset in
+        CW-offset mode, 0 in pure CW.
+    spectral_weight, p_value_decades, acf_floor, acf_good : float
+        Score-mapping parameters, see :func:`_fusion_score`.
 
     Returns
     -------
     tuple[float, float, float, float or None]
-        ``(score_presence, p_value_f, acf_peak, fv_estimated)``.
+        ``(presence_score, p_value, acf_peak, breathing_rate_hz)``.
     """
-    col_lin = 10.0 ** (col_db / 10.0)
-    p_value_f, _ = _fisher_pvalue(
-        col_lin, f_hz, bande_respiration, bande_reference, f_center=f_center,
+    column_lin = 10.0 ** (column_db / 10.0)
+    p_value, _ = _fisher_p_value(
+        column_lin, f_hz, breathing_band_hz, reference_band_hz, f_center_hz=f_center_hz,
     )
 
-    acf_peak, fv_estimated = _acf_peak(
-        phi_buffer, f_s, bande_respiration,
+    acf_peak, breathing_rate_hz = _acf_peak(
+        phase_rad, f_s_hz, breathing_band_hz,
     )
-    score_presence = _fusion_score(
-        p_value_f,
+    presence_score = _fusion_score(
+        p_value,
         acf_peak,
-        w=w,
+        spectral_weight=spectral_weight,
         p_value_decades=p_value_decades,
         acf_floor=acf_floor,
         acf_good=acf_good,
     )
 
     logger.debug(
-        "Détection — p_F=%.2e, ACF=%.2f @ fv=%s Hz, score=%.2f",
-        p_value_f,
+        "Detection — p=%.2e, ACF=%.2f @ %s Hz, score=%.2f",
+        p_value,
         acf_peak,
-        f"{fv_estimated:.3f}" if fv_estimated is not None else "n/a",
-        score_presence,
+        f"{breathing_rate_hz:.3f}" if breathing_rate_hz is not None else "n/a",
+        presence_score,
     )
-    return score_presence, p_value_f, acf_peak, fv_estimated
+    return presence_score, p_value, acf_peak, breathing_rate_hz

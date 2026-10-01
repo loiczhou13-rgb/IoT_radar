@@ -1,4 +1,15 @@
-"""Static-clutter suppression filters for micro-Doppler radar."""
+"""Static-clutter suppression for the micro-Doppler spectrogram chain.
+
+Place in the chain: after the decimation, before the STFT.  Static echoes
+(walls, TX->RX leakage) and the receiver DC offset produce a huge line at
+0 Hz that would dominate the spectrogram; :class:`ClutterFilter` removes the
+component around 0 Hz with a high-pass filter.
+
+.. warning::
+   A high-pass filter also removes the mean of the useful term, which
+   distorts the phase of the signal: it is acceptable for a magnitude
+   product such as a spectrogram, never before a phase demodulation.
+"""
 
 from __future__ import annotations
 
@@ -19,88 +30,90 @@ class ClutterFilter:
     Parameters
     ----------
     mode : str
-        Clutter-removal strategy: ``"mean"``, ``"iir"``, ``"mti"``,
-        or ``"butterworth"``.
-    fs : float
-        Sampling rate of the input signal (Hz).  Used for cutoff
-        frequency computation and logging.
+        Clutter-removal strategy:
+
+        * ``"mean"`` — subtraction of a running mean (exponential moving
+          average, EMA), computed sample by sample;
+        * ``"iir"`` — the same EMA high-pass, vectorised with ``lfilter``;
+        * ``"mti"`` — first difference ``y[n] = x[n] - x[n-1]`` (deprecated:
+          it destroys the breathing frequencies);
+        * ``"butterworth"`` — Butterworth high-pass filter.
+    f_s_hz : float
+        Sampling rate of the input signal (Hz).
     alpha : float, optional
-        EMA memory factor for ``"iir"`` and ``"mean"`` modes.
-        Default is 0.9999.
+        EMA memory factor of the ``"iir"`` and ``"mean"`` modes (close to 1:
+        long memory, low cut-off ``≈ (1 - alpha) · f_s / 2π``).
     butterworth_order : int, optional
-        Filter order for ``"butterworth"`` mode.  Default is 2.
-    butterworth_cutoff : float, optional
-        High-pass cutoff frequency (Hz) for ``"butterworth"`` mode.
-        Default is 0.05.
+        Order of the ``"butterworth"`` high-pass.
+    butterworth_cutoff_hz : float, optional
+        Cut-off frequency of the ``"butterworth"`` high-pass (Hz).
 
     Notes
     -----
-    This class retains the internal state (running mean for IIR,
-    previous sample for MTI) across successive calls to 
-    :meth:`__call__`.  This is essential in a streaming pipeline
-    where each buffer must be processed incrementally while
-    maintaining filter continuity.
+    The internal state (running mean, previous sample, filter state) is kept
+    between successive calls, so that a stream can be processed block by
+    block.  In ``"butterworth"`` and ``"mti"`` modes the output does not
+    depend on how the signal is cut into blocks.  In ``"iir"`` and
+    ``"mean"`` modes the running mean starts at the mean of the **first**
+    block, so only the initial transient depends on the first block length.
     """
 
     def __init__(
         self,
         mode: str,
-        fs: float,
+        f_s_hz: float,
         alpha: float = 0.9999,
         butterworth_order: int = 2,
-        butterworth_cutoff: float = 0.05,
+        butterworth_cutoff_hz: float = 0.05,
     ) -> None:
         if mode not in _VALID_MODES:
             raise ValueError(
-                f"Mode clutter inconnu : '{mode}'. "
-                f"Utiliser {', '.join(repr(m) for m in _VALID_MODES)}."
+                f"Unknown clutter mode '{mode}'. "
+                f"Use {', '.join(repr(m) for m in _VALID_MODES)}."
             )
         self._mode = mode
-        self._fs = fs
+        self._f_s_hz = f_s_hz
         self._alpha = alpha
         self._mu: complex | None = None
         self._prev: complex | None = None
 
         if mode in ("iir", "mean"):
-            f_cut = (1.0 - alpha) * fs / (2.0 * math.pi)
+            cutoff_hz = (1.0 - alpha) * f_s_hz / (2.0 * math.pi)
             logger.info(
-                "ClutterFilter initialisé — mode='%s', alpha=%.4f, "
-                "f_coupure≈%.3f Hz (fs=%.1f Hz)",
+                "ClutterFilter — mode='%s', alpha=%.4f, cut-off ≈ %.3f Hz (f_s=%.1f Hz)",
                 mode,
                 alpha,
-                f_cut,
-                fs,
+                cutoff_hz,
+                f_s_hz,
             )
 
         if mode == "mti":
             logger.warning(
-                "Mode MTI inadapté à la détection de respiration : "
-                "le filtre y[n]=x[n]-x[n-1] atténue de ~60 dB à 0.3 Hz "
-                "pour fs_dec=%.0f Hz — il DÉTRUIT le signal respiratoire. "
-                "Préférer 'iir' ou 'butterworth'.",
-                fs,
+                "MTI mode is unsuited to breathing detection: the filter "
+                "y[n] = x[n] - x[n-1] attenuates 0.3 Hz by ~60 dB at f_s = %.0f Hz "
+                "and DESTROYS the breathing signal. Prefer 'iir' or 'butterworth'.",
+                f_s_hz,
             )
 
         if mode == "butterworth":
             self._sos = butter(
                 butterworth_order,
-                butterworth_cutoff,
+                butterworth_cutoff_hz,
                 btype="high",
-                fs=fs,
+                fs=f_s_hz,
                 output="sos",
             )
             self._zi_real = None
             self._zi_imag = None
             logger.info(
-                "ClutterFilter initialisé — mode='butterworth', "
-                "ordre=%d, f_coupure=%.3f Hz (fs=%.1f Hz)",
+                "ClutterFilter — mode='butterworth', order=%d, cut-off=%.3f Hz (f_s=%.1f Hz)",
                 butterworth_order,
-                butterworth_cutoff,
-                fs,
+                butterworth_cutoff_hz,
+                f_s_hz,
             )
 
     def __call__(self, iq: np.ndarray) -> np.ndarray:
-        """Filter one buffer of IQ samples.
+        """Filter one block of IQ samples.
 
         Parameters
         ----------
@@ -110,15 +123,16 @@ class ClutterFilter:
         Returns
         -------
         numpy.ndarray
-            Clutter-suppressed IQ (same length as *iq*).
+            Clutter-suppressed IQ, same length (and, except in ``"mti"``
+            mode, same dtype) as *iq*.
         """
         if iq.ndim != 1:
             raise ValueError(
-                f"iq doit être 1-D, reçu ndim={iq.ndim} shape={iq.shape}."
+                f"iq must be 1-D, got ndim={iq.ndim} shape={iq.shape}."
             )
         if not np.iscomplexobj(iq):
             logger.warning(
-                "iq n'est pas complexe (dtype=%s) — cast vers complex128.",
+                "iq is not complex (dtype=%s) — cast to complex128.",
                 iq.dtype,
             )
             iq = iq.astype(np.complex128)
@@ -132,7 +146,7 @@ class ClutterFilter:
         return self._apply_mti(iq)
 
     def _apply_mean(self, iq: np.ndarray) -> np.ndarray:
-        """Stateful mean subtraction using EMA tracking."""
+        """Subtract a running EMA mean, sample by sample."""
         out = np.empty_like(iq)
         mu = self._mu if self._mu is not None else complex(np.mean(iq))
         alpha = self._alpha
@@ -143,7 +157,7 @@ class ClutterFilter:
         return out
 
     def _apply_iir(self, iq: np.ndarray) -> np.ndarray:
-        """Vectorised EMA high-pass using lfilter with state carry-over."""
+        """Vectorised EMA high-pass (``lfilter``) with state carry-over."""
         alpha = self._alpha
         b = np.array([1.0 - alpha])
         a = np.array([1.0, -alpha])
@@ -157,15 +171,16 @@ class ClutterFilter:
         return (iq - mu_filtered).astype(iq.dtype)
 
     def _apply_mti(self, iq: np.ndarray) -> np.ndarray:
-        """Single-delay MTI with state carry-over."""
+        """Single-delay MTI (first difference) with state carry-over."""
         prev = self._prev if self._prev is not None else complex(iq[0])
         extended = np.concatenate(([prev], iq))
         self._prev = complex(iq[-1])
         return np.diff(extended)
 
     def _apply_butterworth(self, iq: np.ndarray) -> np.ndarray:
-        """High-pass Butterworth with state carry-over (I/Q separate)."""
+        """Butterworth high-pass with state carry-over (I and Q separately)."""
         if self._zi_real is None:
+            # Start in steady state on the first sample (no initial step).
             zi = sosfilt_zi(self._sos)
             self._zi_real = zi * iq.real[0]
             self._zi_imag = zi * iq.imag[0]

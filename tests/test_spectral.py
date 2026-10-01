@@ -25,7 +25,7 @@ def test_offline_spectrogram_equals_stream() -> None:
     n_fft = cfg["spectrogram"]["n_fft"]
     hop = int(n_fft * (1.0 - cfg["spectrogram"]["overlap"]))
     offline = compute_spectrogram(
-        np.concatenate(chunks), f_s=1000.0,
+        np.concatenate(chunks), f_s_hz=1000.0,
         window=get_window("hann", n_fft), hop=hop,
         skip_frames=cfg["spectrogram"]["skip_warmup_frames"],
     )
