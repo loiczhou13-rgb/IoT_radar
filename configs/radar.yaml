@@ -280,3 +280,7 @@ simulation:
 
   # Seed of the noise generator (null = different noise at each run).
   seed: null
+
+  # Deliver the samples at the real sampling rate, like the hardware
+  # (false = as fast as possible).
+  realtime: true

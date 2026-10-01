@@ -207,6 +207,12 @@ class CWSimulationSource:
         Ratio ``A² / noise power`` per sample (dB), before any processing gain.
     seed : int or None, optional
         Seed of the noise generator (``None``: different noise at each run).
+    realtime : bool, optional
+        If ``True``, :meth:`read_block` waits so that blocks are delivered at
+        the real sampling rate, like the hardware (bug B5: an unpaced
+        simulation produced far more than 1 s of signal per second of wall
+        clock, so recordings and live displays ran too fast).  ``False``
+        (default) generates as fast as possible, for tests and offline use.
     """
 
     n_channels: int = 1
@@ -230,6 +236,7 @@ class CWSimulationSource:
         lo_offset_hz: float = 0.0,
         snr_db: float = -25.0,
         seed: int | None = None,
+        realtime: bool = False,
     ) -> None:
         self.sample_rate_hz = float(f_s)
         self._f_s = float(f_s)
@@ -248,6 +255,8 @@ class CWSimulationSource:
         self._noise_std = self._target_amplitude * 10.0 ** (-float(snr_db) / 20.0) / np.sqrt(2.0)
         self._rng = np.random.default_rng(seed)
         self._sample_idx = 0
+        self._realtime = bool(realtime)
+        self._next_block_time_s = time.monotonic()
 
         logger.info(
             "Streaming simulation — f_b=%.2f Hz, D=%.1f mm, présence=%s, "
@@ -277,12 +286,19 @@ class CWSimulationSource:
         received = self._receiver_dc + echoes + noise
 
         samples = self._quantize(received)
+        if self._realtime:
+            self._wait_for_real_time(n)
         block = Block(samples[np.newaxis, :], self._sample_idx, time.monotonic(), False)
         self._sample_idx += n
         return block
 
     def close(self) -> None:
         """Nothing to release."""
+
+    def _wait_for_real_time(self, n_samples: int) -> None:
+        """Sleep until the block of *n_samples* would be complete on hardware."""
+        self._next_block_time_s += n_samples / self._f_s
+        time.sleep(max(0.0, self._next_block_time_s - time.monotonic()))
 
     def _quantize(self, x: np.ndarray) -> np.ndarray:
         """Round I and Q to the integer ADC levels and clip them (complex64)."""
@@ -323,6 +339,7 @@ def open_source(cfg: dict[str, Any], simulation: bool) -> PlutoSource | CWSimula
             lo_offset_hz=sim.get("lo_offset_hz", 0.0),
             snr_db=sim.get("snr_db", -25.0),
             seed=sim.get("seed"),
+            realtime=sim.get("realtime", True),
         )
 
     logger.info("Mode matériel continu — connexion au PlutoSDR")

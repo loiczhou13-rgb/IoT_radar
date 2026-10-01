@@ -92,6 +92,7 @@ PIPELINE_CONFIG: dict[str, Any] = {
         "receiver_dc_amplitude": 50.0,
         "lo_offset_hz": 0.0,
         "snr_db": -25.0,
+        "realtime": False,
     },
 }
 

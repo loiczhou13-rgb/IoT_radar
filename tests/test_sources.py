@@ -61,6 +61,17 @@ def test_empty_scene_has_no_breathing_echo() -> None:
     assert np.abs(empty).max() == 0.0
 
 
+def test_realtime_simulation_is_paced() -> None:
+    """Bug B5: the simulation must not run faster than the hardware."""
+    import time
+
+    source = _simulation(realtime=True)  # 1024 samples at 100 kHz = 10.24 ms per block
+    start = time.monotonic()
+    for _ in range(5):
+        source.read_block()
+    assert time.monotonic() - start >= 0.9 * 5 * 1024 / 100e3
+
+
 def test_simulation_seed_makes_it_reproducible() -> None:
     a, b = _simulation(seed=3), _simulation(seed=3)
     np.testing.assert_array_equal(a.read_block().samples, b.read_block().samples)
