@@ -1,6 +1,7 @@
 # Plan de restructuration — IoT_radar
 
 > **Version 2** : périmètre validé après vos réponses du 2026-10-01 ; elle remplace la v1.
+> **Mise à jour finale** : le §19 fait le bilan (commits, écarts au plan, résultats sur données réelles, points ouverts). Les sections 0 à 18 décrivent le plan ; quand la réalisation s'en écarte, le texte le signale.
 > Branche `refactor`, créée depuis `main` = `origin/main` = `8189bbd`.
 > Les mesures citées ont été faites en lecture seule, avec des scripts temporaires hors du dépôt.
 > Les numéros de ligne renvoient aux fichiers de `8189bbd`.
@@ -26,6 +27,7 @@
 16. [Tests](#16-tests)
 17. [Étapes et commits](#17-étapes-et-commits)
 18. [Risques](#18-risques)
+19. [Bilan final](#19-bilan-final)
 
 ---
 
@@ -218,9 +220,9 @@ IoT_radar/
 ├── configs/                radar.yaml, training.yaml
 ├── notebooks/              inference.ipynb
 ├── tests/                  pytest, tests/data/ (small golden arrays)
-├── data/sessions/          HDF5 sessions (git-ignored)
+├── data/                   sessions/ (HDF5) and ml/ (legacy .npz), git-ignored
+├── results/                training outputs of ml/ (git-ignored)
 ├── logs/                   run logs (git-ignored)
-├── AICalibration/          data/ and results/ only — unchanged
 ├── pyproject.toml, requirements.txt
 ├── README.md, README.fr.md
 └── REFACTOR_PLAN.md
@@ -247,7 +249,7 @@ C'est `scripts/` qui assemble `acquisition` → `pipeline` → `ui`. **Le pipeli
 1. `physics.py` est ajouté : constantes et équation radar, qui existaient en 5 copies.
 2. `dsp/` gagne `mixer.py`, `filters.py`, `phase.py` et `estimation.py` (chaîne de phase), et perd `clutter.py` à l'étape 6.
 3. `configs/`, `notebooks/`, `logs/` et `data/` sont à la racine.
-4. `AICalibration/` ne garde que `data/` et `results/`, qui ne sont pas touchés.
+4. `AICalibration/` et `MicroDopplerDetection/` sont **supprimés** en fin de refactor, à votre demande (§19.2). Les sorties d'entraînement vont dans `results/`, les anciens `.npz` sont attendus dans `data/ml/`.
 5. `ui/` garde 2 fichiers, comme dans votre proposition.
 
 ---
@@ -276,7 +278,7 @@ C'est `scripts/` qui assemble `acquisition` → `pipeline` → `ui`. **Le pipeli
 | `AICalibration/config.yaml` | `configs/training.yaml` | 1 |
 | `AICalibration/inference.ipynb` | `notebooks/inference.ipynb` | 1 |
 | `accueil_pg.py` | `iot_radar/ui/launcher.py` et `scripts/launcher.py` | 1, puis 2 (B4) et 7 |
-| `AICalibration/data/`, `AICalibration/results/` | **Inchangés** | — |
+| `AICalibration/data/`, `AICalibration/results/` | **Supprimés** à votre demande, après conversion des 69 `.iq` dans `data/sessions/legacy/` (§19.2) | fin |
 
 **Correspondance des commandes** (après `pip install -e .`) :
 
@@ -289,7 +291,7 @@ C'est `scripts/` qui assemble `acquisition` → `pipeline` → `ui`. **Le pipeli
 | `python AICalibration/train.py --epochs 100` | `python scripts/train.py --epochs 100` |
 | `python AICalibration/model.py` | `pytest tests/test_ml.py` |
 | `python accueil_pg.py` | `python scripts/launcher.py` |
-| — | `python scripts/convert_legacy_iq.py AICalibration/data/train` (anciens `.iq` → HDF5) |
+| — | `python scripts/convert_legacy_iq.py <dossier des anciens .iq>` (anciens `.iq` → HDF5) |
 
 ---
 
@@ -452,7 +454,7 @@ Correspondance avec les anciennes données : label 0 → `empty`, label 1 → `b
 
 ### 12.5 Conversion des anciens `.iq` (`scripts/convert_legacy_iq.py`)
 
-Les anciens `.iq` (69 fichiers dans `AICalibration/data/train/`) contiennent de l'IQ complex64 **décimé à 2 kHz et déjà filtré par le passe-haut clutter**. La conversion :
+Les anciens `.iq` (69 fichiers dans `AICalibration/data/train/`, convertis dans `data/sessions/legacy/` avant la suppression du dossier) contiennent de l'IQ complex64 **décimé à 2 kHz et déjà filtré par le passe-haut clutter**. La conversion :
 - lit chaque paire `.iq` + `.json` et écrit une session dans `data/sessions/legacy/` (les fichiers d'origine ne sont pas modifiés) ;
 - choisit `scale` de sorte que le maximum de `|I|` et `|Q|` corresponde à 30 000. Le bruit est très au-dessus du pas de quantification, d'environ 30 dB d'après les spectres mesurés ;
 - renseigne :
@@ -517,7 +519,7 @@ Une `discontinuity` est signalée dans le panneau d'état.
 
 Le dashboard est alimenté par un thread producteur qui consomme les `PipelineOutput` et une minuterie qui les dépile, sans perte de trame.
 
-**Lanceur** : boutons « Radar (PlutoSDR) », « Radar (simulation) », « Light / dark theme » et « Quit ». Le radar est lancé en sous-processus (`scripts/run_radar.py`). Il n'y a pas de bouton FMCW.
+**Lanceur** : boutons « Radar — PlutoSDR », « Radar — simulation », « Dark / light theme » et « Quit » (titre « Modular Radar », sous-titre « S6 project - IoT team »). Le radar est lancé en sous-processus (`scripts/run_radar.py`). Il n'y a pas de bouton FMCW.
 
 ---
 
@@ -532,6 +534,8 @@ Le dashboard est alimenté par un thread producteur qui consomme les `PipelineOu
 | Options `--env` et `--index` | 4 | `--room` et `--session-id` |
 | Chaîne micro-Doppler : décimation à 2 kHz, `ClutterFilter`, spectrogramme de 8192 points, détecteur Fisher × ACF, dashboard TX/RX + score, relecture des colonnes `.npz` dans le dashboard | 6 | Chaîne et dashboard de phase. Les `.npz` restent lisibles par `ml/`. |
 | Test de fumée `python model.py` | 1 | `tests/test_ml.py` |
+| Relecture d'un `.npz` dans le dashboard (`record_visualization`) | **4** (et non 6) | `scripts/replay.py` sur une session HDF5 ; les anciens `.iq` sont convertibles |
+| Dossiers `MicroDopplerDetection/` et `AICalibration/` (README, `results/best.pt`, données `.npz` non suivies) | fin | README bilingues ; `best.pt` reste dans l'historique Git ; `.iq` convertis en HDF5 |
 
 ---
 
@@ -635,7 +639,63 @@ Aucune fusion vers `main` sans votre accord.
 | HDF5 et SWMR : une coupure brutale peut perdre jusqu'à 1 s de données | `flush()` toutes les secondes ; test de relecture après un arrêt |
 | Volume des sessions brutes (≈ 1 Go pour 2 min) | Documenté ; possibilité de baisser `sample_rate_hz` |
 | `ml/` ne peut pas s'entraîner sur les nouvelles sessions HDF5 | Documenté dans son README ; refonte prévue |
-| `AICalibration/results/best.pt` est suivi malgré le `.gitignore` | Non touché ; il ne référence aucun module Python, le notebook le charge toujours |
+| `AICalibration/results/best.pt` est suivi malgré le `.gitignore` | Supprimé avec le dossier (à votre demande) ; récupérable dans l'historique Git |
 | `ed_branch` modifie des chemins qui vont disparaître | À signaler à son auteur |
-| `MicroDopplerDetection/logs/*.log` et les `__pycache__/` (non suivis) restent sur le disque | Je ne supprime pas vos fichiers non suivis |
+| `MicroDopplerDetection/logs/*.log` et les `__pycache__/` (non suivis) restent sur le disque | Supprimés avec les dossiers, à votre demande |
 | Le passage des libellés de l'interface en anglais peut gêner les utilisateurs francophones | Décision Q5 (« tout le code en anglais ») ; facile à revoir |
+
+---
+
+## 19. Bilan final
+
+### 19.1 Commits (branche `refactor`, non fusionnée)
+
+| Étape | Commits |
+|---|---|
+| Plan | `4524249`, `af8f556`, `03fb433` (`.claude/` ignoré) |
+| 1. Restructuration | `061b5e5` (caractérisation) → `3a91b12` (règles de dépendance), dont `f2e9224` (code mort) et `9e43f08` (axe de fréquence unique), non prévus au §17 |
+| 2. Correctifs | `ae90a6e` (B1), `a33b1fb` (B2, références régénérées), `c546e6d` (B4), `3641a0d` (B5, références inchangées) ; B6 en `cfbb61d` |
+| 3. Anglais | `a8e026a` (clés YAML) → `37368de` |
+| 4. HDF5 | `4ac19b3` → `3c23b16` |
+| 5. Chaîne de phase | `c25c562` → `dcac9ef` |
+| 6. Retrait micro-Doppler | `571f3b6` |
+| 7. Dashboard et lanceur | `7dcccf0`, `27e0c0d` |
+| Suppression des anciens dossiers | `065b057` |
+| 8. Documentation | `8ba149a` (B8), `7f1c368` (README bilingues), puis la mise à jour de ce plan |
+
+### 19.2 Écarts au plan
+
+1. **`AICalibration/` et `MicroDopplerDetection/` supprimés** (votre message du 2026-10-01 : « les anciennes données .npz ne servent pas vu qu'on passe en HDF5 »). Avant la suppression, les 69 `.iq` ont été convertis dans `data/sessions/legacy/` et comparés aux originaux : pire erreur RMS relative 1,4 × 10⁻⁴. **Attention** : `data/` est ignoré par Git. Ces 69 sessions (70 Mo) n'existent donc que sur cette machine ; à sauvegarder ailleurs si l'équipe veut les garder. Les `.npz` et `.json` d'origine, non suivis, sont supprimés. `best.pt` reste dans l'historique Git.
+2. **Relecture des `.npz`** retirée à l'étape 4 (et non 6), en même temps que l'écriture des `.npz` : `scripts/replay.py` ne lit plus que des sessions HDF5.
+3. **B6** est rendu sans objet par le HDF5 : la configuration complète est stockée dans la session (`config_yaml`).
+4. **Commit `5c2abbc` avec un test rouge** (test du passe-bande trop strict sur le niveau hors bande) : corrigé au commit suivant, `a832b8f`. L'historique n'a pas été réécrit (pas de rebase). Tous les autres commits ont la suite verte.
+5. **Validation de l'amplitude** (§16.5) : le test compare l'amplitude crête à crête déduite de l'écart type, et la profondeur des cycles, à ±10 %, à un SNR de −10 dB. Le crête à crête brut est trop sensible au bruit.
+6. **Libellés du lanceur** en anglais (§14).
+7. `spectral.compute_spectrogram` est conservé : il ne sert plus qu'aux tests et à la visualisation hors ligne d'une session.
+
+### 19.3 Chaîne de phase sur les anciens enregistrements réels
+
+Les 69 sessions converties ont été relues par le pipeline avec la configuration par défaut : fenêtre de 20 s, une analyse toutes les 0,5 s, `tx_offset_hz` = 488,28 Hz. Une session `empty` de 2 s, plus courte qu'une fenêtre, est écartée. Les pourcentages sont moyennés par session.
+
+| Label | Sessions | Analyses | `BREATHING` | `NO_BREATHING` | `MOTION` | Cercle valide | Arc médian | Résidu médian du cercle |
+|---|---|---|---|---|---|---|---|---|
+| `empty` | 14 | 2 625 | 11,6 % | 70,2 % | 18,2 % | 36 % | 4,43 rad | 0,09 |
+| `breathing` | 54 | 10 602 | 1,9 % | 41,1 % | 57,1 % | 63 % | 5,03 rad | 0,24 |
+
+**Lecture.**
+- La chaîne **ne détecte pas la respiration** sur ces enregistrements : aucune session `breathing` n'est majoritairement en `BREATHING`.
+- Elle se trompe sur 11,6 % des analyses des salles vides.
+- Sur les sessions `breathing`, la majorité des fenêtres dépasse le seuil de mouvement (30 mm crête à crête), alors qu'un thorax qui respire bouge de 5 à 15 mm. Deux explications possibles :
+  - les sujets bougeaient ;
+  - la phase extraite est trop bruitée : le résidu médian du cercle, 0,24, se rapproche des ~0,4 d'un nuage de bruit.
+
+**La cause n'est pas établie.** Ce n'est pas le passe-haut des anciens enregistrements : il n'agit qu'autour de 0 Hz, alors que l'écho est à +488 Hz (§12.5). Ce résultat est négatif. Tant qu'il n'est pas expliqué, la chaîne de phase n'est validée que sur simulation.
+
+### 19.4 Points ouverts
+
+- **Validation matérielle** de `PlutoSource` : séquence de configuration, détection des pertes par le registre `0x80000088`, temps réel à 2 MS/s.
+- **Chaîne de phase sur données réelles** : faire de nouveaux enregistrements bruts (`scripts/record.py`) d'une scène connue (personne immobile à 1–2 m, sans obstacle, puis salle vide), et les relire avec `scripts/replay.py`.
+- **Refonte de `ml/`** sur le signal de phase des sessions HDF5 (voir `iot_radar/ml/README.md`).
+- **`ed_branch`** modifie `MicroDopplerDetection/accueil_2.py` et `accueil_tk.py`, qui n'existent plus : conflit à prévoir.
+- **`.claude/`** : à supprimer par vous (le worktree contient du travail non commité, voir §1).
+- **Fusion vers `main`** : en attente de votre accord.
