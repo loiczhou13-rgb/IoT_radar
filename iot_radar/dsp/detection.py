@@ -1,8 +1,4 @@
-"""Streaming respiration detection — Fisher F-test fused with phase ACF.
-
-Batch (full-spectrogram) helpers are preserved in
-:mod:`MicroDopplerDetection.legacy.detection_batch`.
-"""
+"""Streaming respiration detection — Fisher F-test fused with phase ACF."""
 
 from __future__ import annotations
 
@@ -16,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 
 # ----------------------------------------------------------------------
-# Internal building blocks (also re-used by the legacy batch wrappers)
+# Internal building blocks
 # ----------------------------------------------------------------------
 
 def _fisher_pvalue(

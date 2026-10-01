@@ -1,8 +1,7 @@
 """Streaming IQ acquisition from PlutoSDR hardware or numerical simulation.
 
 The streaming pipeline consumes one buffer at a time via the generators
-defined here.  The legacy batch helpers (full-vector acquisition) live in
-:mod:`MicroDopplerDetection.legacy.acquisition_batch`.
+defined here.
 """
 
 from __future__ import annotations

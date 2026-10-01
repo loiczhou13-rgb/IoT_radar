@@ -92,8 +92,7 @@ class Decimator:
     so that buffer boundaries do not reset the anti-aliasing filters or the
     downsampling phase.
 
-    For offline / batch use, see
-    :func:`MicroDopplerDetection.legacy.decimation_batch.decimate_iq`.
+    A whole recording can be decimated offline by passing it as one block.
 
     Parameters
     ----------
