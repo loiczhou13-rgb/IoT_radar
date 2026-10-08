@@ -12,6 +12,17 @@ amplitude ``A_1m · sqrt(σ_rel) / R²`` (radar equation: received power
 ∝ 1/R⁴) and phase ``−4π·R/λ`` (two-way path), so a radial speed ``v`` gives
 the Doppler ``f_D = 2·v/λ`` (≈ 16·v Hz at 2.45 GHz).
 
+A disturber moves only within its time interval ``[start_s, stop_s)``; it
+stands still before (where it starts) and after (where it stopped), its echo
+then being part of the static clutter.  A person does not appear out of
+nowhere, and the step of an echo switched on would itself reach the
+breathing band.  The interval is the annotated disturbance.
+
+Default amplitudes are consistent with the simulated person of
+:class:`iot_radar.acquisition.sources.CWSimulationSource` (echo amplitude 1 at
+3 m, i.e. 9 at 1 m, for a chest of 0.5 m²): a torso of 1 m² returns
+``√2 × 9 ≈ 12.7`` at 1 m.
+
 The walking person is a simplified version of the model of V. C. Chen,
 F. Li, S.-S. Ho and H. Wechsler, "Micro-Doppler effect in radar:
 phenomenon, model, and simulation study", IEEE Trans. Aerospace and
@@ -51,17 +62,19 @@ class Scatterers:
         Shape ``(n_scatterers, n_samples, 2)`` (m).
     relative_amplitudes : numpy.ndarray
         ``sqrt`` of the relative radar cross-section of each scatterer, shape ``(n_scatterers,)``.
-    active : numpy.ndarray
-        ``True`` where the disturber is present, shape ``(n_samples,)``.
     """
 
     positions_m: np.ndarray
     relative_amplitudes: np.ndarray
-    active: np.ndarray
 
 
 def _active(t_s: np.ndarray, start_s: float, stop_s: float) -> np.ndarray:
     return (t_s >= start_s) & (t_s < stop_s)
+
+
+def _motion_time(t_s: np.ndarray, start_s: float, stop_s: float) -> np.ndarray:
+    """Time spent moving at *t_s* (s): 0 before *start_s*, frozen after *stop_s*."""
+    return np.clip(np.asarray(t_s, dtype=np.float64), start_s, stop_s) - start_s
 
 
 def _radial_unit(position_m: np.ndarray) -> np.ndarray:
@@ -79,7 +92,7 @@ class Walker:
     velocity_m_s : sequence of float
         Walking velocity (m/s); the speed is typically 0.5 to 1.5 m/s.
     start_s, stop_s : float, optional
-        Time interval during which the person is in the scene (s).
+        Time interval of the walk (s); the person stands still before and after.
     amplitude_at_1m : float, optional
         Echo amplitude of the torso at 1 m (ADC units).
     """
@@ -90,7 +103,7 @@ class Walker:
     _SIDE_M = np.array([0.0, 0.1, -0.1, 0.2, -0.2])                # across it
 
     def __init__(self, start_m, velocity_m_s, start_s: float = 0.0, stop_s: float = np.inf,
-                 amplitude_at_1m: float = 500.0) -> None:
+                 amplitude_at_1m: float = 12.7) -> None:
         self.start_m = np.asarray(start_m, dtype=np.float64)
         self.velocity_m_s = np.asarray(velocity_m_s, dtype=np.float64)
         self.start_s, self.stop_s = float(start_s), float(stop_s)
@@ -102,21 +115,21 @@ class Walker:
 
     def torso_m(self, t_s: np.ndarray) -> np.ndarray:
         """Torso position at times *t_s*, shape ``(n, 2)`` (m)."""
-        return self.start_m + np.outer(np.asarray(t_s) - self.start_s, self.velocity_m_s)
+        return self.start_m + np.outer(_motion_time(t_s, self.start_s, self.stop_s), self.velocity_m_s)
 
     def active(self, t_s: np.ndarray) -> np.ndarray:
-        """``True`` while the person is in the scene."""
+        """``True`` while the person walks."""
         return _active(np.asarray(t_s), self.start_s, self.stop_s)
 
     def scatterers(self, t_s: np.ndarray) -> Scatterers:
         """Torso and limbs at times *t_s*."""
         t_s = np.asarray(t_s, dtype=np.float64)
         torso = self.torso_m(t_s)
-        swing = np.sin(2.0 * np.pi * self.gait_frequency_hz * (t_s - self.start_s))
+        swing = np.sin(2.0 * np.pi * self.gait_frequency_hz * _motion_time(t_s, self.start_s, self.stop_s))
         positions = (torso[np.newaxis, :, :]
                      + self._SWING_M[:, np.newaxis, np.newaxis] * swing[np.newaxis, :, np.newaxis] * self._along
                      + self._SIDE_M[:, np.newaxis, np.newaxis] * self._across)
-        return Scatterers(positions, self._RELATIVE_AMPLITUDES, self.active(t_s))
+        return Scatterers(positions, self._RELATIVE_AMPLITUDES)
 
     def disturbance_mask(self, t_s: np.ndarray) -> np.ndarray:
         """``True`` while the walker is in the field of the radar (±60°, 15 m)."""
@@ -136,7 +149,7 @@ class Sway:
     amplitude_m, frequency_hz : float, optional
         Radial amplitude (m) and frequency (Hz) of the sway.
     start_s, stop_s : float, optional
-        Time interval of the sway (s).
+        Time interval of the sway (s); the person stands still before and after.
     amplitude_at_1m : float, optional
         Echo amplitude of the torso at 1 m (ADC units).
     """
@@ -144,7 +157,7 @@ class Sway:
     kind = "sway"
 
     def __init__(self, position_m, amplitude_m: float = 0.03, frequency_hz: float = 0.8, start_s: float = 0.0,
-                 stop_s: float = np.inf, amplitude_at_1m: float = 500.0) -> None:
+                 stop_s: float = np.inf, amplitude_at_1m: float = 12.7) -> None:
         self.position_m = np.asarray(position_m, dtype=np.float64)
         self.amplitude_m, self.frequency_hz = float(amplitude_m), float(frequency_hz)
         self.start_s, self.stop_s = float(start_s), float(stop_s)
@@ -153,7 +166,8 @@ class Sway:
 
     def torso_m(self, t_s: np.ndarray) -> np.ndarray:
         """Torso position at times *t_s*, shape ``(n, 2)`` (m)."""
-        offset = self.amplitude_m * np.sin(2.0 * np.pi * self.frequency_hz * np.asarray(t_s))
+        moving_s = _motion_time(t_s, self.start_s, self.stop_s)
+        offset = self.amplitude_m * np.sin(2.0 * np.pi * self.frequency_hz * moving_s)
         return self.position_m + np.outer(offset, self._radial)
 
     def active(self, t_s: np.ndarray) -> np.ndarray:
@@ -162,7 +176,7 @@ class Sway:
 
     def scatterers(self, t_s: np.ndarray) -> Scatterers:
         """The torso only."""
-        return Scatterers(self.torso_m(t_s)[np.newaxis], np.ones(1), self.active(t_s))
+        return Scatterers(self.torso_m(t_s)[np.newaxis], np.ones(1))
 
     def disturbance_mask(self, t_s: np.ndarray) -> np.ndarray:
         """``True`` during the sway."""
@@ -183,7 +197,7 @@ class Gesture:
     amplitude_m, frequency_hz : float, optional
         Radial amplitude (m) and frequency (Hz) of the hand motion.
     start_s, stop_s : float, optional
-        Time interval of the gestures (s).
+        Time interval of the gestures (s); the hand is still before and after.
     amplitude_at_1m : float, optional
         Echo amplitude of the torso at 1 m (ADC units); the hand returns 0.3 of it.
     """
@@ -192,7 +206,7 @@ class Gesture:
     _RELATIVE_AMPLITUDES = np.array([1.0, 0.3])   # torso, hand
 
     def __init__(self, position_m, amplitude_m: float = 0.08, frequency_hz: float = 2.0, start_s: float = 0.0,
-                 stop_s: float = np.inf, amplitude_at_1m: float = 500.0) -> None:
+                 stop_s: float = np.inf, amplitude_at_1m: float = 12.7) -> None:
         self.position_m = np.asarray(position_m, dtype=np.float64)
         self.amplitude_m, self.frequency_hz = float(amplitude_m), float(frequency_hz)
         self.start_s, self.stop_s = float(start_s), float(stop_s)
@@ -210,10 +224,11 @@ class Gesture:
     def scatterers(self, t_s: np.ndarray) -> Scatterers:
         """Static torso and oscillating hand."""
         t_s = np.asarray(t_s, dtype=np.float64)
-        hand_offset = -0.3 + self.amplitude_m * np.sin(2.0 * np.pi * self.frequency_hz * t_s)
+        moving_s = _motion_time(t_s, self.start_s, self.stop_s)
+        hand_offset = -0.3 + self.amplitude_m * np.sin(2.0 * np.pi * self.frequency_hz * moving_s)
         hand = self.position_m + np.outer(hand_offset, self._radial)
         positions = np.stack([self.torso_m(t_s), hand])
-        return Scatterers(positions, self._RELATIVE_AMPLITUDES, self.active(t_s))
+        return Scatterers(positions, self._RELATIVE_AMPLITUDES)
 
     def disturbance_mask(self, t_s: np.ndarray) -> np.ndarray:
         """``True`` during the gestures."""
@@ -226,14 +241,13 @@ Disturber = Walker | Sway | Gesture
 def disturber_echo(disturber: Disturber, t_s: np.ndarray, wavelength_m: float) -> np.ndarray:
     """Complex echo of one disturber at times *t_s* (ADC units, before the TX tone).
 
-    ``Σ_i A_1m · a_i / R_i² · exp(−j·4π·R_i/λ)`` over its scatterers, zero
-    while it is not in the scene.
+    ``Σ_i A_1m · a_i / R_i² · exp(−j·4π·R_i/λ)`` over its scatterers.
     """
     scatterers = disturber.scatterers(t_s)
     range_m = np.maximum(np.linalg.norm(scatterers.positions_m, axis=-1), 0.3)     # (n_scatterers, n)
     amplitudes = disturber.amplitude_at_1m * scatterers.relative_amplitudes[:, np.newaxis] / range_m ** 2
     echo = np.sum(amplitudes * np.exp(-4j * np.pi * range_m / wavelength_m), axis=0)
-    return echo * scatterers.active
+    return echo
 
 
 def path_masking(point_m: np.ndarray, disturbers: list[Disturber], t_s: np.ndarray) -> np.ndarray:
@@ -259,7 +273,7 @@ def path_masking(point_m: np.ndarray, disturbers: list[Disturber], t_s: np.ndarr
         distance = np.linalg.norm(torso - np.outer(along, point_m), axis=1)
         shape = np.clip((2.0 * BODY_RADIUS_M - distance) / BODY_RADIUS_M, 0.0, 1.0)
         shape = 0.5 - 0.5 * np.cos(np.pi * shape)                 # raised cosine: 1 within one radius
-        masked = shape * ((along > 0.0) & (along < 1.0)) * disturber.active(t_s)
+        masked = shape * ((along > 0.0) & (along < 1.0))
         factor *= 1.0 - (1.0 - floor) * masked
     return factor
 

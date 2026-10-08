@@ -105,3 +105,16 @@ def test_simulation_with_disturbers_and_its_ground_truth(tmp_path: Path) -> None
         writer.set_disturbances(intervals)
     with SessionReader(tmp_path / "s.h5") as reader:
         assert reader.disturbances() == intervals
+
+
+def test_a_disturber_stands_still_outside_its_interval() -> None:
+    """No echo switched on out of nowhere: the person is there, still, before and after moving."""
+    walker = Walker(start_m=[-3.0, 3.0], velocity_m_s=[1.0, 0.0], start_s=5.0, stop_s=8.0)
+    before = disturber_echo(walker, np.array([0.0, 4.9]), LAMBDA_M)
+    after = disturber_echo(walker, np.array([8.0, 20.0]), LAMBDA_M)
+    assert abs(before[0]) > 0.1 and before[0] == pytest.approx(before[1])
+    assert after[0] == pytest.approx(after[1])
+    np.testing.assert_allclose(walker.torso_m(np.array([20.0]))[0], [0.0, 3.0])
+    gesture = Gesture([0.0, 1.5], start_s=5.0, stop_s=8.0)
+    hand = gesture.scatterers(np.array([0.0, 4.0, 9.0, 12.0])).positions_m[1]
+    np.testing.assert_allclose(hand[0], hand[1]) and np.testing.assert_allclose(hand[2], hand[3])

@@ -276,7 +276,8 @@ simulation:
   #   walker  — start_m, velocity_m_s (0.5–1.5 m/s), start_s, stop_s, amplitude_at_1m
   #   sway    — position_m, amplitude_m (0.03), frequency_hz (0.8), start_s, stop_s, amplitude_at_1m
   #   gesture — position_m, amplitude_m (0.08), frequency_hz (2.0), start_s, stop_s, amplitude_at_1m
-  # amplitude_at_1m: echo amplitude of the torso at 1 m (ADC units); the
+  # amplitude_at_1m: echo amplitude of the torso at 1 m (ADC units, default 12.7:
+  # a 1 m² torso next to the 0.5 m² chest of the person, amplitude 1 at 3 m); the
   # echoes decay as 1/R².  Example:
   # [{kind: walker, start_m: [-6.0, 3.0], velocity_m_s: [1.0, 0.0], start_s: 30.0}]
   disturbers: []
