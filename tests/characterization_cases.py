@@ -12,6 +12,11 @@ bugs B2 and B5 of ``REFACTOR_PLAN.md`` (they change the simulation on
 purpose).  The cases of the removed micro-Doppler chain (clutter filter,
 Fisher x ACF detection, streaming pipeline, its dashboard context) were
 dropped together with that chain.
+
+The ``cw_simulation`` and ``vital_signs_pipeline`` cases were added before
+the motion-robustness work (``MOTION_ROBUSTNESS_PLAN.md``): with M1 to M3
+disabled, the simulation without disturbers and the phase pipeline must
+stay unchanged bit for bit.
 """
 
 from __future__ import annotations
@@ -22,9 +27,12 @@ from typing import Any, Callable
 import numpy as np
 
 from iot_radar.acquisition.pluto import cw_tx_buffer
+from iot_radar.acquisition.sources import Block, CWSimulationSource
 from iot_radar.dsp.decimation import Decimator
+from iot_radar.dsp.detection import STATE_CODES
 from iot_radar.dsp.spectral import compute_single_column, get_window
 from iot_radar.physics import range_interval_m
+from iot_radar.pipeline import VitalSignsPipeline
 
 # Reduced configuration (fast) of the radar, used by several tests.  The TX
 # offset 244.140625 Hz is exactly 10 periods of a 4096-sample buffer at
@@ -128,10 +136,66 @@ def case_link_budget() -> dict[str, np.ndarray]:
     return {"range_m": np.array(range_interval_m(pipeline_config()))}
 
 
+def _reduced_simulation(seed: int, timeline: list | None = None) -> CWSimulationSource:
+    """Simulated source of the reduced configuration (100 kS/s, 4096-sample blocks)."""
+    sdr = PIPELINE_CONFIG["sdr"]
+    return CWSimulationSource(
+        f_c_hz=sdr["center_frequency_hz"], f_s_hz=sdr["sample_rate_hz"], buffer_size=sdr["buffer_size"],
+        tx_offset_hz=PIPELINE_CONFIG["tx"]["offset_hz"], breath_rate_hz=0.3, breath_amplitude_mm=4.0,
+        heart_amplitude_mm=0.2, timeline=timeline, snr_db=-12.0, lo_offset_hz=0.01, seed=seed,
+    )
+
+
+def case_cw_simulation() -> dict[str, np.ndarray]:
+    """Blocks, ground truth and annotations of the single-channel simulation."""
+    source = _reduced_simulation(seed=7, timeline=[[0.0, "breathing"], [0.05, "motion"], [0.08, "apnea"]])
+    blocks = [source.read_block() for _ in range(3)]
+    t_s = np.linspace(0.0, 0.12, 25)
+    annotations = source.scene_annotations(3 * 4096)
+    return {
+        "samples": np.concatenate([b.samples for b in blocks], axis=1),
+        "sample_start": np.array([b.sample_start for b in blocks]),
+        "chest_displacement_m": source.chest_displacement_m(t_s),
+        "annotation_bounds": np.array([(start, count) for start, count, _ in annotations]),
+    }
+
+
+def case_vital_signs_pipeline() -> dict[str, np.ndarray]:
+    """45 s of the single-channel phase pipeline, with one stream discontinuity."""
+    source = _reduced_simulation(seed=11)
+    pipeline = VitalSignsPipeline.from_config(
+        pipeline_config(), PIPELINE_CONFIG["sdr"]["sample_rate_hz"], PIPELINE_CONFIG["tx"]["offset_hz"],
+    )
+    outputs = []
+    n_blocks = int(45.0 * 100e3 / 4096)
+    for index in range(n_blocks):
+        block = source.read_block()
+        if index == n_blocks // 3:  # lost samples before this block
+            block = Block(block.samples, block.sample_start, block.host_time_s, True)
+        outputs.extend(pipeline.process_block(block))
+    last = outputs[-1].analysis
+    rates = [o.breathing.rate_bpm for o in outputs]
+    return {
+        "t_s": np.array([o.t_s for o in outputs]),
+        "discontinuity": np.array([o.discontinuity for o in outputs]),
+        "state": np.array([STATE_CODES[o.breathing.state] for o in outputs]),
+        "confidence": np.array([o.breathing.confidence for o in outputs]),
+        "rate_bpm": np.array([np.nan if r is None else r for r in rates]),
+        "last_displacement_mm": last.displacement_mm,
+        "last_breath_mm": last.breath_mm,
+        "last_iq": last.iq,
+        "last_spectrum_psd": last.spectrum_psd,
+        "last_metric_rate_hz": np.array(last.metrics.rate_hz),
+        "last_micro_doppler_db": outputs[-1].micro_doppler_column_db,
+    }
+
+
 CASES: dict[str, Callable[[], dict[str, np.ndarray]]] = {
     "decimator": case_decimator,
     "windows": case_windows,
     "spectral_column": case_spectral_column,
     "tx_buffer": case_tx_buffer,
     "link_budget": case_link_budget,
+    "cw_simulation": case_cw_simulation,
+    "vital_signs_pipeline": case_vital_signs_pipeline,
 }
