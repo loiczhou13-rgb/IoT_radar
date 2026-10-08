@@ -952,15 +952,18 @@ class VitalSignsPipeline:
                     100 * contaminated_fraction)
 
     def _measurement_status(self) -> MeasurementStatus:
+        """``done`` once after a completion (even if another measurement already started), then
+        ``running`` or ``idle``."""
+        last = self._measurement_result
+        if self._measurement_completed:
+            self._measurement_completed = False
+            duration_s = last.t_end_s - last.t_start_s
+            return MeasurementStatus(STATE_DONE, duration_s, duration_s, last)
         if self._measurement is not None:
             m = self._measurement
-            return MeasurementStatus(STATE_RUNNING, len(m["z"]) / self.slow_time_rate_hz, m["duration_s"],
-                                     self._measurement_result)
-        last = self._measurement_result
-        state = STATE_DONE if self._measurement_completed else STATE_IDLE
-        self._measurement_completed = False
+            return MeasurementStatus(STATE_RUNNING, len(m["z"]) / self.slow_time_rate_hz, m["duration_s"], last)
         duration_s = last.t_end_s - last.t_start_s if last else self.measurement_settings.duration_s
-        return MeasurementStatus(state, duration_s if last else 0.0, duration_s, last)
+        return MeasurementStatus(STATE_IDLE, duration_s if last else 0.0, duration_s, last)
 
     def _make_output(self) -> PipelineOutput:
         """Analyse the latest window and build one output."""

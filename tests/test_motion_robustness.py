@@ -510,3 +510,22 @@ def test_a_measurement_request_is_applied_by_the_producer() -> None:
     outputs.close()
     logging.disable(logging.NOTSET)
     assert not request.is_set() and states[-1] == "running"
+
+
+def test_back_to_back_measurements_all_report_their_result() -> None:
+    """A measurement started right after the previous one ends does not hide its "done" output."""
+    cfg = _scene(M1_M2_M3)
+    cfg["measurement"] = {"duration_s": 10.0}
+    logging.disable(logging.WARNING)
+    source = open_source(cfg, simulation=True)
+    pipeline = VitalSignsPipeline.from_config(cfg, source.sample_rate_hz, effective_tx_offset_hz(cfg))
+    pipeline.start_measurement()
+    done = 0
+    while done < 3:
+        outputs = pipeline.process_block(source.read_block())
+        done += sum(o.measurement.state == "done" for o in outputs)
+        if not pipeline.measuring:
+            pipeline.start_measurement()
+        assert not outputs or outputs[-1].t_s < 50.0
+    source.close()
+    logging.disable(logging.NOTSET)
