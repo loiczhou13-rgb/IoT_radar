@@ -195,6 +195,23 @@ Références : Park, Boric-Lubecke et Lubecke (2007), Zakrzewski et al. (2012).
 
 En dessous de ~0,3 rad, aucune méthode ne tient. Le contrôle de validité existant s'applique alors, avec repli sur la démodulation linéaire.
 
+**Dérive à l'intérieur d'une sous-fenêtre (constaté à l'étape 3).**
+- **Le problème :** si le centre se déplace pendant une sous-fenêtre d'autant que l'arc respiratoire, les points quittent le cercle. Avec un ajustement statique, quelle que soit la méthode (Pratt, géométrique, ou même un ajustement à centre mobile initialisé par Pratt), l'erreur atteint des dizaines de millimètres.
+- **La solution :** retirer d'abord la **tendance linéaire de chaque sous-fenêtre**. On calcule la pente complexe de z(t) par moindres carrés ; l'oscillation respiratoire se moyenne sur 2 à 3 cycles. Pratt est ensuite appliqué aux points corrigés, ce qui reste non itératif.
+
+Mesure : médiane sur 30 tirages, 8 mm de respiration, sous-fenêtres de 10 s ; erreur sur le déplacement à 20 dB / 30 dB.
+
+| Dérive du centre sur 20 s | Pratt seul | Pratt après retrait de la tendance |
+|---|---|---|
+| 0 | 0,86 / 0,25 mm | 0,82 / 0,26 mm |
+| 0,5 rayon | 1,14 / 0,75 mm | 0,90 / 0,45 mm |
+| 1 rayon | 15,5 / 28,9 mm | 1,14 / 0,79 mm |
+| 2 rayons | 14,6 / 13,6 mm | 1,77 / 1,55 mm |
+| 4 rayons | — | 3,5 / 3,3 mm |
+
+- Des sous-fenêtres de 6 s suivent mieux une forte dérive (1,7 / 1,4 mm à 4 rayons), mais sont plus bruitées sans dérive. La valeur par défaut reste 10 s, configurable.
+- Une variation brusque et ample du centre (masquage d'un mur par un passage) reste hors de portée de M2. Elle relève de M3 (pondération).
+
 ### 3.4 M3 — Pondération et estimation tolérante aux trous (VanderPlas, 2018)
 
 - **Indice par bloc de 1 s, calculé à 100 Hz AVANT M1 :**

@@ -38,6 +38,7 @@ from iot_radar.dsp.mixer import Mixer
 from iot_radar.dsp.phase import (
     DemodulationResult,
     demodulate,
+    demodulate_tracked,
     phase_to_displacement_m,
     remove_common_rotation,
 )
@@ -271,12 +272,16 @@ class VitalSignsProcessor:
         Carrier wavelength λ (m), for the phase → displacement conversion.
     settings : VitalSignsSettings
         Processing parameters.
+    motion : MotionRobustnessSettings or None, optional
+        Robustness to residual motion; here M2 (sliding centre of the arc).
     """
 
-    def __init__(self, f_s_hz: float, wavelength_m: float, settings: VitalSignsSettings) -> None:
+    def __init__(self, f_s_hz: float, wavelength_m: float, settings: VitalSignsSettings,
+                 motion: MotionRobustnessSettings | None = None) -> None:
         self.f_s_hz = float(f_s_hz)
         self.wavelength_m = float(wavelength_m)
         self.settings = settings
+        self.motion = motion or MotionRobustnessSettings()
         self.window_length = int(round(settings.window_s * self.f_s_hz))
         nyquist_hz = self.f_s_hz / 2.0
         for name, band in (("breathing_band_hz", settings.breathing_band_hz),
@@ -323,7 +328,12 @@ class VitalSignsProcessor:
         lo_drift_hz = 0.0
         if s.lo_drift_compensation:
             z, lo_drift_hz = remove_common_rotation(z, self.f_s_hz)
-        result = demodulate(z, s.demodulation, s.dc_compensation, s.min_arc_rad, s.max_circle_residual)
+        if self.motion.center_tracking_enabled and s.dc_compensation == "circle":
+            m = self.motion
+            result = demodulate_tracked(z, self.f_s_hz, s.demodulation, m.center_window_s, m.center_step_s,
+                                        m.center_method, s.min_arc_rad, s.max_circle_residual)
+        else:
+            result = demodulate(z, s.demodulation, s.dc_compensation, s.min_arc_rad, s.max_circle_residual)
         if result.calibrated:
             displacement_mm = phase_to_displacement_m(result.phase_rad, self.wavelength_m) * 1e3
         else:
@@ -478,7 +488,7 @@ class VitalSignsPipeline:
         self._build_decimation(int(round(decimation_ratio)), max_frequency_hz)
         if self.motion.doppler_filter_enabled:  # the FIR must fill before its output is valid
             warmup_s = max(warmup_s, 2.0 * self.doppler_delay_s)
-        self._processor = VitalSignsProcessor(slow_time_rate_hz, wavelength_m, settings)
+        self._processor = VitalSignsProcessor(slow_time_rate_hz, wavelength_m, settings, self.motion)
         self._warmup_samples = int(round(warmup_s * slow_time_rate_hz))
         self._update_samples = max(1, int(round(settings.update_period_s * slow_time_rate_hz)))
         self._micro_doppler_samples = int(round(micro_doppler_window_s * slow_time_rate_hz))

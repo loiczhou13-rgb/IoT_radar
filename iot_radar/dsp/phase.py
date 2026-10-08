@@ -146,7 +146,22 @@ def fit_circle(
             break
 
     center_x, center_y, radius = params
-    if not np.all(np.isfinite(params)) or radius <= 0.0:
+    return _circle_fit_result(x, y, center_x, center_y, radius, mean, scale, min_arc_rad, max_relative_residual)
+
+
+def _circle_fit_result(
+    x: np.ndarray,
+    y: np.ndarray,
+    center_x: float,
+    center_y: float,
+    radius: float,
+    mean: complex,
+    scale: float,
+    min_arc_rad: float,
+    max_relative_residual: float,
+) -> CircleFit:
+    """Residual, arc span and validity of a circle fitted on normalised samples ``(x, y)``."""
+    if not np.all(np.isfinite([center_x, center_y, radius])) or radius <= 0.0:
         return CircleFit(complex(mean), 0.0, np.inf, 0.0, False)
     residual = np.hypot(x - center_x, y - center_y) - radius
     relative_residual = float(np.sqrt(np.mean(residual * residual)) / radius)
@@ -155,6 +170,164 @@ def fit_circle(
     center = complex(mean + scale * (center_x + 1j * center_y))
     valid = bool(span_rad >= min_arc_rad and relative_residual <= max_relative_residual)
     return CircleFit(center, float(radius * scale), relative_residual, span_rad, valid)
+
+
+def fit_circle_pratt(z: np.ndarray, min_arc_rad: float = 0.3, max_relative_residual: float = 0.3) -> CircleFit:
+    """Fit a circle with the algebraic method of Pratt (non-iterative).
+
+    Minimises the algebraic distance ``A(x² + y²) + Bx + Cy + D`` under
+    Pratt's normalisation ``B² + C² − 4AD = 1``, which removes the bias of
+    the Kåsa fit on short arcs (V. Pratt, "Direct least-squares fitting of
+    algebraic surfaces", Computer Graphics 21(4), 1987), solved with the
+    SVD formulation of N. Chernov.  It is one of the centre estimators
+    compared by M. Zakrzewski, H. Raittinen and J. Vanhala, "Comparison of
+    center estimation algorithms for heart and respiration monitoring with
+    microwave Doppler radar", IEEE Sensors J. 12(3), 2012.  On breathing arcs
+    of 0.5 rad or more it is as accurate as the geometric fit and 3 to 7
+    times faster (MOTION_ROBUSTNESS_PLAN.md §3.3).
+
+    Parameters and return value as :func:`fit_circle`.
+    """
+    z = np.asarray(z, dtype=np.complex128)
+    if z.size < 4:
+        return CircleFit(complex(np.mean(z)) if z.size else 0j, 0.0, np.inf, 0.0, False)
+    mean = z.mean()
+    scale = float(np.sqrt(np.mean(np.abs(z - mean) ** 2)))
+    if scale <= 0.0 or not np.isfinite(scale):
+        return CircleFit(complex(mean), 0.0, np.inf, 0.0, False)
+    u = (z - mean) / scale
+    x, y = u.real, u.imag
+
+    design = np.column_stack((x * x + y * y, x, y, np.ones_like(x)))
+    _, singular_values, vt = np.linalg.svd(design, full_matrices=False)
+    v = vt.T
+    if singular_values[3] / singular_values[0] < 1e-12:   # samples exactly on a circle
+        coefficients = v[:, 3]
+    else:
+        w = v @ np.diag(singular_values) @ v.T
+        pratt_inverse = np.array([[0.0, 0.0, 0.0, -0.5], [0.0, 1.0, 0.0, 0.0],
+                                  [0.0, 0.0, 1.0, 0.0], [-0.5, 0.0, 0.0, 0.0]])
+        eigenvalues, eigenvectors = np.linalg.eig(w @ pratt_inverse @ w)
+        eigenvalues = np.real(eigenvalues)
+        smallest_positive = int(np.argmin(np.where(eigenvalues > 0, eigenvalues, np.inf)))
+        coefficients = np.linalg.solve(w, np.real(eigenvectors[:, smallest_positive]))
+    a, b, c, d = coefficients
+    if a == 0.0:
+        return CircleFit(complex(mean), 0.0, np.inf, 0.0, False)
+    center_x, center_y = -b / (2.0 * a), -c / (2.0 * a)
+    radius = float(np.sqrt(max(b * b + c * c - 4.0 * a * d, 0.0)) / (2.0 * abs(a)))
+    return _circle_fit_result(x, y, center_x, center_y, radius, mean, scale, min_arc_rad, max_relative_residual)
+
+
+@dataclass
+class CenterTrack:
+    """Centre of the IQ arc estimated on sliding sub-windows (M2).
+
+    Attributes
+    ----------
+    times_s : numpy.ndarray
+        Middle of each sub-window (s from the start of the window).
+    centers : numpy.ndarray
+        Centre fitted on each sub-window (complex).
+    valid : numpy.ndarray
+        ``True`` for the sub-windows whose fit is valid (arc, residual).
+    center_per_sample : numpy.ndarray
+        Centre at every sample of the window, linearly interpolated between
+        the valid sub-windows and constant beyond them (complex, ``(N,)``).
+    """
+
+    times_s: np.ndarray
+    centers: np.ndarray
+    valid: np.ndarray
+    center_per_sample: np.ndarray
+
+
+def track_center(
+    z: np.ndarray,
+    f_s_hz: float,
+    window_s: float = 10.0,
+    step_s: float = 1.0,
+    method: str = "pratt",
+    min_arc_rad: float = 0.3,
+    max_relative_residual: float = 0.3,
+    detrend: bool = True,
+) -> CenterTrack | None:
+    """Sliding estimate of the centre of the IQ arc (M2), for a drifting static component.
+
+    A person moving near the radar changes the fixed reflections, so the
+    centre ``C(t)`` of the arc drifts (the DC compensation of B.-K. Park,
+    O. Boric-Lubecke and V. M. Lubecke, IEEE T-MTT 55(5), 2007, assumes it
+    fixed).  The centre is fitted on sub-windows of *window_s* (2 to 3
+    breathing cycles) every *step_s*, with one of the estimators compared by
+    Zakrzewski et al. (IEEE Sensors J., 2012): ``"pratt"`` (default),
+    ``"geometric"`` (:func:`fit_circle`) or ``"kasa"``.
+
+    Inside a sub-window the centre may already move by as much as the
+    breathing arc (a radius or more), and the points then leave the circle:
+    measured on 8 mm of breathing at 2.45 GHz, a drift of one radius over
+    20 s gives errors of tens of millimetres.  The linear trend of each
+    sub-window (complex least-squares slope against time, the breathing
+    oscillation averaging out over 2 to 3 cycles) is therefore removed
+    before the fit (*detrend*); the error then stays near 1 mm for that
+    drift (MOTION_ROBUSTNESS_PLAN.md §3.3).
+
+    The centres are interpolated **linearly** between the middles of the
+    valid sub-windows: ``C(t)`` is continuous, so ``z(t) − C(t)`` and its
+    angle are continuous too — an update of the centre never creates a phase
+    jump.  Invalid sub-windows (short arc, large residual) are skipped.
+
+    Parameters
+    ----------
+    z : numpy.ndarray
+        Complex slow-time window, 1-D.
+    f_s_hz : float
+        Slow-time rate (Hz).
+    window_s, step_s : float, optional
+        Length and step of the sub-windows (s).
+    method : str, optional
+        Centre estimator.
+    min_arc_rad, max_relative_residual : float, optional
+        Validity of a sub-window fit (see :func:`fit_circle`).
+    detrend : bool, optional
+        Remove the linear drift of each sub-window before fitting it.
+
+    Returns
+    -------
+    CenterTrack or None
+        ``None`` when no sub-window gives a valid fit.
+    """
+    fits = {
+        "pratt": lambda segment: fit_circle_pratt(segment, min_arc_rad, max_relative_residual),
+        "geometric": lambda segment: fit_circle(segment, min_arc_rad=min_arc_rad,
+                                                max_relative_residual=max_relative_residual),
+        "kasa": lambda segment: fit_circle(segment, n_iterations=0, min_arc_rad=min_arc_rad,
+                                           max_relative_residual=max_relative_residual),
+    }
+    if method not in fits:
+        raise ValueError(f"Unknown centre estimator '{method}', use {sorted(fits)}.")
+    z = np.asarray(z, dtype=np.complex128)
+    n_window = min(z.size, max(4, int(round(window_s * f_s_hz))))
+    n_step = max(1, int(round(step_s * f_s_hz)))
+    starts = list(range(0, z.size - n_window + 1, n_step))
+    if starts[-1] != z.size - n_window:
+        starts.append(z.size - n_window)
+    centred_time_s = (np.arange(n_window) - (n_window - 1) / 2.0) / f_s_hz
+    circles = []
+    for start in starts:
+        segment = z[start:start + n_window]
+        if detrend:  # centre of the segment at its middle, drift removed
+            slope = np.sum(centred_time_s * (segment - segment.mean())) / np.sum(centred_time_s ** 2)
+            segment = segment - slope * centred_time_s
+        circles.append(fits[method](segment))
+    times_s = (np.array(starts) + (n_window - 1) / 2.0) / f_s_hz
+    centers = np.array([c.center for c in circles])
+    valid = np.array([c.valid for c in circles])
+    if not valid.any():
+        return None
+    t_s = np.arange(z.size) / f_s_hz
+    per_sample = (np.interp(t_s, times_s[valid], centers[valid].real)
+                  + 1j * np.interp(t_s, times_s[valid], centers[valid].imag))
+    return CenterTrack(times_s, centers, valid, per_sample)
 
 
 # ---------------------------------------------------------------------------
@@ -328,6 +501,44 @@ def demodulate(
     else:
         phase_rad = dacm_demodulation(centred)
     return DemodulationResult(phase_rad, method, True, circle)
+
+
+def demodulate_tracked(
+    z: np.ndarray,
+    f_s_hz: float,
+    method: str = "arctan",
+    window_s: float = 10.0,
+    step_s: float = 1.0,
+    estimator: str = "pratt",
+    min_arc_rad: float = 0.3,
+    max_relative_residual: float = 0.3,
+) -> DemodulationResult:
+    """Phase demodulation around a drifting centre (M2, MOTION_ROBUSTNESS_PLAN.md §3.3).
+
+    The centre is tracked by :func:`track_center` and subtracted sample by
+    sample before the arctangent (or DACM): ``φ(t) = unwrap(arg(z(t) − C(t)))``
+    (Park et al., IEEE T-MTT 2007, with a time-varying DC offset).  Without
+    any valid sub-window, the window is demodulated as by :func:`demodulate`
+    with a single circle fit.
+
+    Returns
+    -------
+    DemodulationResult
+        Method ``"arctan_tracked"`` (or ``"dacm_tracked"``); its ``circle``
+        summarises the end of the window (latest centre, median radius), for
+        display.
+    """
+    z = np.asarray(z, dtype=np.complex128)
+    track = track_center(z, f_s_hz, window_s, step_s, estimator, min_arc_rad, max_relative_residual)
+    if track is None:
+        return demodulate(z, method, "circle", min_arc_rad, max_relative_residual)
+    centred = z - track.center_per_sample
+    phase_rad = arctangent_demodulation(centred) if method == "arctan" else dacm_demodulation(centred)
+    radius = float(np.median(np.abs(centred)))
+    residual = float(np.sqrt(np.mean((np.abs(centred) - radius) ** 2)) / radius) if radius > 0 else np.inf
+    summary = CircleFit(complex(track.center_per_sample[-1]), radius, residual,
+                        _arc_span_rad(np.angle(centred)), True)
+    return DemodulationResult(phase_rad, f"{method}_tracked", True, summary)
 
 
 def phase_to_displacement_m(phase_rad: np.ndarray, wavelength_m: float) -> np.ndarray:

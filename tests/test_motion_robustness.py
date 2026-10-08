@@ -115,3 +115,69 @@ def test_breathing_is_recovered_through_m1() -> None:
     assert last.breathing.rate_bpm == pytest.approx(18.0, abs=1.0)
     peak_to_peak_from_std_mm = 2 * np.sqrt(2) * np.std(last.analysis.breath_mm)
     assert peak_to_peak_from_std_mm == pytest.approx(8.0, rel=0.10)
+
+
+# ---------------------------------------------------------------------------
+# M2 — sliding centre of the arc
+# ---------------------------------------------------------------------------
+
+from iot_radar.dsp.phase import demodulate, demodulate_tracked, fit_circle, fit_circle_pratt, track_center  # noqa: E402
+
+LAMBDA_M = 299_792_458.0 / 2.45e9
+F_SLOW_HZ = 20.0
+
+
+def _arc(drift: complex, n_seconds: float = 20.0, snr_db: float = 30.0, seed: int = 0):
+    """Slow-time IQ of 8 mm peak-to-peak breathing around a centre drifting by *drift* (radius 1)."""
+    rng = np.random.default_rng(seed)
+    t = np.arange(int(n_seconds * F_SLOW_HZ)) / F_SLOW_HZ
+    displacement_m = 0.004 * np.sin(2 * np.pi * 0.25 * t)
+    centre = 30.0 * np.exp(0.4j) + drift * t / t[-1]
+    noise = 10 ** (-snr_db / 20) / np.sqrt(2) * (rng.standard_normal(t.size) + 1j * rng.standard_normal(t.size))
+    z = centre + np.exp(1j * (1.1 - 4 * np.pi * displacement_m / LAMBDA_M)) + noise
+    return z, displacement_m
+
+
+def _displacement_error_mm(phase_rad: np.ndarray, truth_m: np.ndarray) -> float:
+    estimate = -phase_rad * LAMBDA_M / (4 * np.pi)
+    error = (estimate - estimate.mean()) - (truth_m - truth_m.mean())
+    return float(np.sqrt(np.mean(error ** 2)) * 1e3)
+
+
+def test_pratt_fit_agrees_with_the_geometric_fit() -> None:
+    z, _ = _arc(drift=0.0, snr_db=40.0)
+    pratt, geometric = fit_circle_pratt(z), fit_circle(z)
+    assert pratt.valid and geometric.valid
+    assert abs(pratt.center - geometric.center) < 0.02 and pratt.radius == pytest.approx(geometric.radius, rel=0.02)
+
+
+def test_drifting_centre_is_tracked_without_phase_jumps() -> None:
+    """The centre moves by one radius during the window (a person changes the static reflections)."""
+    z, truth_m = _arc(drift=1.0 * np.exp(2.0j))
+    fixed = demodulate(z, "arctan", "circle", 0.3, 0.3)
+    tracked = demodulate_tracked(z, F_SLOW_HZ, "arctan", window_s=10.0, step_s=1.0)
+    assert tracked.method == "arctan_tracked"
+    assert _displacement_error_mm(tracked.phase_rad, truth_m) < 1.0
+    assert not fixed.calibrated or _displacement_error_mm(fixed.phase_rad, truth_m) > 2.0
+    undetrended = track_center(z, F_SLOW_HZ, window_s=10.0, step_s=1.0, detrend=False)
+    assert _displacement_error_mm(np.unwrap(np.angle(z - undetrended.center_per_sample)), truth_m) > 5.0
+    # Continuity: no step between two samples beyond the breathing motion itself (≈ 0.04 rad here).
+    assert np.max(np.abs(np.diff(tracked.phase_rad))) < 0.15
+    track = track_center(z, F_SLOW_HZ, window_s=10.0, step_s=1.0)
+    assert track.valid.all() and len(track.times_s) == 11
+    assert np.max(np.abs(np.diff(track.center_per_sample))) < 0.02     # interpolated: no step
+
+
+@pytest.mark.parametrize("method", ["pratt", "geometric", "kasa"])
+def test_centre_estimators_can_be_selected(method: str) -> None:
+    z, _ = _arc(drift=0.0)
+    assert track_center(z, F_SLOW_HZ, method=method) is not None
+    with pytest.raises(ValueError):
+        track_center(z, F_SLOW_HZ, method="median")
+
+
+def test_without_a_valid_sub_window_the_former_demodulation_is_used() -> None:
+    rng = np.random.default_rng(1)
+    noise = 30.0 + rng.standard_normal(400) + 1j * rng.standard_normal(400)
+    result = demodulate_tracked(noise, F_SLOW_HZ)
+    assert result.method == "linear" and not result.calibrated
