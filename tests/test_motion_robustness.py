@@ -377,3 +377,95 @@ def test_adc_saturation_pauses_the_measurement() -> None:
     # The saturated samples (2 s, i.e. 2 or 3 blocks of 1 s) stay out of the estimation afterwards: weight 0.
     contaminated_s = outputs[-1].contamination.contaminated_fraction * pipeline.settings.window_s
     assert 2.0 <= contaminated_s <= 3.0 + 0.1
+
+
+# ---------------------------------------------------------------------------
+# M4 — measurement mode
+# ---------------------------------------------------------------------------
+
+from iot_radar.measurement import measurement_decision  # noqa: E402
+
+
+def _measure(cfg: dict[str, Any], start_s: float, source_wrapper=None):
+    """Run the pipeline, start a measurement at *start_s*, stop at its result."""
+    logging.disable(logging.WARNING)
+    source = open_source(cfg, simulation=True)
+    if source_wrapper is not None:
+        source = source_wrapper(source)
+    pipeline = VitalSignsPipeline.from_config(cfg, source.sample_rate_hz, effective_tx_offset_hz(cfg))
+    outputs, started = [], False
+    for output in pipeline.run(source):
+        outputs.append(output)
+        if output.t_s >= start_s and not started:
+            pipeline.start_measurement()
+            started = True
+            assert pipeline.measuring
+        if output.measurement.state == "done":
+            break
+    logging.disable(logging.NOTSET)
+    return outputs, outputs[-1].measurement.result
+
+
+def test_measurement_decision_rule() -> None:
+    def decide(confidence, **kwargs):
+        flags = {"valid_fraction": 1.0, "saturated": False, "target_motion": False, "discontinuity": False}
+        flags.update(kwargs)
+        return measurement_decision(confidence, min_valid_fraction=0.5, threshold_on=0.6, threshold_off=0.4,
+                                    **flags)
+
+    assert decide(0.8) == ("breathing", ())
+    assert decide(0.2) == ("no_breathing", ())
+    assert decide(0.5) == ("inconclusive", ("uncertain",))
+    assert decide(0.9, saturated=True, valid_fraction=0.3) == ("inconclusive", ("saturation", "too_contaminated"))
+    assert decide(0.9, target_motion=True)[1] == ("target_motion",)
+
+
+def test_measurement_gives_a_decision_and_a_quality_summary() -> None:
+    outputs, result = _measure(_scene(M1_M2_M3), start_s=5.0)
+    running = [o.measurement.elapsed_s for o in outputs if o.measurement.state == "running"]
+    assert running == sorted(running) and running[-1] < 30.0
+    assert result.decision == "breathing" and result.reasons == ()
+    assert result.rate_bpm == pytest.approx(18.0, abs=1.0)
+    assert result.confidence > 0.6
+    assert result.t_end_s - result.t_start_s == pytest.approx(30.0, abs=0.1)
+    assert result.t_start_s == pytest.approx(5.0 + 1.82, abs=0.6)        # the M1 delay is skipped
+    assert result.contaminated_fraction == 0.0 and result.saturated_fraction == 0.0
+    assert not result.target_motion and not result.discontinuity
+    # The continuous mode keeps running alongside.
+    assert outputs[-1].breathing.state == "BREATHING"
+
+
+def test_measurement_of_an_empty_room() -> None:
+    _, result = _measure(_scene(M1_M2_M3, presence=False), start_s=5.0)
+    assert result.decision == "no_breathing" and result.rate_bpm is None
+
+
+def test_measurement_with_a_passer_by_stays_conclusive() -> None:
+    walker = dict(WALKER_CROSSING_BEHIND, start_s=10.0)
+    _, result = _measure(_scene(M1_M2_M3, disturbers=[walker]), start_s=5.0)
+    assert result.decision == "breathing" and result.rate_bpm == pytest.approx(18.0, abs=1.0)
+    assert result.activity_fraction > 0.2 and not result.target_motion
+
+
+def test_measurement_with_a_target_motion_is_inconclusive() -> None:
+    cfg = _scene(M1_M2_M3, timeline=[[0, "breathing"], [20, "motion"], [25, "breathing"]])
+    _, result = _measure(cfg, start_s=5.0)
+    assert result.decision == "inconclusive" and "target_motion" in result.reasons
+
+
+class _OverflowingSource(_SaturatingSource):
+    """Simulated stream with samples lost just before one block."""
+
+    def read_block(self):
+        block = self._source.read_block()
+        if block is not None and self._start_s <= block.sample_start / self.sample_rate_hz < self._stop_s:
+            block = Block(block.samples, block.sample_start, block.host_time_s, True)
+            self._stop_s = self._start_s        # once
+        return block
+
+
+def test_a_discontinuity_cuts_the_measurement_short() -> None:
+    outputs, result = _measure(_scene(M1_M2_M3), start_s=5.0,
+                               source_wrapper=lambda s: _OverflowingSource(s, 15.0, 16.0, 0.0))
+    assert result.decision == "inconclusive" and result.reasons == ("discontinuity",)
+    assert result.analysis is None and outputs[-1].t_s < 20.0

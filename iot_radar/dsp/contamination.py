@@ -60,12 +60,15 @@ class ContaminationBlock:
         Weight of its samples, in [0, 1].
     activity_db : float
         Out-of-band density relative to its recent floor (dB, ≥ 0 up to noise).
+    saturated : bool
+        Some of its samples come from ADC samples at full scale (weight 0).
     """
 
     sample_start: int
     index_db: float
     weight: float
     activity_db: float = 0.0
+    saturated: bool = False
 
 
 class ContaminationMeter:
@@ -178,7 +181,8 @@ class ContaminationMeter:
         self._out_densities.append(out_density)
         floor = float(np.quantile(np.array(self._out_densities), self.floor_quantile))
         activity_db = float(10.0 * np.log10(max(out_density, 1e-300) / max(floor, 1e-300)))
-        self.blocks.append(ContaminationBlock(self._block_start, index_db, weight, activity_db))
+        self.blocks.append(ContaminationBlock(self._block_start, index_db, weight, activity_db,
+                                              self._block_saturated))
         self._block_start += self.block_length
         self._out_energy = self._in_energy = 0.0
         self._in_block = 0

@@ -145,7 +145,8 @@ Block (ADC, 1 MS/s) ─► contrôle de saturation de l'ADC (|I| ou |Q| ≥ 2047
 | | `iot_radar/dsp/estimation.py` | `weighted_lomb_scargle`, `remove_segment_offsets` |
 | | `iot_radar/dsp/detection.py` | Cause de la pause (`pause_reason`) |
 | | `iot_radar/pipeline.py` | Anomalies, attribution, confiance pondérée, saturation |
-| M4 | `iot_radar/pipeline.py` | `start_measurement()`, `MeasurementStatus` et `MeasurementResult` dans `PipelineOutput` |
+| M4 | `iot_radar/measurement.py` (nouveau) | Réglages, `MeasurementResult`, `MeasurementStatus`, règle de décision |
+| | `iot_radar/pipeline.py` | `start_measurement()`, accumulation, analyse finale, `PipelineOutput.measurement` |
 | Configuration | `configs/radar.yaml` | Sections `motion_robustness` et `measurement` |
 | Interface | `iot_radar/ui/dashboard.py` | Poids courant, part contaminée, état de la mesure, touche `m` |
 | Scripts | `scripts/run_radar.py` | `--measure` |
@@ -258,18 +259,19 @@ Mesure : médiane sur 30 tirages, 8 mm de respiration, sous-fenêtres de 10 s ; 
 ### 3.5 M4 — Mode « mesure »
 
 - **Déclenchement par l'opérateur :**
-  - touche `m` ou bouton du tableau de bord ;
+  - touche `m` du tableau de bord ;
   - `scripts/run_radar.py --measure` en mode sans affichage (une mesure, puis sortie) ;
   - `VitalSignsPipeline.start_measurement(duration_s=None)` dans le code.
   - L'interface ne touche pas au pipeline : elle lève un drapeau que la boucle de production lit avant chaque bloc.
-- **Pendant la mesure** (30 s par défaut), la chaîne continue tourne normalement. La mesure accumule le temps lent et ses poids depuis son début ; l'état publié est « en cours, x / 30 s ».
-- **À la fin, analyse unique de la fenêtre de mesure**, avec les mêmes traitements M1 à M3 :
-  - **décision :**
+- **Pendant la mesure** (30 s par défaut), la chaîne continue tourne normalement. La mesure accumule le temps lent, ses poids et l'activité hors bande. Elle part des échantillons issus de l'IQ reçu après le déclenchement : ceux déjà dans le filtre de M1 (1,82 s) sont sautés, si bien que la fenêtre couvre exactement le silence. L'état publié est `running`, avec le temps écoulé.
+- **À la fin, analyse unique de la fenêtre de mesure**, avec les mêmes traitements M1 à M3, deuxième passe comprise :
+  - **décision** (`measurement_decision`) :
     - `breathing` si la confiance pondérée ≥ `threshold_on` ;
     - `no_breathing` si elle est < `threshold_off` ;
-    - `inconclusive` sinon, ou en cas de saturation, de mouvement de la cible, de discontinuité du flux, ou de part valide (poids ≥ 0,5) < `min_valid_fraction` (0,5) ;
-  - **fréquence respiratoire** (Lomb-Scargle pondéré), **confiance** ;
-  - **résumé de qualité :** part de segments contaminés, part saturée, poids moyen, discontinuités, mouvement de la cible.
+    - `inconclusive` sinon (`uncertain`), ou, quelle que soit la confiance, en cas de saturation (`saturation`), de mouvement de la cible (`target_motion` : une anomalie attribuée à la cible), de discontinuité du flux (`discontinuity`, la mesure s'arrête aussitôt) ou de part valide (poids ≥ 0,5) < `min_valid_fraction` (`too_contaminated`, 0,5) ;
+  - **fréquence respiratoire** (Lomb-Scargle pondéré), si la décision est `breathing` ; **confiance** ;
+  - **résumé de qualité** : part contaminée, part saturée, poids moyen, part avec activité autour du radar, mouvement de la cible, discontinuité.
+- **Structures** (`iot_radar/measurement.py`) : `MeasurementSettings`, `MeasurementResult`, `MeasurementStatus` (`idle`, `running`, `done`) dans `PipelineOutput.measurement`. Le dernier résultat reste dans les sorties suivantes, pour l'affichage.
 - **Mode continu :** inchangé et toujours disponible. La mesure s'y superpose.
 
 ---

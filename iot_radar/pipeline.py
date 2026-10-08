@@ -45,6 +45,15 @@ from iot_radar.dsp.phase import (
     remove_common_rotation,
 )
 from iot_radar.dsp.spectral import compute_single_column, frequency_axis, get_window
+from iot_radar.measurement import (
+    STATE_DONE,
+    STATE_IDLE,
+    STATE_RUNNING,
+    MeasurementResult,
+    MeasurementSettings,
+    MeasurementStatus,
+    measurement_decision,
+)
 from iot_radar.physics import SPEED_OF_LIGHT
 
 if TYPE_CHECKING:  # only for the type hints: the pipeline does not depend on the acquisition
@@ -271,6 +280,8 @@ class WindowAnalysis:
     contaminated_fraction : float
         M3: share of the samples of the window whose weight is below
         ``contaminated_below``.
+    target_motion_fraction : float
+        M3: share of the window in in-band anomalies attributed to the target.
     """
 
     t_s: np.ndarray
@@ -289,6 +300,7 @@ class WindowAnalysis:
     weights: np.ndarray | None = None
     mean_weight: float = 1.0
     contaminated_fraction: float = 0.0
+    target_motion_fraction: float = 0.0
 
 
 @dataclass
@@ -429,10 +441,11 @@ class VitalSignsProcessor:
         reference_band_hz = self.motion.noise_band_hz if self.motion.doppler_filter_enabled else s.reference_band_hz
         metrics = breathing_metrics(spectrum, displacement_ptp_mm, s.breathing_band_hz,
                                     reference_band_hz, s.detection)
-        mean_weight, contaminated_fraction = 1.0, 0.0
+        mean_weight, contaminated_fraction, target_motion_fraction = 1.0, 0.0, 0.0
         if weighted:
             mean_weight = float(w.mean())
             contaminated_fraction = float(np.mean(w < self.motion.contaminated_below))
+            target_motion_fraction = float(anomalies.own.mean())
             metrics = replace(metrics, confidence=metrics.confidence * mean_weight)
 
         cycles = estimation.breath_cycles(breath_mm, self.f_s_hz, s.breathing_band_hz)
@@ -468,6 +481,7 @@ class VitalSignsProcessor:
             weights=w if weighted else None,
             mean_weight=mean_weight,
             contaminated_fraction=contaminated_fraction,
+            target_motion_fraction=target_motion_fraction,
         )
 
     def _demodulate(self, z: np.ndarray, tracked: bool,
@@ -584,6 +598,8 @@ class PipelineOutput:
         see :attr:`VitalSignsPipeline.micro_doppler_f_hz`), for display.
     contamination : ContaminationStatus or None
         M3 indicators (``None`` without M3).
+    measurement : MeasurementStatus or None
+        M4: state of the measurement mode and last result.
     """
 
     update_index: int
@@ -593,6 +609,7 @@ class PipelineOutput:
     breathing: BreathingState
     micro_doppler_column_db: np.ndarray | None
     contamination: ContaminationStatus | None = None
+    measurement: MeasurementStatus | None = None
 
 
 class VitalSignsPipeline:
@@ -626,6 +643,8 @@ class VitalSignsPipeline:
         Full scale of the raw samples (2048 for the Pluto ADC); with M3, a
         block reaching it pauses the measurement (saturation).  ``None`` for
         samples that are not raw ADC values (converted legacy sessions).
+    measurement : MeasurementSettings or None, optional
+        Measurement mode (M4), started by :meth:`start_measurement`.
 
     Notes
     -----
@@ -649,6 +668,7 @@ class VitalSignsPipeline:
         micro_doppler_window: str = "hann",
         motion: MotionRobustnessSettings | None = None,
         adc_full_scale: float | None = None,
+        measurement: MeasurementSettings | None = None,
     ) -> None:
         decimation_ratio = input_rate_hz / slow_time_rate_hz
         if abs(decimation_ratio - round(decimation_ratio)) > 1e-9:
@@ -688,6 +708,10 @@ class VitalSignsPipeline:
         self._active: deque[bool] = deque(maxlen=history_length)     # M3: someone moving out of band
         self._t_saturation_s: float | None = None
         self._saturated_since_output = False
+        self.measurement_settings = measurement or MeasurementSettings()
+        self._measurement: dict[str, Any] | None = None       # running measurement (M4)
+        self._measurement_result: MeasurementResult | None = None
+        self._measurement_completed = False
         self._next_sample_start: int | None = None
         self._slow_samples_total = 0
         self._update_index = 0
@@ -698,8 +722,8 @@ class VitalSignsPipeline:
     def from_config(cls, cfg: dict[str, Any], input_rate_hz: float, tx_offset_hz: float,
                     adc_full_scale: float | None = None) -> "VitalSignsPipeline":
         """Build the pipeline from the configuration (``sdr``, ``slow_time``,
-        ``vital_signs``, ``micro_doppler_view`` and ``motion_robustness``
-        sections); *adc_full_scale* as in the constructor."""
+        ``vital_signs``, ``micro_doppler_view``, ``motion_robustness`` and
+        ``measurement`` sections); *adc_full_scale* as in the constructor."""
         slow_time = cfg.get("slow_time", {})
         view = cfg.get("micro_doppler_view", {})
         return cls(
@@ -714,6 +738,7 @@ class VitalSignsPipeline:
             micro_doppler_window=str(view.get("window", "hann")),
             motion=MotionRobustnessSettings.from_config(cfg.get("motion_robustness", {})),
             adc_full_scale=adc_full_scale,
+            measurement=MeasurementSettings.from_config(cfg.get("measurement", {})),
         )
 
     def reset(self) -> None:
@@ -742,6 +767,8 @@ class VitalSignsPipeline:
             logger.warning("Stream discontinuity before sample %d — processing restarted", block.sample_start)
             self.reset()
             self._discontinuity_pending = True
+            if self._measurement is not None:
+                self._finish_measurement(discontinuity=True)
         self._next_sample_start = block.sample_start + samples.size
 
         saturated = False
@@ -768,9 +795,11 @@ class VitalSignsPipeline:
                 self._warmup_remaining -= 1
                 continue
             self._history.append(complex(value))
-            weight, active = self._sample_contamination()
+            weight, active, saturated = self._sample_contamination()
             self._weights.append(weight)
             self._active.append(active)
+            if self._measurement is not None:
+                self._collect_measurement(complex(value), weight, active, saturated)
             self._samples_in_history += 1
             self._samples_since_update += 1
             if self._samples_since_update == self._update_samples:
@@ -827,21 +856,107 @@ class VitalSignsPipeline:
         finally:
             source.close()
 
-    def _sample_contamination(self) -> tuple[float, bool]:
-        """M3 weight of the newest slow-time sample, and whether someone moves out of band.
+    def _sample_contamination(self) -> tuple[float, bool, bool]:
+        """M3 weight of the newest slow-time sample, whether someone moves out of band, and saturation.
 
         The sample left the Doppler stage ``doppler_delay_s`` after the
-        Doppler-rate samples it comes from: both come from the contamination
-        block of those samples (to within one Doppler-rate sample per
-        slow-time sample).  ``(1, False)`` without M3 or before the first block.
+        Doppler-rate samples it comes from: all three come from the
+        contamination block of those samples (to within one Doppler-rate
+        sample per slow-time sample).  ``(1, False, False)`` without M3 or
+        before the first block.
         """
         if self._contamination is None:
-            return 1.0, False
+            return 1.0, False, False
         source_index = self._slow_since_reset * self._doppler_per_slow - self._delay_doppler_samples
         block = self._contamination.block_at(max(source_index, 0))
         if block is None:
-            return 1.0, False
-        return block.weight, block.activity_db >= self.motion.activity_threshold_db
+            return 1.0, False, False
+        return block.weight, block.activity_db >= self.motion.activity_threshold_db, block.saturated
+
+    # -- M4: measurement mode ------------------------------------------------
+
+    def start_measurement(self, duration_s: float | None = None) -> None:
+        """Start a measurement of *duration_s* seconds (``measurement.duration_s`` by default).
+
+        Call it when the silence starts (rescuers still and out of the beam).
+        The samples are taken from the slow-time samples that come from the
+        IQ received from now on: those already in the Doppler filter (M1
+        delay) are skipped.  A running measurement is restarted.  The result
+        comes in :attr:`PipelineOutput.measurement`.
+        """
+        duration_s = float(duration_s or self.measurement_settings.duration_s)
+        self._measurement = {
+            "duration_s": duration_s,
+            "n_samples": int(round(duration_s * self.slow_time_rate_hz)),
+            "skip": int(round(self.doppler_delay_s * self.slow_time_rate_hz)),
+            "t_start_s": None,
+            "z": [], "weights": [], "active": [], "saturated": [],
+        }
+        logger.info("Measurement started (%.0f s)", duration_s)
+
+    @property
+    def measuring(self) -> bool:
+        """``True`` while a measurement runs."""
+        return self._measurement is not None
+
+    def _collect_measurement(self, value: complex, weight: float, active: bool, saturated: bool) -> None:
+        m = self._measurement
+        if m["skip"] > 0:
+            m["skip"] -= 1
+            return
+        if m["t_start_s"] is None:
+            m["t_start_s"] = self._slow_samples_total / self.slow_time_rate_hz
+        m["z"].append(value)
+        m["weights"].append(weight)
+        m["active"].append(active)
+        m["saturated"].append(saturated)
+        if len(m["z"]) >= m["n_samples"]:
+            self._finish_measurement()
+
+    def _finish_measurement(self, discontinuity: bool = False) -> None:
+        """Analyse the measurement window once and decide (MOTION_ROBUSTNESS_PLAN.md §3.5)."""
+        m, self._measurement = self._measurement, None
+        t_end_s = self._slow_samples_total / self.slow_time_rate_hz
+        t_start_s = m["t_start_s"] if m["t_start_s"] is not None else t_end_s
+        n = len(m["z"])
+        saturated_fraction = float(np.mean(m["saturated"])) if n else 0.0
+        activity_fraction = float(np.mean(m["active"])) if n else 0.0
+        analysis, confidence, rate_bpm, target_motion = None, 0.0, None, False
+        mean_weight, contaminated_fraction = 1.0, 0.0
+        if not discontinuity:
+            settings = replace(self.settings, window_s=m["duration_s"])
+            processor = VitalSignsProcessor(self.slow_time_rate_hz, self._processor.wavelength_m, settings,
+                                            self.motion)
+            weights = np.array(m["weights"]) if self._contamination is not None else None
+            analysis = processor.analyse(np.array(m["z"]), weights, np.array(m["active"], dtype=bool))
+            confidence = analysis.metrics.confidence
+            mean_weight, contaminated_fraction = analysis.mean_weight, analysis.contaminated_fraction
+            target_motion = analysis.metrics.motion or analysis.target_motion_fraction > 0.0
+            if analysis.metrics.rate_hz is not None:
+                rate_bpm = 60.0 * analysis.metrics.rate_hz
+        detection = self.settings.detection
+        decision, reasons = measurement_decision(
+            confidence, 1.0 - contaminated_fraction, saturated_fraction > 0.0, target_motion, discontinuity,
+            self.measurement_settings.min_valid_fraction, detection.threshold_on, detection.threshold_off)
+        self._measurement_result = MeasurementResult(
+            t_start_s, t_end_s, decision, reasons, rate_bpm if decision == "breathing" else None, confidence,
+            mean_weight, contaminated_fraction, saturated_fraction, activity_fraction, target_motion,
+            discontinuity, analysis)
+        self._measurement_completed = True
+        logger.info("Measurement done: %s%s, confidence %.2f, contaminated %.0f %%", decision,
+                    f" {rate_bpm:.1f} /min" if decision == "breathing" else f" {reasons}", confidence,
+                    100 * contaminated_fraction)
+
+    def _measurement_status(self) -> MeasurementStatus:
+        if self._measurement is not None:
+            m = self._measurement
+            return MeasurementStatus(STATE_RUNNING, len(m["z"]) / self.slow_time_rate_hz, m["duration_s"],
+                                     self._measurement_result)
+        last = self._measurement_result
+        state = STATE_DONE if self._measurement_completed else STATE_IDLE
+        self._measurement_completed = False
+        duration_s = last.t_end_s - last.t_start_s if last else self.measurement_settings.duration_s
+        return MeasurementStatus(state, duration_s if last else 0.0, duration_s, last)
 
     def _make_output(self) -> PipelineOutput:
         """Analyse the latest window and build one output."""
@@ -890,6 +1005,7 @@ class VitalSignsPipeline:
         self._saturated_since_output = False
         self._update_index += 1
         output = PipelineOutput(self._update_index, t_s, self._discontinuity_pending,
-                                analysis, breathing, micro_doppler_column_db, contamination)
+                                analysis, breathing, micro_doppler_column_db, contamination,
+                                self._measurement_status())
         self._discontinuity_pending = False
         return output
