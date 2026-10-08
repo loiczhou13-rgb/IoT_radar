@@ -1,0 +1,450 @@
+# Plan — robustesse aux mouvements parasites (chaîne SISO)
+
+> **Version 1**, 2026-10-08. Branche `siso-detection`, créée depuis `dev` = `5a6edd0`.
+> Étape 1 : conception, aucune modification de code.
+> Les chiffres de l'audit (§1) et de la comparaison des estimateurs de centre (§3.3) ont été calculés avec des scripts temporaires, hors du dépôt, sur le code de `dev`.
+
+## Sommaire
+
+0. [Décisions](#0-décisions)
+1. [Audit de l'anti-repliement](#1-audit-de-lanti-repliement)
+2. [Diagnostic : pourquoi le radar se met en pause](#2-diagnostic--pourquoi-le-radar-se-met-en-pause)
+3. [Conception de M1 à M4](#3-conception-de-m1-à-m4)
+4. [Paramètres par défaut](#4-paramètres-par-défaut)
+5. [Simulation des perturbateurs](#5-simulation-des-perturbateurs)
+6. [Protocole d'évaluation](#6-protocole-dévaluation)
+7. [Hors périmètre : annulation spatiale et mouvement de la cible](#7-hors-périmètre--annulation-spatiale-et-mouvement-de-la-cible)
+8. [Risques](#8-risques)
+9. [Étapes et commits](#9-étapes-et-commits)
+
+---
+
+## 0. Décisions
+
+**À valider avant le code :**
+
+| # | Question | Recommandation |
+|---|---|---|
+| Q1 | Les chiffres Doppler de la demande sont donnés à **2,45 GHz** (f_D ≈ 16·v), mais `radar.yaml` émet à **3,5 GHz**, où f_D ≈ 23·v et où la marche monte jusqu'à 35 Hz. Faut-il passer la chaîne SISO à 2,45 GHz ? | Passer à 2,45 GHz : c'est cohérent avec la demande, et 3,5 GHz n'est pas une bande ISM. La conception (§3) fonctionne aux deux fréquences. |
+| Q2 | L'indice de contamination est le rapport d'énergies hors bande / dans la bande. Faut-il le normaliser par les largeurs de bande (rapport de densités) ? | Oui. Un bruit blanc vaut alors 0 dB quelle que soit la fréquence d'échantillonnage. Sans normalisation, il vaut +17 dB et le seuil dépend du débit (§3.4). |
+| Q3 | `feature/mimo-localization` n'est pas fusionnée dans `dev`. Deux de ses commits sont utiles ici : le test qui fige la chaîne à une voie (`8c903c8`) et l'extraction de `SimulatedPerson` (`6151685`). | Les reprendre par `cherry-pick` : même contenu, donc moins de conflits à la fusion future. |
+| Q4 | Données réelles pour l'évaluation : seules les 69 anciennes sessions converties sont disponibles. Elles sont annotées `empty` / `breathing`, sans annotation de perturbation, et la chaîne de phase n'y détecte presque rien (REFACTOR_PLAN §19.3). | Des enregistrements HDF5 du problème constaté (radar en pause en milieu ouvert), même courts, rendraient l'évaluation (§6) bien plus probante. |
+
+**Prises par défaut, à contester si besoin :**
+
+| # | Décision |
+|---|---|
+| D1 | M1 et M3 travaillent à une **fréquence Doppler intermédiaire de 100 Hz**. La cascade actuelle y passe déjà juste avant son dernier étage ×5 (§1) : la couper en deux ne change rien au calcul. |
+| D2 | M1 à M3 sont **activés par défaut**. Les désactiver tous redonne la chaîne actuelle au bit près (test de référence). |
+| D3 | Les intervalles de perturbation simulés sont stockés dans **`/ground_truth/disturbances`** (début, longueur, type). Le vocabulaire des labels de `/annotations` ne change pas. |
+| D4 | `CLAUDE.md` n'existe toujours pas. J'applique les critères de lisibilité de la première demande. |
+
+---
+
+## 1. Audit de l'anti-repliement
+
+**Méthode** (Crochiere & Rabiner, 1981).
+- Pour chaque étage de décimation (débit d'entrée F, facteur q, débit de sortie F/q), on calcule les bandes qui se replient dans la bande respiratoire [−f_b, +f_b] en sortie de l'étage : m·F/q ± f_b, pour m = 1 … ⌊(F/2 + f_b)/(F/q)⌋.
+- On relève l'atténuation minimale du filtre de l'étage dans ces bandes. Les filtres sont des Tchebychev I d'ordre 8, ondulation 0,05 dB, Wn = 0,8/q.
+- Un **suivi composite** propage chaque fréquence d'entrée à travers toute la cascade : gain cumulé et fréquence repliée finale. On en déduit le pire cas, quel que soit le chemin de repli.
+- Les fréquences sont prises **après le mélangeur** : 0 Hz correspond à la porteuse de l'écho.
+
+### 1.1 Chaîne actuelle : 1 MS/s → 20 Hz, facteur 50 000 = 2⁴·5⁵, f_b = 1 Hz
+
+| Étage | Débits | Première bande repliée | Atténuation minimale dans les bandes repliées | Retard de groupe (DC) |
+|---|---|---|---|---|
+| ×2 (×4 étages) | 1 MS/s → 62,5 kS/s | F/2 ± 1 Hz | > 360 dB (zéro du filtre à Nyquist) | < 0,1 ms |
+| ×5 | 62,5 kS/s → 12,5 kS/s | 12,5 kHz ± 1 Hz | 92,8 dB | 0,2 ms |
+| ×5 | 12,5 kS/s → 2,5 kS/s | 2,5 kHz ± 1 Hz | 92,7 dB | 1,0 ms |
+| ×5 | 2,5 kS/s → 500 Hz | 500 Hz ± 1 Hz | 92,6 dB | 4,8 ms |
+| ×5 | 500 Hz → **100 Hz** | 100 Hz ± 1 Hz | 91,8 dB | 23,9 ms |
+| ×5 | **100 Hz → 20 Hz** | **20 Hz ± 1 Hz** | **87,8 dB** (à 19 Hz) | 121,7 ms |
+
+- **Pire cas composite :** 88,1 dB, pour une entrée à ±19 Hz repliée à ∓1 Hz.
+- **Exigence de 60 dB : respectée partout**, avec 28 dB de marge. Un perturbateur à 19 Hz ressort à −88 dB : il n'apparaît pas comme une respiration.
+- **Anciennes sessions converties** (2 kHz → 20 Hz, étages 2, 2, 5, 5) : mêmes conclusions, pire cas 87,9 dB à 19 Hz.
+
+### 1.2 Ce qui passe sans repliement
+
+Fréquence d'entrée → fréquence à 20 Hz → atténuation :
+
+| Entrée | 3 Hz | 5 Hz | 8 Hz | 10 Hz | 12 Hz | 16 Hz | 19 Hz | 25 Hz | −503,5 Hz (DC du récepteur) |
+|---|---|---|---|---|---|---|---|---|---|
+| À 20 Hz | 3 | 5 | 8 | −10 | −8 | −4 | −1 | 5 | −3,5 |
+| Atténuation | **0,4 dB** | **0,4 dB** | **0,4 dB** | 24,6 dB | 44,4 dB | 71,9 dB | 88,1 dB | 116 dB | 93,8 dB |
+
+- La bande passante du dernier étage s'étend jusqu'à **8 Hz**. Les gestes (3 à 16 Hz) arrivent donc presque intacts dans le temps lent, alors qu'ils sont hors de la bande respiratoire.
+- Ils ne se replient pas, mais ils traversent l'ajustement de cercle et l'arctangente, qui sont **non linéaires** (§2).
+
+**Conclusion.** M1 n'a pas à corriger l'anti-repliement, qui est déjà conforme. Il doit retirer, **sur l'IQ et avant la démodulation**, tout ce qui est hors de la bande respiratoire mais sous la fréquence de Nyquist du temps lent. L'audit reste un test permanent : il vérifie que toute nouvelle configuration de décimation respecte 60 dB.
+
+---
+
+## 2. Diagnostic : pourquoi le radar se met en pause
+
+Dans le temps lent :
+
+```
+x(t) = C(t) + a·e^{jφ(t)} + Σ_k b_k(t)·e^{jφ_k(t)}
+```
+
+1. **Les perturbateurs entrent dans le temps lent.** Les gestes (3 à 16 Hz) traversent la décimation (§1.2). Les balancements (0,8 Hz) et la marche (16 à 25 Hz à 2,45 GHz, 23 à 35 Hz à 3,5 GHz) y entrent aussi, la marche en partie.
+2. **L'ajustement de cercle se trompe**, car les points ne sont plus sur l'arc de la cible.
+3. **L'arctangente mélange tout**, car elle n'est pas linéaire :
+   - arg(a·e^{jφ} + b·e^{jφ_k}) contient des produits φ ± φ_k ;
+   - dès que |b| ≈ |a|, des sauts de cycle (2π) apparaissent, donc des marches dans la phase déroulée, dont le spectre est large et inclut la bande respiratoire.
+4. **Le déplacement crête à crête dépasse 30 mm** → `motion = True` → état `MOTION` maintenu 3 s (`motion_hold_s`).
+
+En milieu ouvert, où il y a toujours un peu d'activité, le radar est donc presque constamment en pause.
+
+**Principe de la correction** (demande, §3). La somme est linéaire en IQ, l'arctangente ne l'est pas : on supprime d'abord, sur l'IQ, ce qui n'est pas respiratoire (M1), on suit le centre qui dérive (M2), on pondère au lieu de couper (M3), et on mesure pendant les silences (M4).
+
+---
+
+## 3. Conception de M1 à M4
+
+### 3.1 Ordre des traitements
+
+```
+Block (ADC, 1 MS/s) ─► contrôle de saturation de l'ADC (|I| ou |Q| ≥ 2047)                       [pause]
+  ─► Mixer (écho à 0 Hz)
+  ─► Decimator A : 1 MS/s → 100 Hz (les 8 premiers étages actuels, inchangés)
+        │
+        ├─► M3a  indice de contamination par bloc de 1 s, AVANT M1 :
+        │        densité hors bande [2 Hz ; 50 Hz] / densité dans la bande [0,05 ; 1 Hz]
+        │        → poids w_k ∈ [0, 1], fonction lisse de l'indice
+        │
+  ─► M1  passe-bas FIR complexe, phase linéaire, coupure 1,5 Hz, ≥ 60 dB dès 2 Hz, puis ×5 → 20 Hz
+        (M1 désactivé : dernier étage Tchebychev ×5 actuel)
+        poids retardés du retard du FIR, puis répétés pour chaque échantillon à 20 Hz
+  ─► anneau du temps lent (fenêtre de 20 s, mise à jour toutes les 0,5 s), avec les poids
+  ─► analyse de la fenêtre :
+        dérive du LO → M2 centre glissant (Pratt sur des sous-fenêtres de 10 s, pas de 1 s,
+        interpolation linéaire de C(t)) → arctangente → déplacement
+        (M2 désactivé : un seul ajustement géométrique sur la fenêtre, comme aujourd'hui)
+        → M3b périodogramme de Lomb-Scargle pondéré → fréquence, SNR, concentration
+          → confiance × poids moyen
+        → anomalie dans la bande : déplacement crête à crête après M1 et M2 > 30 mm
+          (sur les échantillons de poids ≥ 0,5) → mouvement de la cible           [pause]
+  ─► BreathingDetector : pause seulement sur saturation ou anomalie dans la bande (M3 activé)
+  ─► M4  mode mesure : fenêtre de 30 s lancée par l'opérateur → décision + résumé de qualité
+  ─► PipelineOutput (+ poids, part contaminée, état de la mesure) ─► tableau de bord
+```
+
+- **Couper la cascade en deux** (Decimator A, puis M1 ou le dernier étage) fait les mêmes opérations dans le même ordre, à condition de garder la sortie intermédiaire en complex128. Avec M1 à M3 désactivés, la sortie est **identique au bit près** à l'actuelle ; le test de référence le vérifie (Q3).
+- **Place dans la structure :**
+
+| Élément | Module | Contenu |
+|---|---|---|
+| M1 | `iot_radar/dsp/doppler.py` (nouveau) | Conception du FIR passe-bas (Kaiser), filtre-décimateur à état (`DopplerLowpass`), audit d'anti-repliement (`alias_audit`) d'une cascade |
+| | `iot_radar/dsp/decimation.py` | Propriété `stages` (pour l'audit), sortie complex128 optionnelle |
+| M2 | `iot_radar/dsp/phase.py` | `fit_circle_pratt`, `track_center` (centres glissants, interpolation), démodulation avec un centre variable |
+| M3 | `iot_radar/dsp/contamination.py` (nouveau) | `ContaminationMeter` (indice par bloc, à état), `contamination_weight` |
+| | `iot_radar/dsp/estimation.py` | `weighted_lomb_scargle` |
+| | `iot_radar/dsp/detection.py` | Règle de pause selon M3, confiance pondérée |
+| M4 | `iot_radar/pipeline.py` | `start_measurement()`, `MeasurementStatus` et `MeasurementResult` dans `PipelineOutput` |
+| Configuration | `configs/radar.yaml` | Sections `motion_robustness` et `measurement` |
+| Interface | `iot_radar/ui/dashboard.py` | Poids courant, part contaminée, état de la mesure, touche `m` |
+| Scripts | `scripts/run_radar.py` | `--measure` |
+| | `scripts/evaluate_motion_robustness.py` (nouveau) | Évaluation (§6) |
+| Simulation | `iot_radar/acquisition/disturbers.py` (nouveau) | Marcheur, balancement, geste, masquage |
+| | `iot_radar/acquisition/sources.py` | `CWSimulationSource`, avec perturbateurs |
+| | `iot_radar/acquisition/recording.py` | `/ground_truth/disturbances` |
+
+### 3.2 M1 — Filtrage Doppler (Crochiere & Rabiner, 1981)
+
+- **Filtre :** FIR à phase linéaire (symétrique), fenêtre de Kaiser, à 100 Hz, appliqué avec les mêmes coefficients réels sur I et Q. Il est causal, à état d'un bloc à l'autre.
+- **Gabarit :**
+  - bande passante jusqu'à 1,0 Hz, ondulation < 0,01 dB (fenêtre de Kaiser à 60 dB), ce qui laisse passer les harmoniques respiratoires jusqu'à 1 Hz ;
+  - coupure à 1,5 Hz (−6 dB) ;
+  - bande atténuée dès **2,0 Hz** avec **≥ 60 dB**.
+  - La largeur de transition (1 Hz) est configurable.
+- **Taille :** loi de Kaiser, N ≈ (60 − 7,95)/(2,285 · 2π · 1,0/100) ≈ **363 coefficients**.
+- **Retard :** (N − 1)/2 = 181 échantillons à 100 Hz, soit **1,81 s**, documenté dans la docstring et dans le README.
+- **Décimation ×5 vers 20 Hz :** les bandes repliées (19–21 Hz, 39–41 Hz) sont dans la bande atténuée du FIR. L'exigence de 60 dB est donc tenue par construction ; l'audit le vérifie.
+- **Effets :**
+  - la latence de la décision augmente de 1,8 s (contre 0,12 s pour le Tchebychev actuel) ;
+  - après une discontinuité, le FIR met 3,6 s à se remplir : le temps de chauffe passe de 1 s à `max(1 s, 3,6 s)`.
+- **Désactivé :** dernier étage Tchebychev ×5 actuel, donc ancien comportement.
+
+### 3.3 M2 — Suivi glissant du centre de l'arc
+
+Références : Park, Boric-Lubecke et Lubecke (2007), Zakrzewski et al. (2012).
+
+- **Principe.** Un perturbateur modifie les réflexions fixes : le centre C(t) dérive. On l'estime sur des **sous-fenêtres de 10 s** (2 à 3 cycles respiratoires) **tous les 1 s**, à l'intérieur de la fenêtre d'analyse.
+- **Continuité.** C(t) est **interpolé linéairement** entre les instants centraux des sous-fenêtres, et maintenu constant aux bords. La phase vaut ensuite φ(t) = unwrap(arg(z(t) − C(t))).
+  - Comme C(t) est continu, z − C l'est aussi, et la phase aussi : **aucun saut artificiel** n'est introduit lors des mises à jour.
+  - Une sous-fenêtre non valide (arc < 0,3 rad, résidu > 0,3) est ignorée et l'interpolation passe par-dessus. Si aucune n'est valide, on se replie sur le traitement actuel.
+- **Comparaison des estimateurs** (méthodes décrites par Zakrzewski et al.). Mesure : 300 tirages, sous-fenêtre de 10 s à 20 Hz, 2,45 GHz, centre à 30 fois le rayon. On donne l'erreur médiane sur le déplacement retrouvé, puis l'erreur sur le centre relative au rayon.
+
+| p-p | Arc | SNR | Moyenne | Kåsa | **Pratt** | Géométrique (Kåsa + Gauss-Newton) |
+|---|---|---|---|---|---|---|
+| 2 mm | 0,21 rad | 20 dB | 59 mm / 1,00 r | 62 mm / 1,00 r | 58 mm / 1,00 r | 56 mm / 1,00 r |
+| 2 mm | 0,21 rad | 30 dB | 33 mm / 1,00 r | 28 mm / 0,99 r | 0,70 mm / 0,61 r | 0,70 mm / 0,60 r |
+| 5 mm | 0,51 rad | 20 dB | 37 mm / 0,98 r | 31 mm / 0,96 r | **1,82 mm** / 0,55 r | 1,31 mm / 0,45 r |
+| 5 mm | 0,51 rad | 30 dB | 21 mm / 0,98 r | 4,9 mm / 0,77 r | **0,28 mm** / 0,10 r | 0,27 mm / 0,10 r |
+| 10 mm | 1,03 rad | 20 dB | 21 mm / 0,94 r | 5,2 mm / 0,66 r | **0,76 mm** / 0,09 r | 0,75 mm / 0,08 r |
+| 10 mm | 1,03 rad | 30 dB | 11 mm / 0,94 r | 0,78 mm / 0,18 r | **0,23 mm** / 0,02 r | 0,23 mm / 0,02 r |
+| Temps de calcul | | | 7 µs | 110 µs | **120 µs** | 370–850 µs |
+
+**Choix : Pratt.**
+- Il est aussi précis que l'ajustement géométrique dès que l'arc dépasse ~0,5 rad.
+- Il est **non itératif** : pas de convergence à surveiller, et 3 à 7 fois plus rapide. Cela compte ici : 11 sous-fenêtres par mise à jour, deux mises à jour par seconde.
+- Kåsa est fortement biaisé sur les arcs courts, comme la moyenne : il est écarté.
+- L'ajustement géométrique reste celui de la fenêtre entière (M2 désactivé).
+
+En dessous de ~0,3 rad, aucune méthode ne tient. Le contrôle de validité existant s'applique alors, avec repli sur la démodulation linéaire.
+
+### 3.4 M3 — Pondération et estimation tolérante aux trous (VanderPlas, 2018)
+
+- **Indice par bloc de 1 s, calculé à 100 Hz AVANT M1 :**
+
+  ```
+  κ = 10·log10( (E_hors / B_hors) / (E_bande / B_bande) )   [dB]
+  ```
+
+  - E_hors est l'énergie de l'IQ filtré passe-haut à 2 Hz, sur [2 Hz ; 50 Hz] en valeur absolue (B_hors = 2·48 Hz).
+  - E_bande est l'énergie de l'IQ filtré passe-bande sur [0,05 ; 1 Hz] en valeur absolue (B_bande = 2·0,95 Hz). Le continu, c'est-à-dire le statique, est exclu.
+  - Les filtres sont des Butterworth d'ordre 4 à état, en continu.
+  - **Normalisation par les largeurs de bande (Q2)** : un bruit blanc vaut 0 dB. Ordres de grandeur attendus, à vérifier en simulation à l'étape 4 : une cible qui respire nettement est très en dessous de 0 dB, un perturbateur proche nettement au-dessus.
+- **Poids :** fonction logistique lisse, `w = 1 / (1 + exp((κ − κ₀)/s))`, avec κ₀ = 6 dB et s = 2 dB.
+  - On obtient w ≈ 0,95 à 0 dB, 0,5 à 6 dB et 0,05 à 12 dB.
+  - Un bloc de poids inférieur à 0,5 compte comme « contaminé ».
+  - Les poids sont retardés du retard de M1 (1,81 s) pour rester alignés avec le temps lent filtré.
+- **Estimation pondérée :** périodogramme de **Lomb-Scargle pondéré**, sous la forme généralisée avec moyenne flottante (VanderPlas, §5–6), sur le déplacement de la fenêtre avec les poids des échantillons.
+  - Pour chaque fréquence, on fait un ajustement pondéré de A·cos + B·sin + c ; la puissance est la réduction du χ² pondéré.
+  - Les échantillons de poids nul ne comptent pas : l'estimation tolère les trous.
+  - Grille de 0,01 à 5 Hz (bande respiratoire et bande de référence), pas de 0,005 Hz.
+  - Les métriques existantes (fréquence, SNR sur la bande de référence, concentration) sont calculées sur ce spectre, sans changer de code (`breathing_metrics`).
+- **Confiance :** confiance instantanée × poids moyen de la fenêtre. Elle diminue donc avec la part de segments contaminés.
+- **Pause** (M3 activé) réservée à deux cas :
+  - **saturation de l'ADC** (au moins un échantillon d'un bloc à ±2047), maintenue `motion_hold_s` ;
+  - **anomalie dans la bande** : déplacement crête à crête, après M1 et M2, supérieur à `motion_ptp_mm` sur les échantillons de poids ≥ 0,5 ; c'est un mouvement de la cible elle-même.
+  - L'état `MOTION` garde son nom, et l'état de sortie précise la cause : `pause_reason` = `"saturation"` ou `"target_motion"`.
+  - M3 désactivé : règle actuelle (crête à crête de la fenêtre et des 5 dernières secondes).
+
+### 3.5 M4 — Mode « mesure »
+
+- **Déclenchement par l'opérateur :**
+  - touche `m` ou bouton du tableau de bord ;
+  - `scripts/run_radar.py --measure` en mode sans affichage (une mesure, puis sortie) ;
+  - `VitalSignsPipeline.start_measurement(duration_s=None)` dans le code.
+  - L'interface ne touche pas au pipeline : elle lève un drapeau que la boucle de production lit avant chaque bloc.
+- **Pendant la mesure** (30 s par défaut), la chaîne continue tourne normalement. La mesure accumule le temps lent et ses poids depuis son début ; l'état publié est « en cours, x / 30 s ».
+- **À la fin, analyse unique de la fenêtre de mesure**, avec les mêmes traitements M1 à M3 :
+  - **décision :**
+    - `breathing` si la confiance pondérée ≥ `threshold_on` ;
+    - `no_breathing` si elle est < `threshold_off` ;
+    - `inconclusive` sinon, ou en cas de saturation, de mouvement de la cible, de discontinuité du flux, ou de part valide (poids ≥ 0,5) < `min_valid_fraction` (0,5) ;
+  - **fréquence respiratoire** (Lomb-Scargle pondéré), **confiance** ;
+  - **résumé de qualité :** part de segments contaminés, part saturée, poids moyen, discontinuités, mouvement de la cible.
+- **Mode continu :** inchangé et toujours disponible. La mesure s'y superpose.
+
+---
+
+## 4. Paramètres par défaut
+
+```yaml
+motion_robustness:
+  doppler_rate_hz: 100.0      # D1 : Nyquist 50 Hz > marche à 1,5 m/s (24,5 Hz à 2,45 GHz ; 35 Hz à 3,5 GHz)
+  doppler_filter:             # M1
+    enabled: true
+    cutoff_hz: 1.5            # demande ; garde les harmoniques respiratoires ≤ 1 Hz
+    transition_hz: 1.0        # bande passante ≤ 1,0 Hz, atténuée ≥ 2,0 Hz
+    stopband_attenuation_db: 60.0
+  alias_check:
+    band_hz: 1.0              # f_b
+    min_attenuation_db: 60.0  # exigence de la demande, vérifiée au démarrage
+  center_tracking:            # M2
+    enabled: true
+    window_s: 10.0            # 2 à 3 cycles à 12–18 /min
+    step_s: 1.0
+    method: pratt             # pratt | geometric | kasa (§3.3)
+  contamination_weighting:    # M3
+    enabled: true
+    block_s: 1.0
+    out_of_band_start_hz: 2.0 # = bord de la bande atténuée de M1
+    in_band_hz: [0.05, 1.0]
+    weight_midpoint_db: 6.0   # κ₀
+    weight_slope_db: 2.0      # s
+    contaminated_below: 0.5
+    pause_on_saturation: true
+measurement:                  # M4
+  duration_s: 30.0
+  min_valid_fraction: 0.5
+```
+
+Justifications :
+- **100 Hz** : voir D1. 100 = 2²·5², et 1 MS/s / 100 Hz = 10 000 en facteurs ≤ 13.
+- **Coupure à 1,5 Hz** : demande ; les harmoniques respiratoires montent jusqu'à ~1 Hz.
+- **Atténuation dès 2 Hz** : en dessous des gestes (≥ 3 Hz) ; c'est aussi le début de la bande « hors bande » de M3.
+- **10 s / 1 s** : 2 à 3 cycles respiratoires (demande) ; à 1 s, la dérive du centre due à un passage est suivie.
+- **κ₀ = 6 dB** : 6 dB au-dessus d'un bruit blanc, de sorte qu'une cible faible sans perturbateur garde un poids d'environ 0,95.
+- κ₀ et s seront ajustés à l'étape 5 si l'évaluation le justifie ; tout changement sera documenté dans `MOTION_ROBUSTNESS_EVAL.md`.
+
+---
+
+## 5. Simulation des perturbateurs
+
+Modèle simplifié d'après Chen et al. (IEEE TAES, 2006).
+
+- **Géométrie 2D en SISO :** le radar est à l'origine, axe de visée +y ; la cible est en (0, `target_range_m`). Son modèle de phase reste inchangé.
+- **Marcheur :**
+  - **Corps :** tronc, deux jambes et deux bras, comme diffuseurs ponctuels (SER relatives 1 ; 0,25 ; 0,25 ; 0,1 ; 0,1).
+  - **Mouvement :** le tronc suit une trajectoire rectiligne (départ, direction) à vitesse constante, entre 0,5 et 1,5 m/s. Jambes et bras oscillent le long de la marche, de ±0,3 m et ±0,15 m, en opposition de phase. La fréquence de pas vaut v / 1,4 m, soit 0,36 à 1,07 Hz.
+  - **Amplitude** ∝ √SER / R² : on donne l'amplitude à 1 m.
+  - **Phase** = −4π·R_i(t)/λ pour chaque diffuseur.
+- **Balancement :** diffuseur oscillant radialement, 3 cm à 0,8 Hz.
+- **Geste :** main oscillant de 8 cm à 2 Hz. La vitesse maximale est alors de 1 m/s, d'où un Doppler jusqu'à 16 Hz à 2,45 GHz.
+- **Masquage et modulation du clutter :**
+  - des réflecteurs statiques (murs) sont placés dans la scène ;
+  - quand le tronc d'un perturbateur passe à moins de 0,25 m du segment radar → point (cible ou réflecteur), devant ce point, l'amplitude du trajet est atténuée jusqu'à −20 dB, avec une transition en cosinus surélevé ;
+  - le centre C(t) dérive donc comme sur le terrain, et la cible peut être masquée.
+- **Vérité terrain :**
+  - `disturbance_intervals()` donne les intervalles où chaque perturbateur est actif : dans le champ (±60°, < 15 m) pour le marcheur, période configurée pour le balancement et le geste ;
+  - ils sont enregistrés dans `/ground_truth/disturbances` (D3).
+- **Sans perturbateur, la source reste identique au bit près**, car les perturbateurs ne consomment pas de tirage aléatoire.
+
+---
+
+## 6. Protocole d'évaluation
+
+`scripts/evaluate_motion_robustness.py` ; résultats et figures dans `MOTION_ROBUSTNESS_EVAL.md`.
+
+**Configurations comparées** : référence (M1, M2, M3 désactivés, pause actuelle), M1, M2, M3, M1+M2, M1+M3, M2+M3, M1+M2+M3.
+
+**Scénarios simulés** :
+- **Paramètres communs :** 2,45 GHz ou selon Q1 ; débit réduit à 20 kS/s pour la vitesse, avec une décimation identique à partir de 100 Hz ; 5 graines × 150 s.
+
+| # | Scène | Rôle |
+|---|---|---|
+| S1 | Cible qui respire, seule | Contrôle |
+| S2 | Cible + marcheur traversant à 3 m, 0,5 à 1,5 m/s | Cas de la demande |
+| S3 | Cible + marcheur à 8 m | Activité lointaine |
+| S4 | Cible + balancement d'un témoin à 2 m | Mouvement dans la bande |
+| S5 | Cible + gestes à 1,5 m | |
+| S6 | Pièce vide + marcheur | Fausses alarmes |
+| S7 | Pièce vide + gestes | Fausses alarmes |
+| S8 | Cible qui bouge elle-même | La pause doit rester |
+
+**Enregistrements** : les 69 anciennes sessions (`breathing` / `empty`) et, si possible, ceux de Q4.
+
+**Mesures :**
+- **Part du temps en pause :** sorties `MOTION` de la chaîne continue, après le chauffage.
+- **Pd et Pfa sur des fenêtres disjointes de 30 s :** décision du mode mesure (§3.5) sur chaque fenêtre.
+  - Pd = P(`breathing` | cible présente) ; Pfa = P(`breathing` | pas de cible).
+  - On rapporte aussi la part `inconclusive`.
+- **Erreur de fréquence :** |estimée − vraie| en respirations/min, sur les fenêtres décidées `breathing` (simulation seulement).
+
+**Figures :**
+- part de pause par configuration et par scénario ;
+- Pd/Pfa par configuration ;
+- erreur de fréquence ;
+- un exemple temporel de S2 : IQ, poids, état, sans et avec M1+M2+M3.
+
+---
+
+## 7. Hors périmètre : annulation spatiale et mouvement de la cible
+
+### 7.1 Annulation spatiale par formation de voies (MVDR, Van Veen & Buckley, 1988)
+
+**Principe.** Avec le réseau virtuel MIMO de M = 4 éléments (`LOCALIZATION_PLAN.md`), un filtre spatial **w = R⁻¹·a(θ_c) / (a(θ_c)ᴴ·R⁻¹·a(θ_c))** garde la direction de la cible θ_c et place des zéros dans les directions des perturbateurs. On peut annuler au plus M − 1 = 3 perturbateurs.
+
+**Ce qu'il apporte** que M1 à M3 ne peuvent pas apporter : la suppression des perturbateurs **dans la bande** respiratoire.
+- un témoin qui se balance à 0,8 Hz ;
+- la modulation du clutter par un passage ;
+- un autre souffle.
+
+En SISO, ces composantes sont spectralement indiscernables de la cible.
+
+**Covariance sans annulation du signal.** Le défaut classique du MVDR est d'annuler la cible quand elle contamine la covariance. Ici, on peut estimer **R sur la partie hors bande** (2 à 50 Hz de l'IQ à 100 Hz), où il n'y a que les perturbateurs et le bruit, puis appliquer w à la partie dans la bande. Cette discrimination Doppler permet d'estimer la covariance des interférences sans la cible.
+
+**Limites :**
+- un perturbateur purement dans la bande (balancement sans composante hors bande) n'est pas vu par R hors bande ; il faut alors une covariance dans la bande, avec un risque d'annuler la cible ;
+- 3 degrés de liberté seulement ;
+- sensibilité aux erreurs de calibration ; une charge diagonale est nécessaire ;
+- la direction de la cible doit être connue (la DoA de la localisation).
+
+**Ce que la conception actuelle prépare :**
+- un flux à **100 Hz** avant M1, où un traitement spatial linéaire s'insère ;
+- un **indice de contamination** par bloc, qui indiquera quand estimer R, puis par voie ;
+- des traitements M1 et M3 **linéaires en IQ et par voie**, applicables à chaque voie virtuelle ;
+- des sorties sous forme de structures de résultats.
+
+**À modifier :** fusionner avec `feature/mimo-localization`, puis insérer le MVDR entre Decimator A et M1, voie par voie.
+
+### 7.2 Compensation du mouvement de la cible elle-même
+
+- **Le problème :** un mouvement de la victime (déplacement, changement de posture) est dans la bande respiratoire, et souvent bien plus ample qu'elle. Ni M1 ni M3 ne peuvent le séparer de la respiration.
+- **Ce qu'on fait :** la pause reste la bonne réponse (§3.4). M2 aide à repartir vite, puisqu'il ré-estime le centre après le mouvement.
+- **Pistes, non implémentées :**
+  - segmentation et rejet des segments en mouvement, avec reprise de l'estimation sur les segments stables (le Lomb-Scargle pondéré le permet déjà en donnant un poids nul) ;
+  - modèle respiration + tendance lente, par régression robuste ;
+  - en MIMO, angle et distance pour suivre la cible.
+
+---
+
+## 8. Risques
+
+| Risque | Conséquence | Mitigation |
+|---|---|---|
+| Balancement ou mouvement d'un témoin **dans la bande** (0,8 Hz) | Non vu par M3 (pas d'énergie hors bande), pas retiré par M1 | La fréquence est cherchée dans 0,1–0,5 Hz ; limite documentée ; MVDR plus tard (§7.1) |
+| Cible faible (énergie dans la bande proche du bruit) | κ ≈ 0 dB, poids ≈ 0,95 : sans effet ; mais une cible faible et un perturbateur modéré donnent des poids bas | κ₀ ajusté par l'évaluation ; part valide minimale dans M4 |
+| Retard de M1 (1,8 s) et chauffe de 3,6 s après une discontinuité | Décision plus tardive | Documenté ; 30 s de mesure ≫ 3,6 s |
+| Sous-fenêtres de M2 courtes (10 s) | Centre plus bruité qu'avec 20 s | Pratt ≈ géométrique (§3.3) ; repli si non valide |
+| Peu d'échantillons de poids élevé | Pics parasites du Lomb-Scargle | Confiance × poids moyen ; `min_valid_fraction` |
+| Modèle de marche simplifié | Évaluation optimiste | Paramètres variés ; données réelles demandées (Q4) |
+| Anciennes sessions déjà filtrées passe-haut à 2 kHz, sans annotation de perturbation | Évaluation réelle limitée | Signalé dans le rapport |
+| Fusion future avec `feature/mimo-localization` (`pipeline.py`, `sources.py`, `radar.yaml`) | Conflits | Cherry-pick des commits communs (Q3) ; modifications localisées |
+| Porteuse SISO à 3,5 GHz | Doppler ×1,43 ; bande non ISM | Q1 ; 100 Hz couvre les deux cas |
+
+---
+
+## 9. Étapes et commits
+
+**Étape 1**
+- `docs: add MOTION_ROBUSTNESS_PLAN.md`
+
+**Étape 2 — Simulation des perturbateurs**
+- reprise de `8c903c8` et `6151685` (Q3), ou un équivalent ;
+- `feat(sources): walking person, sway and gesture disturbers with path masking` ;
+- `feat(recording): disturbance intervals in the ground truth`.
+
+**Étape 3 — M1 et M2**
+- `feat(dsp): Doppler low-pass and aliasing audit (M1)` ;
+- `feat(pipeline): Doppler-rate stage and M1 in the chain` ;
+- `feat(dsp): Pratt fit and sliding centre tracking (M2)` ;
+- `feat(pipeline): M2 in the window analysis`.
+- **Tests :**
+  - 19 Hz et toute fréquence repliée dans ±1 Hz atténués de ≥ 60 dB ;
+  - respiration retrouvée (amplitude et fréquence) ;
+  - centre qui dérive : phase continue, déplacement retrouvé.
+
+**Étape 4 — M3 et M4**
+- `feat(dsp): contamination index and weights (M3)` ;
+- `feat(dsp): weighted Lomb-Scargle periodogram` ;
+- `feat(pipeline): weighted estimation and the new pause rule` ;
+- `feat(pipeline): measurement mode (M4)` ;
+- `feat(ui): weight, contaminated share and measurement in the dashboard`.
+- **Tests :**
+  - un marcheur à 3 m ne déclenche ni pause ni fausse détection ;
+  - un mouvement de la cible déclenche toujours une pause ;
+  - le mode mesure rend une décision et un résumé de qualité.
+
+**Étape 5**
+- `feat(scripts): evaluate_motion_robustness.py` ;
+- `docs: MOTION_ROBUSTNESS_EVAL.md`.
+
+**Étape 6**
+- `docs: motion robustness in README.md and README.fr.md`, puis résumé final.
+
+Chaque commit concerne une modification cohérente, avec la suite verte. Si un test change parce que le comportement change volontairement, le message de commit l'explique. Aucune fusion sans votre accord.
+
+### Références
+
+- R. E. Crochiere, L. R. Rabiner, « Interpolation and Decimation of Digital Signals — A Tutorial Review », Proc. IEEE 69(3), 1981.
+- B.-K. Park, O. Boric-Lubecke, V. M. Lubecke, « Arctangent Demodulation With DC Offset Compensation in Quadrature Doppler Radar Receiver Systems », IEEE T-MTT 55(5), 2007.
+- M. Zakrzewski, H. Raittinen, J. Vanhala, « Comparison of Center Estimation Algorithms for Heart and Respiration Monitoring With Microwave Doppler Radar », IEEE Sensors J. 12(3), 2012.
+- J. T. VanderPlas, « Understanding the Lomb–Scargle Periodogram », ApJS 236(1), 2018.
+- V. C. Chen, F. Li, S.-S. Ho, H. Wechsler, « Micro-Doppler Effect in Radar: Phenomenon, Model, and Simulation Study », IEEE TAES 42(1), 2006.
+- B. D. Van Veen, K. M. Buckley, « Beamforming: A Versatile Approach to Spatial Filtering », IEEE ASSP Magazine 5(2), 1988.
