@@ -251,6 +251,7 @@ def track_center(
     min_arc_rad: float = 0.3,
     max_relative_residual: float = 0.3,
     detrend: bool = True,
+    exclude: np.ndarray | None = None,
 ) -> CenterTrack | None:
     """Sliding estimate of the centre of the IQ arc (M2), for a drifting static component.
 
@@ -276,6 +277,11 @@ def track_center(
     angle are continuous too — an update of the centre never creates a phase
     jump.  Invalid sub-windows (short arc, large residual) are skipped.
 
+    Samples marked in *exclude* (in-band anomalies found by M3: a passer-by
+    whose echo turns around the centre leaves the circle) are left out of
+    the fits; a sub-window with fewer than half of its samples left is
+    skipped.
+
     Parameters
     ----------
     z : numpy.ndarray
@@ -290,6 +296,8 @@ def track_center(
         Validity of a sub-window fit (see :func:`fit_circle`).
     detrend : bool, optional
         Remove the linear drift of each sub-window before fitting it.
+    exclude : numpy.ndarray or None, optional
+        Boolean mask of the samples left out of the fits, same shape as *z*.
 
     Returns
     -------
@@ -312,12 +320,18 @@ def track_center(
     if starts[-1] != z.size - n_window:
         starts.append(z.size - n_window)
     centred_time_s = (np.arange(n_window) - (n_window - 1) / 2.0) / f_s_hz
+    keep_all = np.ones(z.size, dtype=bool) if exclude is None else ~np.asarray(exclude, dtype=bool)
     circles = []
     for start in starts:
-        segment = z[start:start + n_window]
+        keep = keep_all[start:start + n_window]
+        if keep.sum() < max(4, n_window // 2):
+            circles.append(CircleFit(complex(np.nan, np.nan), float("nan"), float("inf"), 0.0, False))
+            continue
+        segment, segment_t_s = z[start:start + n_window][keep], centred_time_s[keep]
         if detrend:  # centre of the segment at its middle, drift removed
-            slope = np.sum(centred_time_s * (segment - segment.mean())) / np.sum(centred_time_s ** 2)
-            segment = segment - slope * centred_time_s
+            tc_s = segment_t_s - segment_t_s.mean()
+            slope = np.sum(tc_s * (segment - segment.mean())) / np.sum(tc_s ** 2)
+            segment = segment - slope * segment_t_s
         circles.append(fits[method](segment))
     times_s = (np.array(starts) + (n_window - 1) / 2.0) / f_s_hz
     centers = np.array([c.center for c in circles])
@@ -512,6 +526,7 @@ def demodulate_tracked(
     estimator: str = "pratt",
     min_arc_rad: float = 0.3,
     max_relative_residual: float = 0.3,
+    exclude: np.ndarray | None = None,
 ) -> DemodulationResult:
     """Phase demodulation around a drifting centre (M2, MOTION_ROBUSTNESS_PLAN.md §3.3).
 
@@ -519,7 +534,8 @@ def demodulate_tracked(
     sample before the arctangent (or DACM): ``φ(t) = unwrap(arg(z(t) − C(t)))``
     (Park et al., IEEE T-MTT 2007, with a time-varying DC offset).  Without
     any valid sub-window, the window is demodulated as by :func:`demodulate`
-    with a single circle fit.
+    with a single circle fit.  *exclude* (samples left out of the centre
+    fits) is passed to :func:`track_center`.
 
     Returns
     -------
@@ -529,7 +545,8 @@ def demodulate_tracked(
         display.
     """
     z = np.asarray(z, dtype=np.complex128)
-    track = track_center(z, f_s_hz, window_s, step_s, estimator, min_arc_rad, max_relative_residual)
+    track = track_center(z, f_s_hz, window_s, step_s, estimator, min_arc_rad, max_relative_residual,
+                         exclude=exclude)
     if track is None:
         return demodulate(z, method, "circle", min_arc_rad, max_relative_residual)
     centred = z - track.center_per_sample

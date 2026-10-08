@@ -176,6 +176,28 @@ def test_centre_estimators_can_be_selected(method: str) -> None:
         track_center(z, F_SLOW_HZ, method="median")
 
 
+def test_samples_excluded_from_the_centre_fits() -> None:
+    """A passer-by's echo turning around the centre for 2 s leaves the circle: the fits that contain
+    it give wrong centres, unless those samples are excluded (second pass of M3)."""
+    from iot_radar.dsp.estimation import remove_segment_offsets
+
+    z, truth_m = _arc(drift=0.0)
+    t = np.arange(z.size) / F_SLOW_HZ
+    burst = (t >= 9.0) & (t < 11.0)
+    z = z + burst * 1.5 * np.exp(2j * np.pi * 0.5 * t)
+    true_centre = 30.0 * np.exp(0.4j)
+    assert np.max(np.abs(track_center(z, F_SLOW_HZ).center_per_sample - true_centre)) > 1.0
+    cleaned = track_center(z, F_SLOW_HZ, exclude=burst)
+    assert np.max(np.abs(cleaned.center_per_sample - true_centre)) < 0.15     # 0.09 without the burst
+    # The burst still makes the phase slip by 2π (λ/2): one offset per segment removes it.
+    phase = demodulate_tracked(z, F_SLOW_HZ, exclude=burst).phase_rad
+    keep = (~burst).astype(float)
+    estimate_m = remove_segment_offsets(-phase * LAMBDA_M / (4 * np.pi), keep)
+    truth_segments_m = remove_segment_offsets(truth_m, keep)
+    error_mm = np.sqrt(np.mean((estimate_m - truth_segments_m)[~burst] ** 2)) * 1e3
+    assert error_mm < 0.5
+
+
 def test_without_a_valid_sub_window_the_former_demodulation_is_used() -> None:
     rng = np.random.default_rng(1)
     noise = 30.0 + rng.standard_normal(400) + 1j * rng.standard_normal(400)

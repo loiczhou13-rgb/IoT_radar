@@ -291,6 +291,16 @@ class WindowAnalysis:
     contaminated_fraction: float = 0.0
 
 
+@dataclass
+class _InBandAnomalies:
+    """M3 cuts of one window (:meth:`VitalSignsProcessor._cut_in_band_anomalies`)."""
+
+    weights: np.ndarray          # weights, 0 on the cut samples
+    cut: np.ndarray              # samples cut out (anomalies and excursions)
+    own: np.ndarray              # samples in anomalies attributed to the target
+    recent_ptp_mm: float         # target's motion over the last motion_window_s (mm)
+
+
 class VitalSignsProcessor:
     """Analyse windows of complex slow-time samples.
 
@@ -377,17 +387,22 @@ class VitalSignsProcessor:
         lo_drift_hz = 0.0
         if s.lo_drift_compensation:
             z, lo_drift_hz = remove_common_rotation(z, self.f_s_hz)
-        if self.motion.center_tracking_enabled and s.dc_compensation == "circle":
-            m = self.motion
-            result = demodulate_tracked(z, self.f_s_hz, s.demodulation, m.center_window_s, m.center_step_s,
-                                        m.center_method, s.min_arc_rad, s.max_circle_residual)
-        else:
-            result = demodulate(z, s.demodulation, s.dc_compensation, s.min_arc_rad, s.max_circle_residual)
-        if result.calibrated:
-            displacement_mm = phase_to_displacement_m(result.phase_rad, self.wavelength_m) * 1e3
-        else:
-            displacement_mm = result.phase_rad  # arbitrary units (linear fallback)
-        displacement_mm = displacement_mm - displacement_mm.mean()
+        tracked = self.motion.center_tracking_enabled and s.dc_compensation == "circle"
+        result, displacement_mm = self._demodulate(z, tracked)
+        if weighted:
+            anomalies = self._cut_in_band_anomalies(displacement_mm, result.calibrated, weights, disturber_active)
+            if tracked and anomalies.cut.any():
+                # Second pass: the sub-windows that contain an anomaly gave wrong
+                # centres (the points leave the circle), hence false steps up to
+                # half a sub-window away.  The centre is fitted again without
+                # them; kept if it explains the window better (fewer samples
+                # cut).  It does not after a jump of the static echo (a hand
+                # starting to move), which no linear interpolation of the centre follows.
+                second = self._demodulate(z, tracked, exclude=anomalies.cut)
+                second_anomalies = self._cut_in_band_anomalies(second[1], second[0].calibrated, weights,
+                                                               disturber_active)
+                if second_anomalies.cut.sum() < anomalies.cut.sum():
+                    (result, displacement_mm), anomalies = second, second_anomalies
         # The band-pass filters remove the drift themselves; the linear
         # detrend is only used for the spectrum and the motion check, because
         # on a short window it also biases the breathing amplitude.
@@ -401,8 +416,7 @@ class VitalSignsProcessor:
                                 widened_band(s.heart_band_hz, self.f_s_hz, 1.2), s.bandpass_order)
 
         if weighted:
-            w, displacement_ptp_mm = self._cut_in_band_anomalies(detrended_mm, result.calibrated, weights,
-                                                                 disturber_active)
+            w, displacement_ptp_mm = anomalies.weights, anomalies.recent_ptp_mm
             spectrum = estimation.weighted_lomb_scargle(t_s, estimation.remove_segment_offsets(detrended_mm, w),
                                                         w, self._ls_frequencies_hz)
         else:
@@ -451,17 +465,33 @@ class VitalSignsProcessor:
             heart_rate_hz=heart_rate_hz,
             lo_drift_hz=lo_drift_hz,
             demodulation=result,
-            weights=np.asarray(weights, dtype=np.float64) if weighted else None,
+            weights=w if weighted else None,
             mean_weight=mean_weight,
             contaminated_fraction=contaminated_fraction,
         )
 
-    def _cut_in_band_anomalies(self, detrended_mm: np.ndarray, calibrated: bool, weights: np.ndarray,
-                               disturber_active: np.ndarray | None) -> tuple[np.ndarray, float]:
+    def _demodulate(self, z: np.ndarray, tracked: bool,
+                    exclude: np.ndarray | None = None) -> tuple[DemodulationResult, np.ndarray]:
+        """Demodulation (M2 sliding centre if *tracked*) and displacement in mm, mean removed."""
+        s, m = self.settings, self.motion
+        if tracked:
+            result = demodulate_tracked(z, self.f_s_hz, s.demodulation, m.center_window_s, m.center_step_s,
+                                        m.center_method, s.min_arc_rad, s.max_circle_residual, exclude)
+        else:
+            result = demodulate(z, s.demodulation, s.dc_compensation, s.min_arc_rad, s.max_circle_residual)
+        if result.calibrated:
+            displacement_mm = phase_to_displacement_m(result.phase_rad, self.wavelength_m) * 1e3
+        else:
+            displacement_mm = result.phase_rad  # arbitrary units (linear fallback)
+        return result, displacement_mm - displacement_mm.mean()
+
+    def _cut_in_band_anomalies(self, displacement_mm: np.ndarray, calibrated: bool, weights: np.ndarray,
+                               disturber_active: np.ndarray | None) -> "_InBandAnomalies":
         """M3: cut the in-band anomalies out of the weights; measure the target's own motion.
 
         An anomaly is a run of samples whose local peak-to-peak displacement
-        (3 s centred) exceeds ``motion_ptp_mm``: the target moving, or a
+        (3 s centred, not detrended: a global trend fitted across a step
+        would tilt every segment) exceeds ``motion_ptp_mm``: the target moving, or a
         passer-by whose Doppler crosses the breathing band (a walker crossing
         the beam, at zero radial speed; its echo may make the phase slip by
         2π).  Every anomaly gets weight 0, and so does any smaller excursion
@@ -479,18 +509,20 @@ class VitalSignsProcessor:
 
         Returns
         -------
-        (numpy.ndarray, float)
-            The weights, and the largest local peak-to-peak displacement (mm)
-            of the last ``motion_window_s`` outside the passers-by's anomalies
-            (NaN when the window is not calibrated: no anomaly assessed).
+        _InBandAnomalies
+            The weights with the cuts, the cut and target masks, and the
+            largest local peak-to-peak displacement (mm) of the last
+            ``motion_window_s`` outside the passers-by's anomalies (NaN when
+            the window is not calibrated: no anomaly assessed).
         """
         w = np.asarray(weights, dtype=np.float64).copy()
         if not calibrated:
-            return w, float("nan")
+            none = np.zeros(w.size, dtype=bool)
+            return _InBandAnomalies(w, none, none, float("nan"))
         s = self.settings.detection
         span = max(3, int(round(3.0 * self.f_s_hz)))
-        local_ptp_mm = (maximum_filter1d(detrended_mm, span, mode="nearest")
-                        - minimum_filter1d(detrended_mm, span, mode="nearest"))
+        local_ptp_mm = (maximum_filter1d(displacement_mm, span, mode="nearest")
+                        - minimum_filter1d(displacement_mm, span, mode="nearest"))
         cut = local_ptp_mm > min(s.motion_ptp_mm, self.motion.excursion_factor * float(np.median(local_ptp_mm)))
         anomaly = local_ptp_mm > s.motion_ptp_mm
         attributed = np.zeros_like(anomaly)
@@ -501,7 +533,8 @@ class VitalSignsProcessor:
                 attributed[start:stop] = bool(np.any(disturber_active[max(0, start - lead):start + 1]))
         w[cut] = 0.0
         n_recent = int(round(s.motion_window_s * self.f_s_hz))
-        return w, float(np.max(local_ptp_mm[-n_recent:], where=~attributed[-n_recent:], initial=0.0))
+        ptp_mm = float(np.max(local_ptp_mm[-n_recent:], where=~attributed[-n_recent:], initial=0.0))
+        return _InBandAnomalies(w, cut, anomaly & ~attributed, ptp_mm)
 
 
 @dataclass

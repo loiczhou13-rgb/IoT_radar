@@ -241,9 +241,11 @@ Mesure : médiane sur 30 tirages, 8 mm de respiration, sous-fenêtres de 10 s ; 
   - Les métriques existantes (fréquence, SNR, concentration) sont calculées sur ce spectre, sans changer de code (`breathing_metrics`).
 - **Confiance :** confiance instantanée × poids moyen de la fenêtre. Elle diminue donc avec la part de segments contaminés.
 - **Anomalies dans la bande** (constat de l'étape 4) : un marcheur qui coupe le faisceau passe par une vitesse radiale nulle. Pendant ~1 s, son écho est dans la bande respiratoire, et M1 ne peut rien. S'il est d'amplitude comparable à la cible, le phaseur autour du centre fait un tour : la phase glisse de 2π. Vu de la sortie, c'est le même signal qu'un mouvement de la cible (même rayon d'arc écrasé par M1, même énergie hors bande pendant l'événement). Ce qui les distingue, c'est l'avant : un passant n'atteint la bande qu'en ralentissant à travers les Doppler hors bande, on le voit venir ; la cible qui bouge démarre dans la bande.
-  - **Anomalie** : suite d'échantillons dont le crête à crête local (3 s centrées) dépasse `motion_ptp_mm`. Poids 0.
+  - **Anomalie** : suite d'échantillons dont le crête à crête local (3 s centrées, sur le déplacement non redressé : une tendance globale ajustée à travers une marche inclinerait chaque segment) dépasse `motion_ptp_mm`. Poids 0.
   - **Excursion** : crête à crête local supérieur à `excursion_factor` (2,5) × sa médiane sur la fenêtre, même sous `motion_ptp_mm` (par exemple, le transitoire du centre suivi quand un écho statique saute, comme une main qui se met à bouger). Poids 0.
   - **Attribution** : une anomalie est attribuée à un passant si l'activité hors bande a dépassé son seuil dans les `activity_lead_s` (10 s) qui précèdent son début. Sinon, elle est attribuée à la cible.
+  - **Deuxième passe (M2 avec M3)** : les sous-fenêtres de M2 qui contiennent une anomalie donnent un mauvais centre, car les points quittent le cercle. Il en résulte de fausses marches jusqu'à une demi-sous-fenêtre (5 s) de l'anomalie. Le centre est donc réajusté sans les échantillons coupés (`track_center(..., exclude=...)`), puis l'analyse est refaite. Cette seconde passe n'est gardée que si elle coupe moins d'échantillons. Après un saut de l'écho statique, comme une main qui se met à bouger, ce n'est pas le cas : aucune interpolation linéaire du centre ne le suit.
+  - Constat en simulation : le glissement de 2π du marcheur venait surtout du centre faussé. Avec la seconde passe, la fenêtre redevient souvent entièrement valide, et la respiration est détectée 95 % du temps, contre 81 % sans elle.
 - **Pause** (M3 activé) réservée à deux cas :
   - **saturation de l'ADC** (au moins un échantillon d'un bloc à ±2047), maintenue `motion_hold_s` ; `pause_reason = "saturation"` ;
   - **anomalie de la cible** en cours (dans les `motion_window_s` dernières secondes) ; `pause_reason = "motion"`.
@@ -251,7 +253,7 @@ Mesure : médiane sur 30 tirages, 8 mm de respiration, sous-fenêtres de 10 s ; 
   - M3 désactivé : règle actuelle (crête à crête de la fenêtre et des 5 dernières secondes).
 - **Limites connues :**
   - si la cible bouge pendant qu'un passant est actif, l'anomalie est attribuée au passant : pas de pause, mais poids 0 sur l'anomalie ;
-  - un perturbateur qui démarre d'un coup dans la bande, sans phase hors bande préalable, est pris pour la cible.
+  - un perturbateur qui démarre d'un coup dans la bande, sans phase hors bande préalable, est pris pour la cible. C'est le cas d'une personne qui se met à marcher depuis l'arrêt près de la cible : son Doppler monte depuis 0 à travers la bande. On obtient une courte pause, 5 % de 90 s en simulation, pour un départ à 0,5 m/s à 5 m.
 
 ### 3.5 M4 — Mode « mesure »
 
