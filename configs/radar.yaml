@@ -152,6 +152,56 @@ vital_signs:
 
 
 # ---------------------------------------------------------------------------
+# Robustness to the residual motion around the radar (MOTION_ROBUSTNESS_PLAN.md)
+# ---------------------------------------------------------------------------
+# The people moving around (distant activity, sway, gestures) are suppressed
+# by processing instead of pausing the measurement.  Each method can be
+# disabled; with all three disabled, the former behaviour is restored exactly
+# (any large movement in the window pauses the measurement).
+motion_robustness:
+  doppler_rate_hz: 100.0        # intermediate rate of M1 and M3; must divide sdr.sample_rate_hz
+
+  doppler_filter:               # M1: complex linear-phase low-pass on the IQ, before the demodulation
+    enabled: true
+    cutoff_hz: 1.5              # -6 dB; flat (0.01 dB) up to 1 Hz, the breathing harmonics
+    transition_hz: 1.0          # stop band from cutoff + transition/2 = 2 Hz
+    stopband_attenuation_db: 60.0   # 365 taps at 100 Hz: delay of 1.82 s
+    noise_band_hz: [0.1, 1.4]   # noise floor of the detector, inside the pass band (peak excluded)
+
+  alias_check:                  # aliasing audit of the decimation chain, logged at start-up
+    band_hz: 1.0                # band of interest [-f_b, +f_b]
+    min_attenuation_db: 60.0    # a warning is logged below this
+
+  center_tracking:              # M2: sliding centre of the IQ arc (drifting static reflections)
+    enabled: true
+    window_s: 10.0              # sub-window: 2 to 3 breathing cycles
+    step_s: 1.0
+    method: "pratt"             # "pratt", "geometric" or "kasa"
+
+  contamination_weighting:      # M3: weights, gap-tolerant estimation, pause rule
+    enabled: true
+    block_s: 1.0                # length of the blocks of the contamination index
+    out_of_band_start_hz: 2.0   # out-of-band energy from here to doppler_rate_hz / 2 ...
+    in_band_hz: [0.1, 1.0]      # ... against the energy in this band, both per Hz
+    weight_midpoint_db: 6.0     # index (dB) at which the weight is 0.5 (white noise: 0 dB)
+    weight_slope_db: 2.0        # slope of the logistic weight
+    contaminated_below: 0.5     # a sample with a lower weight counts as contaminated
+    activity_threshold_db: 6.0  # out-of-band density above its floor: someone moves around
+    activity_lead_s: 10.0       # an in-band anomaly preceded by such activity is a passer-by's
+    excursion_factor: 2.5       # excursions above 2.5 x the median local peak-to-peak ...
+    excursion_floor_mm: 12.0    # ... and above 12 mm are cut (the floor keeps breathing next to an apnea)
+    pause_on_saturation: true   # pause while the ADC saturates (Pluto, simulation)
+
+
+# ---------------------------------------------------------------------------
+# Measurement mode (M4): one decision over a silence, started by the operator
+# ---------------------------------------------------------------------------
+measurement:
+  duration_s: 30.0              # length of a measurement (s)
+  min_valid_fraction: 0.5       # minimum share of uncontaminated samples for a decision
+
+
+# ---------------------------------------------------------------------------
 # Phase-demodulation chain: micro-Doppler view of the slow time (display only)
 # ---------------------------------------------------------------------------
 micro_doppler_view:

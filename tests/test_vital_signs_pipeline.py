@@ -2,7 +2,8 @@
 
 A reduced configuration keeps the tests fast: 100 kS/s instead of 2 MS/s
 (decimation 5000 instead of 100000 down to the 20 Hz slow time), with the
-default processing and detection settings of configs/radar.yaml.  The noise
+default processing and detection settings of configs/radar.yaml, including
+the motion robustness (M1 to M3, MOTION_ROBUSTNESS_PLAN.md).  The noise
 (-10 dB per ADC sample) gives a slow-time SNR of about 27 dB.
 """
 
@@ -23,6 +24,7 @@ from iot_radar.pipeline import PipelineOutput, VitalSignsPipeline
 
 BREATH_RATE_HZ = 0.3          # 18 breaths/min
 BREATH_AMPLITUDE_MM = 4.0     # 8 mm peak to peak
+DOPPLER_DELAY_S = 1.82        # delay of the M1 Doppler filter (365 taps at 100 Hz)
 
 
 def _config(**simulation: Any) -> dict[str, Any]:
@@ -81,10 +83,11 @@ def test_apnea_raises_the_alert() -> None:
     assert not _at(outputs, 34.0).breathing.apnea
     assert _at(outputs, 34.0).breathing.state == STATE_BREATHING
     # The last inhalation before the apnea ends at 32.5 s (chest maximum of
-    # the 0.3 Hz breathing); apnea_s = 10 s, so the alert comes at ~42.5 s.
+    # the 0.3 Hz breathing); apnea_s = 10 s, so the alert comes at ~42.5 s,
+    # plus the delay of the M1 filter.
     alert_times_s = [o.t_s for o in outputs if o.breathing.apnea]
-    assert alert_times_s and 42.0 <= alert_times_s[0] <= 44.0
-    assert all(o.breathing.apnea for o in outputs if o.t_s >= 44.0)
+    assert alert_times_s and 42.0 + DOPPLER_DELAY_S <= alert_times_s[0] <= 44.0 + DOPPLER_DELAY_S
+    assert all(o.breathing.apnea for o in outputs if o.t_s >= 44.0 + DOPPLER_DELAY_S)
 
 
 def test_motion_is_flagged() -> None:
@@ -126,7 +129,9 @@ def test_stream_discontinuity_restarts_the_processing() -> None:
     restarts = [o for o in outputs if o.discontinuity]
     assert len(restarts) == 1
     t_restart = restarts[0].t_s
-    assert _at(outputs, t_restart - 1.0).breathing.state == STATE_BREATHING
+    # No output while the filters settle again: 2 × the M1 delay after the drop.
+    assert 30.0 < t_restart <= 30.0 + 2 * DOPPLER_DELAY_S + 1.0
+    assert _at(outputs, 29.0).breathing.state == STATE_BREATHING
     assert restarts[0].breathing.state == STATE_WARMUP  # the window refills from scratch
     assert _at(outputs, t_restart + 15.0).breathing.state == STATE_WARMUP
     assert _at(outputs, t_restart + 30.0).breathing.state == STATE_BREATHING

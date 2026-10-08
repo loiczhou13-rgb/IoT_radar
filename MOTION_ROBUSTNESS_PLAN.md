@@ -216,6 +216,10 @@ Mesure : médiane sur 30 tirages, 8 mm de respiration, sous-fenêtres de 10 s ; 
 - Des sous-fenêtres de 6 s suivent mieux une forte dérive (1,7 / 1,4 mm à 4 rayons), mais sont plus bruitées sans dérive. La valeur par défaut reste 10 s, configurable.
 - Une variation brusque et ample du centre (masquage d'un mur par un passage) reste hors de portée de M2. Elle relève de M3 (pondération).
 
+**Sélection du modèle (constaté à l'étape 4, scènes de validation avec M2 actif par défaut).**
+- **Retrait de tendance :** sur 2 à 3 cycles, la pente emporte aussi une partie de l'arc respiratoire. L'amplitude était biaisée de −17 % (6,7 mm pour 8 mm à 0,3 Hz). L'ajustement après retrait de la tendance n'est gardé que si son résidu relatif est inférieur à 0,8 fois celui de l'ajustement direct. Ce rapport vaut 1,00 sans dérive, et 0,64 à 0,75 pour une dérive de 0,3 rayon.
+- **Centre suivi ou fixe :** un centre qui bouge d'une sous-fenêtre à l'autre transforme l'IQ immobile d'une apnée en dérive lente de la phase. On obtenait ainsi de fausses respirations et une alerte d'apnée intermittente. `demodulate_tracked` garde donc un ajustement fixe sur toute la fenêtre, sauf si le centre suivi donne un résidu relatif inférieur à 0,8 fois celui du centre fixe, c'est-à-dire s'il y a une dérive. Dans une scène calme, la méthode reste `arctan`, comme avant ; avec une dérive, elle devient `arctan_tracked`.
+
 ### 3.4 M3 — Pondération et estimation tolérante aux trous (VanderPlas, 2018)
 
 - **Indice par bloc de 1 s, calculé à 100 Hz AVANT M1 :**
@@ -243,7 +247,7 @@ Mesure : médiane sur 30 tirages, 8 mm de respiration, sous-fenêtres de 10 s ; 
 - **Confiance :** confiance instantanée × poids moyen de la fenêtre. Elle diminue donc avec la part de segments contaminés.
 - **Anomalies dans la bande** (constat de l'étape 4) : un marcheur qui coupe le faisceau passe par une vitesse radiale nulle. Pendant ~1 s, son écho est dans la bande respiratoire, et M1 ne peut rien. S'il est d'amplitude comparable à la cible, le phaseur autour du centre fait un tour : la phase glisse de 2π. Vu de la sortie, c'est le même signal qu'un mouvement de la cible (même rayon d'arc écrasé par M1, même énergie hors bande pendant l'événement). Ce qui les distingue, c'est l'avant : un passant n'atteint la bande qu'en ralentissant à travers les Doppler hors bande, on le voit venir ; la cible qui bouge démarre dans la bande.
   - **Anomalie** : suite d'échantillons dont le crête à crête local (3 s centrées, sur le déplacement non redressé : une tendance globale ajustée à travers une marche inclinerait chaque segment) dépasse `motion_ptp_mm`. Poids 0.
-  - **Excursion** : crête à crête local supérieur à `excursion_factor` (2,5) × sa médiane sur la fenêtre, même sous `motion_ptp_mm` (par exemple, le transitoire du centre suivi quand un écho statique saute, comme une main qui se met à bouger). Poids 0.
+  - **Excursion** : crête à crête local supérieur à `excursion_factor` (2,5) × sa médiane sur la fenêtre et à `excursion_floor_mm` (12 mm, sans quoi une apnée qui remplit la fenêtre ferait couper la respiration restante), même sous `motion_ptp_mm` (par exemple, le transitoire du centre suivi quand un écho statique saute, comme une main qui se met à bouger). Poids 0.
   - **Attribution** : une anomalie est attribuée à un passant si l'activité hors bande a dépassé son seuil dans les `activity_lead_s` (10 s) qui précèdent son début. Sinon, elle est attribuée à la cible.
   - **Deuxième passe (M2 avec M3)** : les sous-fenêtres de M2 qui contiennent une anomalie donnent un mauvais centre, car les points quittent le cercle. Il en résulte de fausses marches jusqu'à une demi-sous-fenêtre (5 s) de l'anomalie. Le centre est donc réajusté sans les échantillons coupés (`track_center(..., exclude=...)`), puis l'analyse est refaite. Cette seconde passe n'est gardée que si elle coupe moins d'échantillons. Après un saut de l'écho statique, comme une main qui se met à bouger, ce n'est pas le cas : aucune interpolation linéaire du centre ne le suit.
   - Constat en simulation : le glissement de 2π du marcheur venait surtout du centre faussé. Avec la seconde passe, la fenêtre redevient souvent entièrement valide, et la respiration est détectée 95 % du temps, contre 81 % sans elle.
@@ -286,6 +290,7 @@ motion_robustness:
     cutoff_hz: 1.5            # demande ; garde les harmoniques respiratoires ≤ 1 Hz
     transition_hz: 1.0        # bande passante ≤ 1,0 Hz, atténuée ≥ 2,0 Hz
     stopband_attenuation_db: 60.0
+    noise_band_hz: [0.1, 1.4] # plancher de bruit du détecteur, dans la bande passante
   alias_check:
     band_hz: 1.0              # f_b
     min_attenuation_db: 60.0  # exigence de la demande, vérifiée au démarrage
@@ -304,7 +309,8 @@ motion_robustness:
     contaminated_below: 0.5
     activity_threshold_db: 6.0  # activité hors bande au-dessus de son plancher
     activity_lead_s: 10.0       # fenêtre d'attribution d'une anomalie à un passant
-    excursion_factor: 2.5       # excursions coupées au-delà de 2,5 × la médiane locale
+    excursion_factor: 2.5       # excursions coupées au-delà de 2,5 × la médiane locale ...
+    excursion_floor_mm: 12.0    # ... et de 12 mm (garde la respiration à côté d'une apnée)
     pause_on_saturation: true
 measurement:                  # M4
   duration_s: 30.0
