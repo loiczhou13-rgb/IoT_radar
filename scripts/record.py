@@ -21,7 +21,8 @@ and the annotations follow it)::
 Each session is written to ``<sessions_dir>/session_<id>_<YYYYMMDD>_<HHMMSS>.h5``
 (UTC start time, see ``iot_radar.acquisition.recording`` for the layout).  The
 whole session is annotated with ``--label``; a simulated session also stores
-the simulated chest displacement as ground truth.
+the simulated chest displacement and the intervals of the simulated
+disturbances (people moving around the radar) as ground truth.
 """
 
 from __future__ import annotations
@@ -164,6 +165,7 @@ def record_session(cfg: dict[str, Any], args: argparse.Namespace, session_id: in
         if isinstance(source, CWSimulationSource):
             time_s = np.arange(0.0, writer.n_samples / source.sample_rate_hz, 1.0 / GROUND_TRUTH_RATE_HZ)
             writer.set_ground_truth(time_s, source.chest_displacement_m(time_s))
+            writer.set_disturbances(source.disturbance_intervals(writer.n_samples))
         writer.close()
         source.close()
     return path

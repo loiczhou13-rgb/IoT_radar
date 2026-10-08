@@ -20,6 +20,13 @@ from typing import Any, Protocol
 
 import numpy as np
 
+from iot_radar.acquisition.disturbers import (
+    Disturber,
+    activity_intervals,
+    disturber_echo,
+    disturbers_from_config,
+    path_masking,
+)
 from iot_radar.acquisition.pluto import (
     ADC_FULL_SCALE,
     check_saturation,
@@ -270,6 +277,19 @@ class CWSimulationSource:
         simulation produced far more than 1 s of signal per second of wall
         clock, so recordings and live displays ran too fast).  ``False``
         (default) generates as fast as possible, for tests and offline use.
+    disturbers : list or None, optional
+        People moving around the radar (:mod:`iot_radar.acquisition.disturbers`:
+        walker, sway, gesture).  The radar is at the origin with its boresight
+        along +y and the person at ``(0, target_range_m)``.  Their echoes are
+        added at the TX frequency like every echo, and the paths they cross
+        (person, static reflectors) are attenuated (masking).
+    static_scatterers : list or None, optional
+        Static reflectors ``{"position_m": [x, y], "amplitude": A}`` (walls,
+        furniture), amplitude in ADC units at the receiver; their paths can be
+        masked by the disturbers, which makes the static centre drift.
+
+    Without disturbers nor static reflectors, the samples are exactly those of
+    the model above.
     """
 
     n_channels: int = 1
@@ -297,6 +317,8 @@ class CWSimulationSource:
         snr_db: float = -25.0,
         seed: int | None = None,
         realtime: bool = False,
+        disturbers: list[Disturber] | None = None,
+        static_scatterers: list[dict[str, Any]] | None = None,
     ) -> None:
         self.sample_rate_hz = float(f_s_hz)
         self._buffer_size = int(buffer_size)
@@ -319,6 +341,10 @@ class CWSimulationSource:
         self._rng = np.random.default_rng(seed)
         self._sample_idx = 0
         self._realtime = bool(realtime)
+        self._disturbers = list(disturbers or [])
+        self._static_scatterers = [(np.asarray(s["position_m"], dtype=np.float64), float(s["amplitude"]))
+                                   for s in static_scatterers or []]
+        self._target_position_m = np.array([0.0, self._target_range_m])
         self._next_block_time_s = time.monotonic()
 
         logger.info(
@@ -341,7 +367,10 @@ class CWSimulationSource:
         presence, displacement_m = self.presence_and_displacement(t)
         target_phase = -4.0 * np.pi * (self._target_range_m + displacement_m) / self._wavelength_m
         target_echo = self._target_amplitude * presence * np.exp(1j * target_phase)
-        echoes = (self._static_clutter + target_echo) * tx_tone
+        if self._disturbers or self._static_scatterers:
+            echoes = (self._static_clutter + self._scene_echoes(t, target_echo)) * tx_tone
+        else:
+            echoes = (self._static_clutter + target_echo) * tx_tone
         if self._lo_offset_hz != 0.0:
             echoes = echoes * np.exp(2j * np.pi * self._lo_offset_hz * t)
 
@@ -395,6 +424,24 @@ class CWSimulationSource:
         """
         presence, displacement_m = self.presence_and_displacement(t_s)
         return presence * displacement_m
+
+    def disturbance_intervals(self, n_samples: int) -> list[tuple[int, int, str]]:
+        """``(sample_start, sample_count, kind)`` of the disturbances over the first *n_samples*."""
+        return activity_intervals(self._disturbers, n_samples, self.sample_rate_hz)
+
+    def _scene_echoes(self, t_s: np.ndarray, target_echo: np.ndarray) -> np.ndarray:
+        """Echoes of the person (masked), static reflectors (masked) and disturbers.
+
+        Each disturber masks the paths of the person and of the static
+        reflectors, but not its own (MOTION_ROBUSTNESS_PLAN.md §5).
+        """
+        echoes = target_echo * path_masking(self._target_position_m, self._disturbers, t_s)
+        for position_m, amplitude in self._static_scatterers:
+            phase = -4.0 * np.pi * float(np.linalg.norm(position_m)) / self._wavelength_m
+            echoes = echoes + amplitude * np.exp(1j * phase) * path_masking(position_m, self._disturbers, t_s)
+        for disturber in self._disturbers:
+            echoes = echoes + disturber_echo(disturber, t_s, self._wavelength_m)
+        return echoes
 
     def scene_annotations(self, n_samples: int) -> list[tuple[int, int, str]]:
         """``(sample_start, sample_count, label)`` of the scene over the first *n_samples*."""
@@ -551,6 +598,8 @@ def open_source(cfg: dict[str, Any], simulation: bool) -> PlutoSource | CWSimula
             snr_db=sim.get("snr_db", -25.0),
             seed=sim.get("seed"),
             realtime=sim.get("realtime", True),
+            disturbers=disturbers_from_config(sim.get("disturbers")),
+            static_scatterers=sim.get("static_scatterers"),
         )
 
     logger.info("Hardware source — connecting to the PlutoSDR")

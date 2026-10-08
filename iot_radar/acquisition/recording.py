@@ -17,7 +17,9 @@ File layout (one file per session, never modified after the acquisition)::
     /iq               int16, (n_channels, n_samples, 2): I and Q, ADC units x scale
     /blocks           table (sample_start, host_time_s, overflow), one row per block
     /annotations      table (sample_start, sample_count, label)
-    /ground_truth/    optional: time_s and chest_displacement_m
+    /ground_truth/    optional: time_s and chest_displacement_m, and the
+                      table disturbances (sample_start, sample_count, kind) of
+                      the simulated people moving around the radar
 
 Robustness: the file is created in SWMR mode (single writer, multiple
 readers) and flushed every ``flush_interval_s`` seconds, so it stays readable
@@ -93,6 +95,7 @@ IQ_CHUNK_SAMPLES: int = 65536
 
 BLOCKS_DTYPE = np.dtype([("sample_start", "<i8"), ("host_time_s", "<f8"), ("overflow", "u1")])
 ANNOTATIONS_DTYPE = np.dtype([("sample_start", "<i8"), ("sample_count", "<i8"), ("label", "S16")])
+DISTURBANCES_DTYPE = np.dtype([("sample_start", "<i8"), ("sample_count", "<i8"), ("kind", "S16")])
 
 _SESSION_NAME = re.compile(r"^session_(\d+)_\d{8}_\d{6}\.h5$")
 
@@ -209,6 +212,7 @@ class SessionWriter:
         self._flush_interval_s = float(flush_interval_s)
         self._annotations: list[tuple[int, int, str]] = []
         self._ground_truth: tuple[np.ndarray, np.ndarray] | None = None
+        self._disturbances: list[tuple[int, int, str]] = []
         self._first_host_time_s: float | None = None
         self._last_flush_s = time.monotonic()
         self.n_samples = 0
@@ -246,6 +250,8 @@ class SessionWriter:
             group = self._file.create_group("ground_truth")
             for name in ("time_s", "chest_displacement_m"):
                 group.create_dataset(name, shape=(0,), maxshape=(None,), chunks=(4096,), dtype=np.float64)
+            group.create_dataset("disturbances", shape=(0,), maxshape=(None,), chunks=(64,),
+                                 dtype=DISTURBANCES_DTYPE)
             group.attrs["source"] = "simulation"
             group.attrs["description"] = "simulated radial chest displacement (positive away from the radar)"
         self._file.swmr_mode = True
@@ -305,6 +311,12 @@ class SessionWriter:
             raise RuntimeError("The session was created without ground truth (with_ground_truth=False).")
         self._ground_truth = (np.asarray(time_s, np.float64), np.asarray(chest_displacement_m, np.float64))
 
+    def set_disturbances(self, intervals: list[tuple[int, int, str]]) -> None:
+        """Intervals ``(sample_start, sample_count, kind)`` of the simulated disturbances (written on close)."""
+        if "ground_truth" not in self._file:
+            raise RuntimeError("The session was created without ground truth (with_ground_truth=False).")
+        self._disturbances = [(int(start), int(count), str(kind)) for start, count, kind in intervals]
+
     def flush(self) -> None:
         """Write the buffered data to disk."""
         self._file.flush()
@@ -324,6 +336,11 @@ class SessionWriter:
             for name, values in (("time_s", time_s), ("chest_displacement_m", displacement_m)):
                 group[name].resize(values.size, axis=0)
                 group[name][:] = values
+        if self._disturbances:
+            table = self._file["ground_truth"]["disturbances"]
+            table.resize(len(self._disturbances), axis=0)
+            for i, (start, count, kind) in enumerate(self._disturbances):
+                table[i] = (start, count, kind.encode("ascii"))
         self._file.flush()
         self._file.close()
         os.chmod(self.path, stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)  # read-only
@@ -395,6 +412,13 @@ class SessionReader:
             return None
         group = self._file["ground_truth"]
         return group["time_s"][:], group["chest_displacement_m"][:]
+
+    def disturbances(self) -> list[tuple[int, int, str]]:
+        """``(sample_start, sample_count, kind)`` of the simulated disturbances (empty if none)."""
+        if "ground_truth" not in self._file or "disturbances" not in self._file["ground_truth"]:
+            return []
+        return [(int(r["sample_start"]), int(r["sample_count"]), r["kind"].decode("ascii"))
+                for r in self._file["ground_truth"]["disturbances"][:]]
 
     def close(self) -> None:
         """Close the file."""

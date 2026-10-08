@@ -264,3 +264,19 @@ simulation:
   # Deliver the samples at the real sampling rate, like the hardware
   # (false = as fast as possible).
   realtime: true
+
+  # Static reflectors (walls, furniture): scene position (m; radar at the
+  # origin, boresight +y, the person at (0, target_range_m)) and amplitude at
+  # the receiver (ADC units).  A disturber crossing their path masks them,
+  # which makes the static centre of the IQ arc drift.
+  # Example: [{position_m: [-1.5, 5.0], amplitude: 20.0}]
+  static_scatterers: []
+
+  # People moving around the radar (MOTION_ROBUSTNESS_PLAN.md §5):
+  #   walker  — start_m, velocity_m_s (0.5–1.5 m/s), start_s, stop_s, amplitude_at_1m
+  #   sway    — position_m, amplitude_m (0.03), frequency_hz (0.8), start_s, stop_s, amplitude_at_1m
+  #   gesture — position_m, amplitude_m (0.08), frequency_hz (2.0), start_s, stop_s, amplitude_at_1m
+  # amplitude_at_1m: echo amplitude of the torso at 1 m (ADC units); the
+  # echoes decay as 1/R².  Example:
+  # [{kind: walker, start_m: [-6.0, 3.0], velocity_m_s: [1.0, 0.0], start_s: 30.0}]
+  disturbers: []
