@@ -18,15 +18,17 @@ from __future__ import annotations
 
 import argparse
 import logging
+import threading
 from pathlib import Path
 from typing import Any
 
 import yaml
 
+from iot_radar.acquisition.pluto import ADC_FULL_SCALE
 from iot_radar.acquisition.sources import ReplaySource
 from iot_radar.config import DEFAULT_RADAR_CONFIG, load_config, radar_log_file, setup_logging
 from iot_radar.pipeline import VitalSignsPipeline
-from run_radar import dashboard_context, show_or_log
+from run_radar import dashboard_context, radar_outputs, show_or_log
 
 logger = logging.getLogger(__name__)
 
@@ -65,8 +67,14 @@ def session_config(cfg: dict[str, Any], source: ReplaySource) -> dict[str, Any]:
 
 
 def build_pipeline(cfg: dict[str, Any], source: ReplaySource) -> VitalSignsPipeline:
-    """Pipeline for the session: its sampling rate and TX offset come from the file."""
-    return VitalSignsPipeline.from_config(cfg, source.sample_rate_hz, float(source.attributes["tx_offset_hz"]))
+    """Pipeline for the session: its sampling rate and TX offset come from the file.
+
+    Raw ADC sessions (Pluto, simulation) keep the saturation check of M3;
+    converted legacy sessions are not ADC values.
+    """
+    raw_adc = source.attributes.get("iq_stage") == "raw_adc"
+    return VitalSignsPipeline.from_config(cfg, source.sample_rate_hz, float(source.attributes["tx_offset_hz"]),
+                                          adc_full_scale=ADC_FULL_SCALE if raw_adc else None)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -83,8 +91,9 @@ def main(argv: list[str] | None = None) -> None:
     title = f"Replay — {args.session.name}" + (f" — {', '.join(labels)}" if labels else "")
     context = dashboard_context(cfg, pipeline, float(source.attributes["tx_offset_hz"]), title,
                                 f"replay of a {source.attributes.get('source_kind', '?')} session")
-    show_or_log(pipeline.run(source), args.headless, context,
-                bool(cfg.get("display", {}).get("full_screen", False)))
+    measure_request = threading.Event()   # key m of the dashboard (M4)
+    show_or_log(radar_outputs(pipeline, source, measure_request), args.headless, context,
+                bool(cfg.get("display", {}).get("full_screen", False)), on_measure=measure_request.set)
 
 
 if __name__ == "__main__":

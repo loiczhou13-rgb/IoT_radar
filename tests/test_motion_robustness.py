@@ -469,3 +469,44 @@ def test_a_discontinuity_cuts_the_measurement_short() -> None:
                                source_wrapper=lambda s: _OverflowingSource(s, 15.0, 16.0, 0.0))
     assert result.decision == "inconclusive" and result.reasons == ("discontinuity",)
     assert result.analysis is None and outputs[-1].t_s < 20.0
+
+
+def test_run_radar_measures_once_and_logs_the_result(tmp_path) -> None:
+    """``run_radar.py --measure``: one headless measurement from the start, then exit."""
+    import yaml
+
+    from script_loader import load_script
+
+    cfg = _scene(M1_M2_M3)
+    cfg["measurement"] = {"duration_s": 20.0}
+    cfg["simulation"].update(enabled=True, realtime=False)
+    cfg["logging"] = {"level": "INFO", "to_file": True}
+    config_path = tmp_path / "radar.yaml"
+    config_path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
+    log_file = tmp_path / "run.log"
+    load_script("run_radar").main(["--simulation", "--measure", "--config", str(config_path),
+                                   "--log-file", str(log_file)])
+    lines = [line for line in log_file.read_text(encoding="utf-8").splitlines() if "MEASUREMENT" in line]
+    assert len(lines) == 1 and "BREATHING" in lines[0] and "rate=18." in lines[0]
+
+
+def test_a_measurement_request_is_applied_by_the_producer() -> None:
+    """The key m only sets an event; radar_outputs starts the measurement before the next block."""
+    import threading
+
+    from script_loader import load_script
+
+    run_radar = load_script("run_radar")
+    cfg = _scene(M1_M2_M3)
+    logging.disable(logging.WARNING)
+    source = open_source(cfg, simulation=True)
+    pipeline = VitalSignsPipeline.from_config(cfg, source.sample_rate_hz, effective_tx_offset_hz(cfg))
+    request = threading.Event()
+    outputs = run_radar.radar_outputs(pipeline, source, request)
+    first = next(outputs)
+    assert first.measurement.state == "idle"
+    request.set()
+    states = [next(outputs).measurement.state for _ in range(4)]
+    outputs.close()
+    logging.disable(logging.NOTSET)
+    assert not request.is_set() and states[-1] == "running"
