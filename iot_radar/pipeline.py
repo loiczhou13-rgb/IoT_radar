@@ -170,10 +170,10 @@ class MotionRobustnessSettings:
     activity_lead_s : float
         An in-band anomaly preceded by such activity within this time (s) is
         attributed to a passer-by, not to the target (no pause).
-    excursion_factor : float
+    excursion_factor, excursion_floor_mm : float
         In-band excursions larger than this many times the median local
-        peak-to-peak displacement of the window are cut out of the estimation
-        (weight 0), even below ``motion_ptp_mm``.
+        peak-to-peak displacement of the window, and than the floor (mm),
+        are cut out of the estimation (weight 0), even below ``motion_ptp_mm``.
     pause_on_saturation : bool
         Pause the measurement while the ADC saturates.
     """
@@ -200,6 +200,7 @@ class MotionRobustnessSettings:
     activity_threshold_db: float = 6.0
     activity_lead_s: float = 10.0
     excursion_factor: float = 2.5
+    excursion_floor_mm: float = 12.0
     pause_on_saturation: bool = True
 
     @classmethod
@@ -233,6 +234,7 @@ class MotionRobustnessSettings:
             activity_threshold_db=float(weighting.get("activity_threshold_db", d.activity_threshold_db)),
             activity_lead_s=float(weighting.get("activity_lead_s", d.activity_lead_s)),
             excursion_factor=float(weighting.get("excursion_factor", d.excursion_factor)),
+            excursion_floor_mm=float(weighting.get("excursion_floor_mm", d.excursion_floor_mm)),
             pause_on_saturation=bool(weighting.get("pause_on_saturation", d.pause_on_saturation)),
         )
 
@@ -510,8 +512,9 @@ class VitalSignsProcessor:
         the beam, at zero radial speed; its echo may make the phase slip by
         2π).  Every anomaly gets weight 0, and so does any smaller excursion
         above ``excursion_factor`` times the median local peak-to-peak of the
-        window (e.g. the transient of the tracked centre when a static echo
-        jumps, as a hand starting to move).
+        window and above ``excursion_floor_mm`` (e.g. the transient of the
+        centre when a static echo jumps, as a hand starting to move; the floor
+        keeps the breathing when an apnea fills most of the window).
 
         An anomaly is attributed to a passer-by when someone was moving out
         of band (*disturber_active*) within ``activity_lead_s`` before it
@@ -537,7 +540,8 @@ class VitalSignsProcessor:
         span = max(3, int(round(3.0 * self.f_s_hz)))
         local_ptp_mm = (maximum_filter1d(displacement_mm, span, mode="nearest")
                         - minimum_filter1d(displacement_mm, span, mode="nearest"))
-        cut = local_ptp_mm > min(s.motion_ptp_mm, self.motion.excursion_factor * float(np.median(local_ptp_mm)))
+        excursion_mm = max(self.motion.excursion_factor * float(np.median(local_ptp_mm)), self.motion.excursion_floor_mm)
+        cut = local_ptp_mm > min(s.motion_ptp_mm, excursion_mm)
         anomaly = local_ptp_mm > s.motion_ptp_mm
         attributed = np.zeros_like(anomaly)
         if disturber_active is not None:
