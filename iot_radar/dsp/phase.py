@@ -242,6 +242,21 @@ class CenterTrack:
     center_per_sample: np.ndarray
 
 
+DETREND_RESIDUAL_GAIN: float = 0.8
+"""A detrended sub-window fit is used only if its relative residual is below this share of the plain one."""
+
+
+TRACKING_RESIDUAL_GAIN: float = 0.8
+"""The tracked centre is used only if its relative residual is below this share of a fixed centre's."""
+
+
+def _relative_spread(centred: np.ndarray) -> float:
+    """RMS deviation of ``|centred|`` from its median, relative to the median (circle residual)."""
+    magnitude = np.abs(centred)
+    radius = float(np.median(magnitude))
+    return float(np.sqrt(np.mean((magnitude - radius) ** 2)) / radius) if radius > 0 else float("inf")
+
+
 def track_center(
     z: np.ndarray,
     f_s_hz: float,
@@ -270,7 +285,12 @@ def track_center(
     sub-window (complex least-squares slope against time, the breathing
     oscillation averaging out over 2 to 3 cycles) is therefore removed
     before the fit (*detrend*); the error then stays near 1 mm for that
-    drift (MOTION_ROBUSTNESS_PLAN.md §3.3).
+    drift (MOTION_ROBUSTNESS_PLAN.md §3.3).  Over 2 to 3 cycles the slope
+    also takes a part of the breathing arc itself, which biases the
+    amplitude (−17 % for 8 mm at 0.3 Hz in 10 s): the detrended fit is kept
+    only when it explains the sub-window clearly better (relative residual
+    below :data:`DETREND_RESIDUAL_GAIN` times that of the plain fit), i.e.
+    when there is a drift.
 
     The centres are interpolated **linearly** between the middles of the
     valid sub-windows: ``C(t)`` is continuous, so ``z(t) − C(t)`` and its
@@ -328,11 +348,14 @@ def track_center(
             circles.append(CircleFit(complex(np.nan, np.nan), float("nan"), float("inf"), 0.0, False))
             continue
         segment, segment_t_s = z[start:start + n_window][keep], centred_time_s[keep]
+        circle = fits[method](segment)
         if detrend:  # centre of the segment at its middle, drift removed
             tc_s = segment_t_s - segment_t_s.mean()
             slope = np.sum(tc_s * (segment - segment.mean())) / np.sum(tc_s ** 2)
-            segment = segment - slope * segment_t_s
-        circles.append(fits[method](segment))
+            detrended = fits[method](segment - slope * segment_t_s)
+            if detrended.valid and detrended.rms_residual < DETREND_RESIDUAL_GAIN * circle.rms_residual:
+                circle = detrended
+        circles.append(circle)
     times_s = (np.array(starts) + (n_window - 1) / 2.0) / f_s_hz
     centers = np.array([c.center for c in circles])
     valid = np.array([c.valid for c in circles])
@@ -537,12 +560,19 @@ def demodulate_tracked(
     with a single circle fit.  *exclude* (samples left out of the centre
     fits) is passed to :func:`track_center`.
 
+    The tracked centre is used only when it explains the window clearly
+    better than one fixed centre (relative residual below
+    :data:`TRACKING_RESIDUAL_GAIN` times that of the fixed circle fit), i.e.
+    when the centre drifts.  Otherwise the fixed fit is kept: its estimate
+    uses the whole window, and a centre moving between sub-window fits would
+    turn a still IQ (apnea) into a slow phase drift, hence false breaths.
+
     Returns
     -------
     DemodulationResult
-        Method ``"arctan_tracked"`` (or ``"dacm_tracked"``); its ``circle``
-        summarises the end of the window (latest centre, median radius), for
-        display.
+        Method ``"arctan_tracked"`` (or ``"dacm_tracked"``), whose ``circle``
+        summarises the end of the window (latest centre, median radius) for
+        display; or method ``"arctan"`` (``"dacm"``) with the fixed fit.
     """
     z = np.asarray(z, dtype=np.complex128)
     track = track_center(z, f_s_hz, window_s, step_s, estimator, min_arc_rad, max_relative_residual,
@@ -550,6 +580,13 @@ def demodulate_tracked(
     if track is None:
         return demodulate(z, method, "circle", min_arc_rad, max_relative_residual)
     centred = z - track.center_per_sample
+    keep = np.ones(z.size, dtype=bool) if exclude is None else ~np.asarray(exclude, dtype=bool)
+    fixed = fit_circle(z[keep], min_arc_rad=min_arc_rad, max_relative_residual=max_relative_residual)
+    if fixed.valid and (_relative_spread(centred[keep])
+                        >= TRACKING_RESIDUAL_GAIN * _relative_spread(z[keep] - fixed.center)):
+        centred = z - fixed.center
+        phase_rad = arctangent_demodulation(centred) if method == "arctan" else dacm_demodulation(centred)
+        return DemodulationResult(phase_rad, method, True, fixed)
     phase_rad = arctangent_demodulation(centred) if method == "arctan" else dacm_demodulation(centred)
     radius = float(np.median(np.abs(centred)))
     residual = float(np.sqrt(np.mean((np.abs(centred) - radius) ** 2)) / radius) if radius > 0 else np.inf
