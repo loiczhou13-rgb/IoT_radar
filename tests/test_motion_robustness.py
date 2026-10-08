@@ -189,3 +189,169 @@ def test_with_m1_an_empty_room_is_not_detected() -> None:
     analysed = [o for o in outputs if o.analysis is not None]
     assert all(o.breathing.state != "BREATHING" for o in analysed)
     assert np.median([o.analysis.metrics.snr_db for o in analysed]) < 10.0
+
+
+# ---------------------------------------------------------------------------
+# M3 — contamination weights, weighted estimation, pause rule
+# ---------------------------------------------------------------------------
+
+from iot_radar.acquisition.sources import Block  # noqa: E402
+from iot_radar.dsp.contamination import ContaminationMeter, contamination_weight  # noqa: E402
+from iot_radar.dsp.estimation import remove_segment_offsets, weighted_lomb_scargle  # noqa: E402
+from iot_radar.pipeline import VitalSignsProcessor, VitalSignsSettings  # noqa: E402
+
+M1_M2_M3 = {"doppler_filter": {"enabled": True}, "center_tracking": {"enabled": True},
+            "contamination_weighting": {"enabled": True}}
+F_DOPPLER_HZ = 100.0
+WALKER_CROSSING_BEHIND = {"kind": "walker", "start_m": [-8.0, 3.5], "velocity_m_s": [1.0, 0.0], "start_s": 25.0}
+
+
+def _scene(motion: dict[str, Any], **simulation: Any) -> dict[str, Any]:
+    """Test scene at the 2.45 GHz carrier: target breathing at 3 m (18 /min, 8 mm peak to peak)."""
+    cfg = _config(motion, **simulation)
+    cfg["sdr"]["center_frequency_hz"] = 2.45e9
+    return cfg
+
+
+def _meter_blocks(x: np.ndarray) -> ContaminationMeter:
+    meter = ContaminationMeter(F_DOPPLER_HZ)
+    for chunk in np.array_split(x, 37):
+        meter.process(chunk)
+    return meter
+
+
+def test_contamination_index_separates_breathing_from_disturbers() -> None:
+    """κ compares densities (per Hz): a 16 Hz walker line lowers the weight once it dominates the
+    breathing echo (a person close to the radar); a weaker one is still seen as activity."""
+    rng = np.random.default_rng(0)
+    t = np.arange(int(40 * F_DOPPLER_HZ)) / F_DOPPLER_HZ
+    noise = 0.01 * (rng.standard_normal(t.size) + 1j * rng.standard_normal(t.size))
+    breathing = 30.0 * np.exp(0.4j) + np.exp(1j * np.sin(2 * np.pi * 0.3 * t)) + noise
+    walker_line = np.exp(2j * np.pi * 16.0 * t) * (t >= 20.0)
+
+    white = _meter_blocks(30.0 + noise)
+    assert np.median([b.index_db for b in white.blocks]) == pytest.approx(0.0, abs=1.5)
+    assert np.median([b.weight for b in white.blocks]) > 0.9
+    quiet = _meter_blocks(breathing)
+    assert max(b.index_db for b in quiet.blocks) < -20.0 and min(b.weight for b in quiet.blocks) > 0.99
+
+    def after_and_before(meter: ContaminationMeter):
+        return ([b for b in meter.blocks if b.sample_start >= 21 * F_DOPPLER_HZ],
+                [b for b in meter.blocks if b.sample_start < 19 * F_DOPPLER_HZ])
+
+    near, before = after_and_before(_meter_blocks(breathing + 20.0 * walker_line))
+    assert min(b.index_db for b in near) > 10.0 and max(b.weight for b in near) < 0.1
+    assert max(b.activity_db for b in before) < 3.0
+    far, _ = after_and_before(_meter_blocks(breathing + 0.5 * walker_line))
+    assert min(b.weight for b in far) > 0.99 and min(b.activity_db for b in far) > 20.0
+    assert contamination_weight(6.0) == pytest.approx(0.5)
+
+
+def test_weighted_lomb_scargle_skips_the_samples_of_weight_zero() -> None:
+    """A burst and a λ/2 step (phase slip) in the middle of the window: cut out, the rate is kept."""
+    t = np.arange(600) / F_SLOW_HZ
+    x = 4.0 * np.sin(2 * np.pi * 0.25 * t)
+    x[300:] += 61.2                                   # λ/2 at 2.45 GHz
+    x[280:330] += 80.0 * np.sin(2 * np.pi * 0.12 * t[280:330])
+    w = np.ones_like(x)
+    w[280:330] = 0.0
+    f_hz = np.arange(0.05, 2.0, 0.005)
+    plain = weighted_lomb_scargle(t, x, np.ones_like(x), f_hz)
+    weighted = weighted_lomb_scargle(t, remove_segment_offsets(x, w), w, f_hz)
+    assert abs(plain.f_hz[np.argmax(plain.psd)] - 0.25) > 0.05
+    assert weighted.f_hz[np.argmax(weighted.psd)] == pytest.approx(0.25, abs=0.01)
+    assert weighted.psd.max() > 0.9
+
+
+def test_the_confidence_decreases_with_the_contaminated_share() -> None:
+    z, _ = _arc(drift=0.0, n_seconds=30.0)
+    motion = MotionRobustnessSettings(contamination_enabled=True)
+    processor = VitalSignsProcessor(F_SLOW_HZ, LAMBDA_M, VitalSignsSettings(), motion)
+    clean = processor.analyse(z, np.ones(z.size))
+    half = np.r_[np.ones(z.size // 2), np.zeros(z.size - z.size // 2)]
+    contaminated = processor.analyse(z, half)
+    assert clean.metrics.confidence > 0.9 and clean.contaminated_fraction == 0.0
+    assert contaminated.contaminated_fraction == pytest.approx(0.5)
+    assert contaminated.metrics.confidence == pytest.approx(0.5 * clean.metrics.confidence, rel=0.1)
+    assert contaminated.metrics.rate_hz == pytest.approx(0.25, abs=0.01)
+
+
+def _states(outputs) -> list[str]:
+    return [o.breathing.state for o in outputs if o.analysis is not None]
+
+
+@pytest.mark.parametrize("walker", [
+    WALKER_CROSSING_BEHIND,                                                                # beam crossed at 3.5 m
+    {"kind": "walker", "start_m": [-8.0, 2.0], "velocity_m_s": [1.0, 0.0], "start_s": 25.0},   # in front, masking
+    {"kind": "walker", "start_m": [1.5, 12.0], "velocity_m_s": [0.0, -1.0], "start_s": 25.0, "stop_s": 34.0},
+], ids=["crossing_behind", "crossing_in_front", "approaching"])
+def test_a_walker_at_3_m_neither_pauses_nor_hides_the_breathing(walker: dict[str, Any]) -> None:
+    outputs, _ = _run(_scene(M1_M2_M3, disturbers=[walker]), 80.0)
+    assert "MOTION" not in _states(outputs)
+    assert outputs[-1].breathing.state == "BREATHING"
+    assert outputs[-1].breathing.rate_bpm == pytest.approx(18.0, abs=1.0)
+
+
+def test_the_former_chain_pauses_for_the_crossing_walker() -> None:
+    outputs, _ = _run(_scene({}, disturbers=[WALKER_CROSSING_BEHIND]), 60.0)
+    assert "MOTION" in _states(outputs)
+
+
+def test_a_walker_in_an_empty_room_is_neither_a_pause_nor_a_detection() -> None:
+    outputs, _ = _run(_scene(M1_M2_M3, presence=False, disturbers=[WALKER_CROSSING_BEHIND]), 80.0)
+    states = _states(outputs)
+    assert "MOTION" not in states and "BREATHING" not in states
+
+
+def test_a_motion_of_the_target_still_pauses() -> None:
+    outputs, _ = _run(_scene(M1_M2_M3, timeline=[[0, "breathing"], [40, "motion"], [50, "breathing"]]), 75.0)
+    paused = [o.t_s for o in outputs if o.breathing.state == "MOTION"]
+    assert paused and all(o.breathing.pause_reason == "motion" for o in outputs if o.breathing.state == "MOTION")
+    assert 40.0 <= min(paused) <= 45.0                    # within the M1 delay and the 3 s local measure
+    assert not [t for t in paused if t < 40.0]
+
+
+class _SaturatingSource:
+    """Simulated stream whose ADC reaches its full scale between two times.
+
+    Two consecutive samples at ±full scale per block: the doublet has almost
+    no energy near the echo frequency, so the pause comes from the saturation
+    flag alone, not from an in-band anomaly.
+    """
+
+    def __init__(self, source, start_s: float, stop_s: float, full_scale: float) -> None:
+        self._source, self._start_s, self._stop_s, self._full_scale = source, start_s, stop_s, full_scale
+        self.sample_rate_hz = source.sample_rate_hz
+
+    def read_block(self):
+        block = self._source.read_block()
+        if block is not None and self._start_s <= block.sample_start / self.sample_rate_hz < self._stop_s:
+            samples = block.samples.copy()
+            samples[0, :2] = [self._full_scale, -self._full_scale]
+            block = Block(samples, block.sample_start, block.host_time_s, block.overflow)
+        return block
+
+    def close(self) -> None:
+        self._source.close()
+
+
+def test_adc_saturation_pauses_the_measurement() -> None:
+    cfg = _scene(M1_M2_M3)
+    logging.disable(logging.WARNING)
+    source = _SaturatingSource(open_source(cfg, simulation=True), 40.0, 42.0, full_scale=2048.0)
+    pipeline = VitalSignsPipeline.from_config(cfg, source.sample_rate_hz, effective_tx_offset_hz(cfg),
+                                              adc_full_scale=2048.0)
+    outputs = []
+    for output in pipeline.run(source):
+        outputs.append(output)
+        if output.t_s >= 60.0:
+            break
+    logging.disable(logging.NOTSET)
+    paused = [o for o in outputs if o.breathing.state == "MOTION"]
+    assert paused and all(o.breathing.pause_reason == "saturation" for o in paused)
+    assert min(o.t_s for o in paused) == pytest.approx(40.0, abs=0.6)
+    assert max(o.t_s for o in paused) <= 42.0 + 3.0 + 0.6       # + motion_hold_s, once
+    assert outputs[-1].contamination is not None and not outputs[-1].contamination.saturated
+    # The saturated samples (2 s, i.e. 2 or 3 blocks of 1 s) stay out of the estimation afterwards: weight 0.
+    contaminated_s = outputs[-1].contamination.contaminated_fraction * pipeline.settings.window_s
+    assert 2.0 <= contaminated_s <= 3.0 + 0.1

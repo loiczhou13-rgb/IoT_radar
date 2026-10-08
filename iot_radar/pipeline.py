@@ -18,12 +18,14 @@ from __future__ import annotations
 
 import logging
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Iterator
 
 import numpy as np
+from scipy.ndimage import maximum_filter1d, minimum_filter1d
 
 from iot_radar.dsp import estimation
+from iot_radar.dsp.contamination import ContaminationMeter
 from iot_radar.dsp.decimation import Decimator
 from iot_radar.dsp.doppler import alias_audit, dc_group_delay_s, doppler_lowpass_decimator
 from iot_radar.dsp.detection import (
@@ -153,6 +155,16 @@ class MotionRobustnessSettings:
         Logistic weight: 0.5 at the midpoint, slope in dB.
     contaminated_below : float
         A block with a lower weight counts as contaminated.
+    activity_threshold_db : float
+        Out-of-band density above its floor (dB) from which someone is
+        considered moving around the radar.
+    activity_lead_s : float
+        An in-band anomaly preceded by such activity within this time (s) is
+        attributed to a passer-by, not to the target (no pause).
+    excursion_factor : float
+        In-band excursions larger than this many times the median local
+        peak-to-peak displacement of the window are cut out of the estimation
+        (weight 0), even below ``motion_ptp_mm``.
     pause_on_saturation : bool
         Pause the measurement while the ADC saturates.
     """
@@ -176,6 +188,9 @@ class MotionRobustnessSettings:
     weight_midpoint_db: float = 6.0
     weight_slope_db: float = 2.0
     contaminated_below: float = 0.5
+    activity_threshold_db: float = 6.0
+    activity_lead_s: float = 10.0
+    excursion_factor: float = 2.5
     pause_on_saturation: bool = True
 
     @classmethod
@@ -206,6 +221,9 @@ class MotionRobustnessSettings:
             weight_midpoint_db=float(weighting.get("weight_midpoint_db", d.weight_midpoint_db)),
             weight_slope_db=float(weighting.get("weight_slope_db", d.weight_slope_db)),
             contaminated_below=float(weighting.get("contaminated_below", d.contaminated_below)),
+            activity_threshold_db=float(weighting.get("activity_threshold_db", d.activity_threshold_db)),
+            activity_lead_s=float(weighting.get("activity_lead_s", d.activity_lead_s)),
+            excursion_factor=float(weighting.get("excursion_factor", d.excursion_factor)),
             pause_on_saturation=bool(weighting.get("pause_on_saturation", d.pause_on_saturation)),
         )
 
@@ -246,6 +264,13 @@ class WindowAnalysis:
         Common rotation removed before the demodulation (Hz).
     demodulation : DemodulationResult
         Demodulation details (method used, circle fit).
+    weights : numpy.ndarray or None
+        M3: weight of each sample of the window (``None`` without M3).
+    mean_weight : float
+        M3: mean weight of the window; the confidence is multiplied by it.
+    contaminated_fraction : float
+        M3: share of the samples of the window whose weight is below
+        ``contaminated_below``.
     """
 
     t_s: np.ndarray
@@ -261,6 +286,9 @@ class WindowAnalysis:
     heart_rate_hz: float | None
     lo_drift_hz: float
     demodulation: DemodulationResult
+    weights: np.ndarray | None = None
+    mean_weight: float = 1.0
+    contaminated_fraction: float = 0.0
 
 
 class VitalSignsProcessor:
@@ -302,6 +330,11 @@ class VitalSignsProcessor:
             )
         self._heart_band_usable = settings.heart_band_hz[1] < nyquist_hz
         self._n_fft = int(2 ** np.ceil(np.log2(self.window_length * _ZERO_PAD)))
+        # Frequencies of the weighted Lomb-Scargle periodogram (M3): same
+        # interpolation step as the zero-padded periodogram, up to the noise bands.
+        step_hz = 1.0 / (settings.window_s * _ZERO_PAD)
+        top_hz = min(nyquist_hz, max(settings.reference_band_hz[1], self.motion.noise_band_hz[1]) + 0.5)
+        self._ls_frequencies_hz = np.arange(step_hz, top_hz, step_hz)
         logger.info(
             "VitalSignsProcessor — %.2f Hz slow time, %d-sample window (%.1f s), "
             "λ=%.4f m, demodulation=%s, DC=%s",
@@ -325,9 +358,19 @@ class VitalSignsProcessor:
             return float("nan")
         return float(np.ptp(phase_to_displacement_m(result.phase_rad, self.wavelength_m)) * 1e3)
 
-    def analyse(self, z: np.ndarray) -> WindowAnalysis:
-        """Run the vital-sign analysis on one window of complex slow-time samples."""
+    def analyse(self, z: np.ndarray, weights: np.ndarray | None = None,
+                disturber_active: np.ndarray | None = None) -> WindowAnalysis:
+        """Run the vital-sign analysis on one window of complex slow-time samples.
+
+        With the M3 weighting and *weights* (one per sample, in [0, 1]), the
+        spectrum is the weighted Lomb-Scargle periodogram and the confidence
+        is multiplied by the mean weight.  The in-band anomalies are cut out
+        of the estimation, and only those of the target pause the measurement
+        (:meth:`_cut_in_band_anomalies`, with *disturber_active*: one boolean
+        per sample, someone moving out of band; MOTION_ROBUSTNESS_PLAN.md §3.4).
+        """
         s = self.settings
+        weighted = self.motion.contamination_enabled and weights is not None
         z = np.asarray(z, dtype=np.complex128)
         t_s = np.arange(z.size) / self.f_s_hz
 
@@ -357,15 +400,26 @@ class VitalSignsProcessor:
             heart_mm = bandpass(displacement_mm, self.f_s_hz,
                                 widened_band(s.heart_band_hz, self.f_s_hz, 1.2), s.bandpass_order)
 
-        spectrum = estimation.periodogram(detrended_mm, self.f_s_hz, n_fft=self._n_fft)
-        # Largest peak-to-peak displacement of the whole window and of its
-        # recent part (NaN when neither can be measured in millimetres).
-        whole_window_ptp_mm = float(np.ptp(detrended_mm)) if result.calibrated else float("nan")
-        measurable = [v for v in (whole_window_ptp_mm, self._recent_peak_to_peak_mm(z)) if np.isfinite(v)]
-        displacement_ptp_mm = max(measurable) if measurable else float("nan")
+        if weighted:
+            w, displacement_ptp_mm = self._cut_in_band_anomalies(detrended_mm, result.calibrated, weights,
+                                                                 disturber_active)
+            spectrum = estimation.weighted_lomb_scargle(t_s, estimation.remove_segment_offsets(detrended_mm, w),
+                                                        w, self._ls_frequencies_hz)
+        else:
+            spectrum = estimation.periodogram(detrended_mm, self.f_s_hz, n_fft=self._n_fft)
+            # Largest peak-to-peak displacement of the whole window and of its
+            # recent part (NaN when neither can be measured in millimetres).
+            whole_window_ptp_mm = float(np.ptp(detrended_mm)) if result.calibrated else float("nan")
+            measurable = [v for v in (whole_window_ptp_mm, self._recent_peak_to_peak_mm(z)) if np.isfinite(v)]
+            displacement_ptp_mm = max(measurable) if measurable else float("nan")
         reference_band_hz = self.motion.noise_band_hz if self.motion.doppler_filter_enabled else s.reference_band_hz
         metrics = breathing_metrics(spectrum, displacement_ptp_mm, s.breathing_band_hz,
                                     reference_band_hz, s.detection)
+        mean_weight, contaminated_fraction = 1.0, 0.0
+        if weighted:
+            mean_weight = float(w.mean())
+            contaminated_fraction = float(np.mean(w < self.motion.contaminated_below))
+            metrics = replace(metrics, confidence=metrics.confidence * mean_weight)
 
         cycles = estimation.breath_cycles(breath_mm, self.f_s_hz, s.breathing_band_hz)
         rates_hz = {
@@ -397,7 +451,82 @@ class VitalSignsProcessor:
             heart_rate_hz=heart_rate_hz,
             lo_drift_hz=lo_drift_hz,
             demodulation=result,
+            weights=np.asarray(weights, dtype=np.float64) if weighted else None,
+            mean_weight=mean_weight,
+            contaminated_fraction=contaminated_fraction,
         )
+
+    def _cut_in_band_anomalies(self, detrended_mm: np.ndarray, calibrated: bool, weights: np.ndarray,
+                               disturber_active: np.ndarray | None) -> tuple[np.ndarray, float]:
+        """M3: cut the in-band anomalies out of the weights; measure the target's own motion.
+
+        An anomaly is a run of samples whose local peak-to-peak displacement
+        (3 s centred) exceeds ``motion_ptp_mm``: the target moving, or a
+        passer-by whose Doppler crosses the breathing band (a walker crossing
+        the beam, at zero radial speed; its echo may make the phase slip by
+        2π).  Every anomaly gets weight 0, and so does any smaller excursion
+        above ``excursion_factor`` times the median local peak-to-peak of the
+        window (e.g. the transient of the tracked centre when a static echo
+        jumps, as a hand starting to move).
+
+        An anomaly is attributed to a passer-by when someone was moving out
+        of band (*disturber_active*) within ``activity_lead_s`` before it
+        started: a person can only reach the breathing band by slowing down
+        through the out-of-band Doppler frequencies, so it is seen coming,
+        whereas the target moving starts in the band.  Only the other
+        anomalies, the target's, count for the motion pause
+        (MOTION_ROBUSTNESS_PLAN.md §3.4).
+
+        Returns
+        -------
+        (numpy.ndarray, float)
+            The weights, and the largest local peak-to-peak displacement (mm)
+            of the last ``motion_window_s`` outside the passers-by's anomalies
+            (NaN when the window is not calibrated: no anomaly assessed).
+        """
+        w = np.asarray(weights, dtype=np.float64).copy()
+        if not calibrated:
+            return w, float("nan")
+        s = self.settings.detection
+        span = max(3, int(round(3.0 * self.f_s_hz)))
+        local_ptp_mm = (maximum_filter1d(detrended_mm, span, mode="nearest")
+                        - minimum_filter1d(detrended_mm, span, mode="nearest"))
+        cut = local_ptp_mm > min(s.motion_ptp_mm, self.motion.excursion_factor * float(np.median(local_ptp_mm)))
+        anomaly = local_ptp_mm > s.motion_ptp_mm
+        attributed = np.zeros_like(anomaly)
+        if disturber_active is not None:
+            lead = int(round(self.motion.activity_lead_s * self.f_s_hz))
+            edges = np.flatnonzero(np.diff(np.r_[0, anomaly.astype(np.int8), 0]))
+            for start, stop in zip(edges[::2], edges[1::2]):
+                attributed[start:stop] = bool(np.any(disturber_active[max(0, start - lead):start + 1]))
+        w[cut] = 0.0
+        n_recent = int(round(s.motion_window_s * self.f_s_hz))
+        return w, float(np.max(local_ptp_mm[-n_recent:], where=~attributed[-n_recent:], initial=0.0))
+
+
+@dataclass
+class ContaminationStatus:
+    """M3 indicators of one output (for the dashboard).
+
+    Attributes
+    ----------
+    index_db : float
+        Contamination index of the latest complete block (dB, NaN before the first).
+    weight : float
+        Weight of the latest complete block.
+    mean_weight : float
+        Mean weight of the analysis window.
+    contaminated_fraction : float
+        Share of the analysis window below ``contaminated_below``.
+    saturated : bool
+        The ADC saturated within the last ``motion_hold_s``.
+    """
+
+    index_db: float
+    weight: float
+    mean_weight: float
+    contaminated_fraction: float
+    saturated: bool
 
 
 @dataclass
@@ -420,6 +549,8 @@ class PipelineOutput:
     micro_doppler_column_db : numpy.ndarray or None
         Micro-Doppler spectrum of the latest slow-time segment (dB, centred,
         see :attr:`VitalSignsPipeline.micro_doppler_f_hz`), for display.
+    contamination : ContaminationStatus or None
+        M3 indicators (``None`` without M3).
     """
 
     update_index: int
@@ -428,6 +559,7 @@ class PipelineOutput:
     analysis: WindowAnalysis | None
     breathing: BreathingState
     micro_doppler_column_db: np.ndarray | None
+    contamination: ContaminationStatus | None = None
 
 
 class VitalSignsPipeline:
@@ -457,6 +589,10 @@ class VitalSignsPipeline:
         Analysis window of the micro-Doppler columns.
     motion : MotionRobustnessSettings or None, optional
         Suppression of the residual motion (M1 to M3); disabled by default.
+    adc_full_scale : float or None, optional
+        Full scale of the raw samples (2048 for the Pluto ADC); with M3, a
+        block reaching it pauses the measurement (saturation).  ``None`` for
+        samples that are not raw ADC values (converted legacy sessions).
 
     Notes
     -----
@@ -479,6 +615,7 @@ class VitalSignsPipeline:
         micro_doppler_n_fft: int = 256,
         micro_doppler_window: str = "hann",
         motion: MotionRobustnessSettings | None = None,
+        adc_full_scale: float | None = None,
     ) -> None:
         decimation_ratio = input_rate_hz / slow_time_rate_hz
         if abs(decimation_ratio - round(decimation_ratio)) > 1e-9:
@@ -496,6 +633,15 @@ class VitalSignsPipeline:
         if self.motion.doppler_filter_enabled:  # the FIR must fill before its output is valid
             warmup_s = max(warmup_s, 2.0 * self.doppler_delay_s)
         self._processor = VitalSignsProcessor(slow_time_rate_hz, wavelength_m, settings, self.motion)
+        self.adc_full_scale = adc_full_scale
+        self._contamination: ContaminationMeter | None = None
+        if self.motion.contamination_enabled:
+            m = self.motion
+            self._contamination = ContaminationMeter(m.doppler_rate_hz, m.contamination_block_s,
+                                                     m.out_of_band_start_hz, m.in_band_hz,
+                                                     m.weight_midpoint_db, m.weight_slope_db)
+            self._doppler_per_slow = int(round(m.doppler_rate_hz / slow_time_rate_hz))
+            self._delay_doppler_samples = int(round(self.doppler_delay_s * m.doppler_rate_hz))
         self._warmup_samples = int(round(warmup_s * slow_time_rate_hz))
         self._update_samples = max(1, int(round(settings.update_period_s * slow_time_rate_hz)))
         self._micro_doppler_samples = int(round(micro_doppler_window_s * slow_time_rate_hz))
@@ -505,6 +651,10 @@ class VitalSignsPipeline:
 
         history_length = max(self._processor.window_length, self._micro_doppler_samples)
         self._history: deque[complex] = deque(maxlen=history_length)
+        self._weights: deque[float] = deque(maxlen=history_length)   # M3: weight of each slow-time sample
+        self._active: deque[bool] = deque(maxlen=history_length)     # M3: someone moving out of band
+        self._t_saturation_s: float | None = None
+        self._saturated_since_output = False
         self._next_sample_start: int | None = None
         self._slow_samples_total = 0
         self._update_index = 0
@@ -512,9 +662,11 @@ class VitalSignsPipeline:
         self.reset()
 
     @classmethod
-    def from_config(cls, cfg: dict[str, Any], input_rate_hz: float, tx_offset_hz: float) -> "VitalSignsPipeline":
+    def from_config(cls, cfg: dict[str, Any], input_rate_hz: float, tx_offset_hz: float,
+                    adc_full_scale: float | None = None) -> "VitalSignsPipeline":
         """Build the pipeline from the configuration (``sdr``, ``slow_time``,
-        ``vital_signs`` and ``micro_doppler_view`` sections)."""
+        ``vital_signs``, ``micro_doppler_view`` and ``motion_robustness``
+        sections); *adc_full_scale* as in the constructor."""
         slow_time = cfg.get("slow_time", {})
         view = cfg.get("micro_doppler_view", {})
         return cls(
@@ -528,6 +680,7 @@ class VitalSignsPipeline:
             micro_doppler_n_fft=int(view.get("n_fft", 256)),
             micro_doppler_window=str(view.get("window", "hann")),
             motion=MotionRobustnessSettings.from_config(cfg.get("motion_robustness", {})),
+            adc_full_scale=adc_full_scale,
         )
 
     def reset(self) -> None:
@@ -537,6 +690,11 @@ class VitalSignsPipeline:
         if self._doppler_stage is not None:
             self._doppler_stage.reset()
         self._history.clear()
+        self._weights.clear()
+        self._active.clear()
+        self._slow_since_reset = 0
+        if self._contamination is not None:
+            self._contamination.reset()
         self._samples_in_history = 0
         self._samples_since_update = 0
         self._warmup_remaining = self._warmup_samples
@@ -553,18 +711,33 @@ class VitalSignsPipeline:
             self._discontinuity_pending = True
         self._next_sample_start = block.sample_start + samples.size
 
+        saturated = False
+        if self._contamination is not None and self.adc_full_scale is not None:
+            peak = max(float(np.max(np.abs(samples.real))), float(np.max(np.abs(samples.imag))))
+            saturated = peak >= self.adc_full_scale - 1
+            if saturated:
+                self._t_saturation_s = self._slow_samples_total / self.slow_time_rate_hz
+                self._saturated_since_output = True
+
         if self._doppler_stage is None:
             slow_samples = self._decimator(self._mixer(samples))
         else:
             doppler_iq = self._decimator(self._mixer(samples))
+            if self._contamination is not None:
+                # Before M1: the disturbers are still visible.  A saturated block gets weight 0.
+                self._contamination.process(doppler_iq, saturated)
             slow_samples = self._doppler_stage(doppler_iq)
         outputs: list[PipelineOutput] = []
         for value in slow_samples:
             self._slow_samples_total += 1
+            self._slow_since_reset += 1
             if self._warmup_remaining > 0:  # decimation filters still settling
                 self._warmup_remaining -= 1
                 continue
             self._history.append(complex(value))
+            weight, active = self._sample_contamination()
+            self._weights.append(weight)
+            self._active.append(active)
             self._samples_in_history += 1
             self._samples_since_update += 1
             if self._samples_since_update == self._update_samples:
@@ -621,6 +794,22 @@ class VitalSignsPipeline:
         finally:
             source.close()
 
+    def _sample_contamination(self) -> tuple[float, bool]:
+        """M3 weight of the newest slow-time sample, and whether someone moves out of band.
+
+        The sample left the Doppler stage ``doppler_delay_s`` after the
+        Doppler-rate samples it comes from: both come from the contamination
+        block of those samples (to within one Doppler-rate sample per
+        slow-time sample).  ``(1, False)`` without M3 or before the first block.
+        """
+        if self._contamination is None:
+            return 1.0, False
+        source_index = self._slow_since_reset * self._doppler_per_slow - self._delay_doppler_samples
+        block = self._contamination.block_at(max(source_index, 0))
+        if block is None:
+            return 1.0, False
+        return block.weight, block.activity_db >= self.motion.activity_threshold_db
+
     def _make_output(self) -> PipelineOutput:
         """Analyse the latest window and build one output."""
         t_s = self._slow_samples_total / self.slow_time_rate_hz
@@ -637,12 +826,37 @@ class VitalSignsPipeline:
 
         analysis = None
         breathing = self._detector.warmup(t_s)
-        if self._samples_in_history >= self._processor.window_length:
-            analysis = self._processor.analyse(history[-self._processor.window_length:])
-            breathing = self._detector.update(analysis.metrics, t_s, analysis.cycles.since_last_s)
+        window = self._processor.window_length
+        saturated = (self._t_saturation_s is not None
+                     and t_s - self._t_saturation_s <= self.settings.detection.motion_hold_s)
+        if self._samples_in_history >= window:
+            if self._contamination is None:
+                analysis = self._processor.analyse(history[-window:])
+                breathing = self._detector.update(analysis.metrics, t_s, analysis.cycles.since_last_s)
+            else:
+                weights = np.array(self._weights, dtype=np.float64)[-window:]
+                active = np.array(self._active, dtype=bool)[-window:]
+                analysis = self._processor.analyse(history[-window:], weights, active)
+                # The detector holds the pause for motion_hold_s after the last saturated block.
+                pause_reason = ("saturation" if self._saturated_since_output and self.motion.pause_on_saturation
+                                else None)
+                breathing = self._detector.update(analysis.metrics, t_s, analysis.cycles.since_last_s,
+                                                  pause_reason)
 
+        contamination = None
+        if self._contamination is not None:
+            latest = self._contamination.latest
+            contamination = ContaminationStatus(
+                index_db=latest.index_db if latest else float("nan"),
+                weight=latest.weight if latest else 1.0,
+                mean_weight=analysis.mean_weight if analysis else float("nan"),
+                contaminated_fraction=analysis.contaminated_fraction if analysis else float("nan"),
+                saturated=saturated,
+            )
+
+        self._saturated_since_output = False
         self._update_index += 1
         output = PipelineOutput(self._update_index, t_s, self._discontinuity_pending,
-                                analysis, breathing, micro_doppler_column_db)
+                                analysis, breathing, micro_doppler_column_db, contamination)
         self._discontinuity_pending = False
         return output

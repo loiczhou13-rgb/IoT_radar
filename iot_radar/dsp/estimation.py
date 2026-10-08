@@ -84,6 +84,105 @@ def periodogram(
     return Spectrum(f_hz, psd, f_s_hz / max(n, 1))
 
 
+def weighted_lomb_scargle(
+    t_s: np.ndarray,
+    x: np.ndarray,
+    weights: np.ndarray,
+    f_hz: np.ndarray,
+    window_name: str = "hann",
+) -> Spectrum:
+    """Weighted Lomb-Scargle periodogram with a floating mean (tolerant to gaps).
+
+    For every frequency ``f``, the model ``A·cos(2πft) + B·sin(2πft) + c`` is
+    fitted to *x* by weighted least squares; the power is the reduction of
+    the weighted χ² it brings, divided by the weighted variance of *x*
+    (J. T. VanderPlas, "Understanding the Lomb-Scargle periodogram", ApJS
+    236(1), 2018, §5–6: generalised periodogram with per-point weights).
+    Samples of weight 0 do not count at all, so contaminated segments of a
+    window are skipped instead of suspending the measurement (M3,
+    MOTION_ROBUSTNESS_PLAN.md §3.4).
+
+    Parameters
+    ----------
+    t_s : numpy.ndarray
+        Sample times (s), shape ``(N,)``; need not be uniform.
+    x : numpy.ndarray
+        Real signal (e.g. the detrended chest displacement), shape ``(N,)``.
+    weights : numpy.ndarray
+        Non-negative weight of each sample, shape ``(N,)``.
+    f_hz : numpy.ndarray
+        Frequencies to evaluate (Hz, > 0).
+    window_name : str, optional
+        Taper multiplied into the weights (``"hann"`` like
+        :func:`periodogram`, or ``"none"``), to keep the same spectral leakage
+        as the unweighted chain.
+
+    Returns
+    -------
+    Spectrum
+        Normalised power in [0, 1] on *f_hz*; ``native_resolution_hz`` is
+        ``1 / duration``.
+    """
+    t_s = np.asarray(t_s, dtype=np.float64)
+    x = np.asarray(x, dtype=np.float64)
+    w = np.clip(np.asarray(weights, dtype=np.float64), 0.0, None)
+    if window_name != "none":
+        w = w * get_window(window_name, x.size)
+    f_hz = np.asarray(f_hz, dtype=np.float64)
+    duration_s = float(t_s[-1] - t_s[0]) if t_s.size > 1 else 1.0
+    if w.sum() <= 0.0:
+        return Spectrum(f_hz, np.zeros_like(f_hz), 1.0 / duration_s)
+    w = w / w.sum()
+
+    y_mean = np.sum(w * x)
+    y = x - y_mean
+    yy = np.sum(w * y * y)
+    omega_t = 2.0 * np.pi * np.outer(f_hz, t_s)                # (n_f, N)
+    cos, sin = np.cos(omega_t), np.sin(omega_t)
+    c, s = cos @ w, sin @ w
+    cc = (cos * cos) @ w - c * c
+    ss = (sin * sin) @ w - s * s
+    cs = (cos * sin) @ w - c * s
+    yc, ys = cos @ (w * y), sin @ (w * y)
+    determinant = cc * ss - cs * cs
+    power = np.zeros_like(f_hz)
+    valid = (determinant > 1e-12) & (yy > 0.0)
+    power[valid] = ((ss * yc * yc + cc * ys * ys - 2.0 * cs * yc * ys)[valid]
+                    / (determinant[valid] * yy))
+    return Spectrum(f_hz, power, 1.0 / duration_s)
+
+
+def remove_segment_offsets(x: np.ndarray, weights: np.ndarray) -> np.ndarray:
+    """Remove the weighted mean of every run of positive weights separately.
+
+    A gap (weight 0) cut around an in-band anomaly may hide a step: when a
+    passer-by's echo crosses the breathing band, the phasor around the arc
+    centre can turn once around it and the unwrapped phase slips by 2π, i.e.
+    λ/2 of displacement.  Each segment between gaps then gets its own offset,
+    as the floating mean of the generalised Lomb-Scargle periodogram does for
+    a single segment (J. T. VanderPlas, ApJS 236(1), 2018, §6).
+
+    Parameters
+    ----------
+    x : numpy.ndarray
+        Real signal, shape ``(N,)``.
+    weights : numpy.ndarray
+        Non-negative weights, shape ``(N,)``; samples of weight 0 are left
+        unchanged.
+
+    Returns
+    -------
+    numpy.ndarray
+        Copy of *x* with a zero weighted mean on every segment.
+    """
+    x = np.array(x, dtype=np.float64)
+    w = np.asarray(weights, dtype=np.float64)
+    edges = np.flatnonzero(np.diff(np.r_[0, (w > 0).astype(np.int8), 0]))
+    for start, stop in zip(edges[::2], edges[1::2]):
+        x[start:stop] -= np.sum(w[start:stop] * x[start:stop]) / np.sum(w[start:stop])
+    return x
+
+
 def _parabolic_offset(left: float, centre: float, right: float) -> float:
     """Sub-sample position of a peak from three samples (in [-0.5, 0.5])."""
     curvature = left - 2.0 * centre + right

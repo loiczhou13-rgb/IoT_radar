@@ -111,8 +111,9 @@ Block (ADC, 1 MS/s) ─► contrôle de saturation de l'ADC (|I| ou |Q| ≥ 2047
   ─► Decimator A : 1 MS/s → 100 Hz (les 8 premiers étages actuels, inchangés)
         │
         ├─► M3a  indice de contamination par bloc de 1 s, AVANT M1 :
-        │        densité hors bande [2 Hz ; 50 Hz] / densité dans la bande [0,05 ; 1 Hz]
-        │        → poids w_k ∈ [0, 1], fonction lisse de l'indice
+        │        densité hors bande [2 Hz ; 50 Hz] / densité dans la bande [0,1 ; 1 Hz]
+        │        → poids w_k ∈ [0, 1], fonction lisse de l'indice (0 si bloc saturé)
+        │        → activité hors bande (densité / son plancher) → « quelqu'un bouge »
         │
   ─► M1  passe-bas FIR complexe, phase linéaire, coupure 1,5 Hz, ≥ 60 dB dès 2 Hz, puis ×5 → 20 Hz
         (M1 désactivé : dernier étage Tchebychev ×5 actuel)
@@ -122,10 +123,11 @@ Block (ADC, 1 MS/s) ─► contrôle de saturation de l'ADC (|I| ou |Q| ≥ 2047
         dérive du LO → M2 centre glissant (Pratt sur des sous-fenêtres de 10 s, pas de 1 s,
         interpolation linéaire de C(t)) → arctangente → déplacement
         (M2 désactivé : un seul ajustement géométrique sur la fenêtre, comme aujourd'hui)
-        → M3b périodogramme de Lomb-Scargle pondéré → fréquence, SNR, concentration
-          → confiance × poids moyen
-        → anomalie dans la bande : déplacement crête à crête après M1 et M2 > 30 mm
-          (sur les échantillons de poids ≥ 0,5) → mouvement de la cible           [pause]
+        → M3b anomalies dans la bande (crête à crête local sur 3 s > 30 mm) et excursions
+          → poids 0 ; attribution à un passant si activité hors bande dans les 10 s avant
+        → périodogramme de Lomb-Scargle pondéré (un décalage par segment) → fréquence, SNR,
+          concentration → confiance × poids moyen
+        → anomalie de la cible en cours → mouvement de la cible                     [pause]
   ─► BreathingDetector : pause seulement sur saturation ou anomalie dans la bande (M3 activé)
   ─► M4  mode mesure : fenêtre de 30 s lancée par l'opérateur → décision + résumé de qualité
   ─► PipelineOutput (+ poids, part contaminée, état de la mesure) ─► tableau de bord
@@ -140,8 +142,9 @@ Block (ADC, 1 MS/s) ─► contrôle de saturation de l'ADC (|I| ou |Q| ≥ 2047
 | | `iot_radar/dsp/decimation.py` | Propriété `stages` (pour l'audit), sortie complex128 optionnelle |
 | M2 | `iot_radar/dsp/phase.py` | `fit_circle_pratt`, `track_center` (centres glissants, interpolation), démodulation avec un centre variable |
 | M3 | `iot_radar/dsp/contamination.py` (nouveau) | `ContaminationMeter` (indice par bloc, à état), `contamination_weight` |
-| | `iot_radar/dsp/estimation.py` | `weighted_lomb_scargle` |
-| | `iot_radar/dsp/detection.py` | Règle de pause selon M3, confiance pondérée |
+| | `iot_radar/dsp/estimation.py` | `weighted_lomb_scargle`, `remove_segment_offsets` |
+| | `iot_radar/dsp/detection.py` | Cause de la pause (`pause_reason`) |
+| | `iot_radar/pipeline.py` | Anomalies, attribution, confiance pondérée, saturation |
 | M4 | `iot_radar/pipeline.py` | `start_measurement()`, `MeasurementStatus` et `MeasurementResult` dans `PipelineOutput` |
 | Configuration | `configs/radar.yaml` | Sections `motion_robustness` et `measurement` |
 | Interface | `iot_radar/ui/dashboard.py` | Poids courant, part contaminée, état de la mesure, touche `m` |
@@ -221,24 +224,34 @@ Mesure : médiane sur 30 tirages, 8 mm de respiration, sous-fenêtres de 10 s ; 
   ```
 
   - E_hors est l'énergie de l'IQ filtré passe-haut à 2 Hz, sur [2 Hz ; 50 Hz] en valeur absolue (B_hors = 2·48 Hz).
-  - E_bande est l'énergie de l'IQ filtré passe-bande sur [0,05 ; 1 Hz] en valeur absolue (B_bande = 2·0,95 Hz). Le continu, c'est-à-dire le statique, est exclu.
-  - Les filtres sont des Butterworth d'ordre 4 à état, en continu.
-  - **Normalisation par les largeurs de bande (Q2)** : un bruit blanc vaut 0 dB. Ordres de grandeur attendus, à vérifier en simulation à l'étape 4 : une cible qui respire nettement est très en dessous de 0 dB, un perturbateur proche nettement au-dessus.
+  - E_bande est l'énergie de l'IQ filtré passe-bande sur [0,1 ; 1 Hz] en valeur absolue (B_bande = 2·0,9 Hz). Le continu, c'est-à-dire le statique, est exclu.
+  - Les filtres sont des Butterworth d'ordre 4 à état, en continu, démarrés en régime établi sur le premier échantillon : sinon l'échelon du statique fait sonner le passe-bande pendant des dizaines de secondes.
+  - **Normalisation par les largeurs de bande (Q2)** : un bruit blanc vaut 0 dB. Mesuré en simulation : une cible qui respire est entre −30 et −20 dB ; un marcheur à 3,5 m remonte κ jusqu'à −5 dB environ ; un geste à 1,5 m, autour de 0 dB.
+  - Conséquence de la normalisation : une raie Doppler est « diluée » dans les 96 Hz hors bande. Le poids ne baisse donc que pour un perturbateur nettement plus fort que l'écho respiratoire (≈ 10 fois en amplitude pour w = 0,5). C'est voulu : derrière M1, un perturbateur hors bande plus faible est déjà supprimé linéairement.
 - **Poids :** fonction logistique lisse, `w = 1 / (1 + exp((κ − κ₀)/s))`, avec κ₀ = 6 dB et s = 2 dB.
   - On obtient w ≈ 0,95 à 0 dB, 0,5 à 6 dB et 0,05 à 12 dB.
-  - Un bloc de poids inférieur à 0,5 compte comme « contaminé ».
-  - Les poids sont retardés du retard de M1 (1,81 s) pour rester alignés avec le temps lent filtré.
+  - Un échantillon de poids inférieur à 0,5 compte comme « contaminé ».
+  - Les poids sont retardés du retard de M1 (1,82 s) pour rester alignés avec le temps lent filtré.
+  - Un bloc qui contient des échantillons saturés reçoit le poids 0.
+- **Activité hors bande** (ajoutée à l'étape 4) : densité hors bande du bloc rapportée à son plancher (quantile 10 % sur la dernière minute, à la manière des statistiques minimales de Martin, 2001). Elle dit « quelqu'un bouge autour du radar », quelle que soit la force de la cible : un marcheur à 3–6 m donne +8 à +22 dB, le bruit seul ±1 dB. Seuil : 6 dB.
 - **Estimation pondérée :** périodogramme de **Lomb-Scargle pondéré**, sous la forme généralisée avec moyenne flottante (VanderPlas, §5–6), sur le déplacement de la fenêtre avec les poids des échantillons.
   - Pour chaque fréquence, on fait un ajustement pondéré de A·cos + B·sin + c ; la puissance est la réduction du χ² pondéré.
   - Les échantillons de poids nul ne comptent pas : l'estimation tolère les trous.
-  - Grille de 0,01 à 5 Hz (bande respiratoire et bande de référence), pas de 0,005 Hz.
-  - Les métriques existantes (fréquence, SNR sur la bande de référence, concentration) sont calculées sur ce spectre, sans changer de code (`breathing_metrics`).
+  - Chaque segment entre deux trous reçoit son propre décalage (`remove_segment_offsets`) : un passage peut faire glisser la phase de 2π, soit une marche de λ/2 = 61 mm (voir ci-dessous).
+  - Les métriques existantes (fréquence, SNR, concentration) sont calculées sur ce spectre, sans changer de code (`breathing_metrics`).
 - **Confiance :** confiance instantanée × poids moyen de la fenêtre. Elle diminue donc avec la part de segments contaminés.
+- **Anomalies dans la bande** (constat de l'étape 4) : un marcheur qui coupe le faisceau passe par une vitesse radiale nulle. Pendant ~1 s, son écho est dans la bande respiratoire, et M1 ne peut rien. S'il est d'amplitude comparable à la cible, le phaseur autour du centre fait un tour : la phase glisse de 2π. Vu de la sortie, c'est le même signal qu'un mouvement de la cible (même rayon d'arc écrasé par M1, même énergie hors bande pendant l'événement). Ce qui les distingue, c'est l'avant : un passant n'atteint la bande qu'en ralentissant à travers les Doppler hors bande, on le voit venir ; la cible qui bouge démarre dans la bande.
+  - **Anomalie** : suite d'échantillons dont le crête à crête local (3 s centrées) dépasse `motion_ptp_mm`. Poids 0.
+  - **Excursion** : crête à crête local supérieur à `excursion_factor` (2,5) × sa médiane sur la fenêtre, même sous `motion_ptp_mm` (par exemple, le transitoire du centre suivi quand un écho statique saute, comme une main qui se met à bouger). Poids 0.
+  - **Attribution** : une anomalie est attribuée à un passant si l'activité hors bande a dépassé son seuil dans les `activity_lead_s` (10 s) qui précèdent son début. Sinon, elle est attribuée à la cible.
 - **Pause** (M3 activé) réservée à deux cas :
-  - **saturation de l'ADC** (au moins un échantillon d'un bloc à ±2047), maintenue `motion_hold_s` ;
-  - **anomalie dans la bande** : déplacement crête à crête, après M1 et M2, supérieur à `motion_ptp_mm` sur les échantillons de poids ≥ 0,5 ; c'est un mouvement de la cible elle-même.
-  - L'état `MOTION` garde son nom, et l'état de sortie précise la cause : `pause_reason` = `"saturation"` ou `"target_motion"`.
+  - **saturation de l'ADC** (au moins un échantillon d'un bloc à ±2047), maintenue `motion_hold_s` ; `pause_reason = "saturation"` ;
+  - **anomalie de la cible** en cours (dans les `motion_window_s` dernières secondes) ; `pause_reason = "motion"`.
+  - L'état `MOTION` garde son nom.
   - M3 désactivé : règle actuelle (crête à crête de la fenêtre et des 5 dernières secondes).
+- **Limites connues :**
+  - si la cible bouge pendant qu'un passant est actif, l'anomalie est attribuée au passant : pas de pause, mais poids 0 sur l'anomalie ;
+  - un perturbateur qui démarre d'un coup dans la bande, sans phase hors bande préalable, est pris pour la cible.
 
 ### 3.5 M4 — Mode « mesure »
 
@@ -281,10 +294,13 @@ motion_robustness:
     enabled: true
     block_s: 1.0
     out_of_band_start_hz: 2.0 # = bord de la bande atténuée de M1
-    in_band_hz: [0.05, 1.0]
+    in_band_hz: [0.1, 1.0]
     weight_midpoint_db: 6.0   # κ₀
     weight_slope_db: 2.0      # s
     contaminated_below: 0.5
+    activity_threshold_db: 6.0  # activité hors bande au-dessus de son plancher
+    activity_lead_s: 10.0       # fenêtre d'attribution d'une anomalie à un passant
+    excursion_factor: 2.5       # excursions coupées au-delà de 2,5 × la médiane locale
     pause_on_saturation: true
 measurement:                  # M4
   duration_s: 30.0
@@ -312,6 +328,7 @@ Modèle simplifié d'après Chen et al. (IEEE TAES, 2006).
   - **Amplitude** ∝ √SER / R² : on donne l'amplitude à 1 m.
   - **Phase** = −4π·R_i(t)/λ pour chaque diffuseur.
 - **Balancement :** diffuseur oscillant radialement, 3 cm à 0,8 Hz.
+- **Hors de son intervalle [start_s ; stop_s[, un perturbateur est immobile** : avant, à sa position de départ ; après, là où il s'est arrêté. Son écho fait alors partie du statique. Un écho allumé d'un coup serait un échelon, qui tombe lui-même dans la bande respiratoire, et personne n'apparaît de nulle part. Le masquage s'applique aussi à une personne immobile.
 - **Geste :** main oscillant de 8 cm à 2 Hz. La vitesse maximale est alors de 1 m/s, d'où un Doppler jusqu'à 16 Hz à 2,45 GHz.
 - **Masquage et modulation du clutter :**
   - des réflecteurs statiques (murs) sont placés dans la scène ;
