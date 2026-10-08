@@ -173,10 +173,13 @@ class MotionRobustnessSettings:
     activity_lead_s : float
         An in-band anomaly preceded by such activity within this time (s) is
         attributed to a passer-by, not to the target (no pause).
+    min_segment_s : float
+        Segments left between two cuts shorter than this (s) get weight 0.
     excursion_factor, excursion_floor_mm : float
         In-band excursions larger than this many times the median local
-        peak-to-peak displacement of the window, and than the floor (mm),
-        are cut out of the estimation (weight 0), even below ``motion_ptp_mm``.
+        peak-to-peak displacement of the window are cut out of the estimation
+        (weight 0), even below ``motion_ptp_mm``; away from any out-of-band
+        activity, only above the floor (mm).
     pause_on_saturation : bool
         Pause the measurement while the ADC saturates.
     """
@@ -206,6 +209,7 @@ class MotionRobustnessSettings:
     activity_lead_s: float = 10.0
     excursion_factor: float = 2.5
     excursion_floor_mm: float = 12.0
+    min_segment_s: float = 5.0
     pause_on_saturation: bool = True
 
     @classmethod
@@ -242,6 +246,7 @@ class MotionRobustnessSettings:
             activity_lead_s=float(weighting.get("activity_lead_s", d.activity_lead_s)),
             excursion_factor=float(weighting.get("excursion_factor", d.excursion_factor)),
             excursion_floor_mm=float(weighting.get("excursion_floor_mm", d.excursion_floor_mm)),
+            min_segment_s=float(weighting.get("min_segment_s", d.min_segment_s)),
             pause_on_saturation=bool(weighting.get("pause_on_saturation", d.pause_on_saturation)),
         )
 
@@ -519,9 +524,12 @@ class VitalSignsProcessor:
         the beam, at zero radial speed; its echo may make the phase slip by
         2π).  Every anomaly gets weight 0, and so does any smaller excursion
         above ``excursion_factor`` times the median local peak-to-peak of the
-        window and above ``excursion_floor_mm`` (e.g. the transient of the
-        centre when a static echo jumps, as a hand starting to move; the floor
-        keeps the breathing when an apnea fills most of the window).
+        window (e.g. the transient of the centre when a static echo jumps, as
+        a hand starting to move, or the edges of a passage).  Away from any
+        out-of-band activity, the excursion must also exceed
+        ``excursion_floor_mm``: this floor keeps the breathing when an apnea
+        fills most of the window.  The segments left between cuts shorter
+        than ``min_segment_s`` get weight 0 too.
 
         An anomaly is attributed to a passer-by when someone was moving out
         of band (*disturber_active*) within ``activity_lead_s`` before it
@@ -547,8 +555,14 @@ class VitalSignsProcessor:
         span = max(3, int(round(3.0 * self.f_s_hz)))
         local_ptp_mm = (maximum_filter1d(displacement_mm, span, mode="nearest")
                         - minimum_filter1d(displacement_mm, span, mode="nearest"))
-        excursion_mm = max(self.motion.excursion_factor * float(np.median(local_ptp_mm)), self.motion.excursion_floor_mm)
-        cut = local_ptp_mm > min(s.motion_ptp_mm, excursion_mm)
+        # The floor only applies where nobody moves around: next to a passer-by,
+        # any excursion above excursion_factor × the median is suspect.
+        relative_mm = self.motion.excursion_factor * float(np.median(local_ptp_mm))
+        excursion_mm = np.full(local_ptp_mm.size, max(relative_mm, self.motion.excursion_floor_mm))
+        if disturber_active is not None:
+            near_activity = maximum_filter1d(np.asarray(disturber_active, dtype=np.uint8), span, mode="nearest") > 0
+            excursion_mm[near_activity] = relative_mm
+        cut = local_ptp_mm > np.minimum(s.motion_ptp_mm, excursion_mm)
         anomaly = local_ptp_mm > s.motion_ptp_mm
         attributed = np.zeros_like(anomaly)
         if disturber_active is not None:
@@ -557,6 +571,14 @@ class VitalSignsProcessor:
             for start, stop in zip(edges[::2], edges[1::2]):
                 attributed[start:stop] = bool(np.any(disturber_active[max(0, start - lead):start + 1]))
         w[cut] = 0.0
+        # A segment left between two cuts gets its own offset (one floating
+        # mean per segment): shorter than min_segment_s, it cannot hold a
+        # breath and its offset would turn its drift into a slow false peak.
+        min_length = int(round(self.motion.min_segment_s * self.f_s_hz))
+        edges = np.flatnonzero(np.diff(np.r_[0, (w > 0).astype(np.int8), 0]))
+        for start, stop in zip(edges[::2], edges[1::2]):
+            if stop - start < min_length and (start > 0 or stop < w.size) and cut.any():
+                w[start:stop] = 0.0
         n_recent = int(round(s.motion_window_s * self.f_s_hz))
         ptp_mm = float(np.max(local_ptp_mm[-n_recent:], where=~attributed[-n_recent:], initial=0.0))
         return _InBandAnomalies(w, cut, anomaly & ~attributed, ptp_mm)

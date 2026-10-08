@@ -191,7 +191,8 @@ motion_robustness:
     activity_threshold_db: 6.0  # above this ratio, someone moves around the radar
     activity_lead_s: 10.0       # an in-band anomaly preceded by such activity is a passer-by's
     excursion_factor: 2.5       # excursions above 2.5 x the median local peak-to-peak ...
-    excursion_floor_mm: 12.0    # ... and above 12 mm are cut (the floor keeps breathing next to an apnea)
+    excursion_floor_mm: 12.0    # ... and, away from any activity, above 12 mm are cut (keeps breathing next to an apnea)
+    min_segment_s: 5.0          # segments left between two cuts shorter than this get weight 0
     pause_on_saturation: true   # pause while the ADC saturates (Pluto, simulation)
 
 

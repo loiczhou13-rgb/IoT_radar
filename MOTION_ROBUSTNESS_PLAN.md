@@ -247,7 +247,8 @@ Mesure : médiane sur 30 tirages, 8 mm de respiration, sous-fenêtres de 10 s ; 
 - **Confiance :** confiance instantanée × poids moyen de la fenêtre. Elle diminue donc avec la part de segments contaminés.
 - **Anomalies dans la bande** (constat de l'étape 4) : un marcheur qui coupe le faisceau passe par une vitesse radiale nulle. Pendant ~1 s, son écho est dans la bande respiratoire, et M1 ne peut rien. S'il est d'amplitude comparable à la cible, le phaseur autour du centre fait un tour : la phase glisse de 2π. Vu de la sortie, c'est le même signal qu'un mouvement de la cible (même rayon d'arc écrasé par M1, même énergie hors bande pendant l'événement). Ce qui les distingue, c'est l'avant : un passant n'atteint la bande qu'en ralentissant à travers les Doppler hors bande, on le voit venir ; la cible qui bouge démarre dans la bande.
   - **Anomalie** : suite d'échantillons dont le crête à crête local (3 s centrées, sur le déplacement non redressé : une tendance globale ajustée à travers une marche inclinerait chaque segment) dépasse `motion_ptp_mm`. Poids 0.
-  - **Excursion** : crête à crête local supérieur à `excursion_factor` (2,5) × sa médiane sur la fenêtre et à `excursion_floor_mm` (12 mm, sans quoi une apnée qui remplit la fenêtre ferait couper la respiration restante), même sous `motion_ptp_mm` (par exemple, le transitoire du centre suivi quand un écho statique saute, comme une main qui se met à bouger). Poids 0.
+  - **Excursion** : crête à crête local supérieur à `excursion_factor` (2,5) × sa médiane sur la fenêtre et, loin de toute activité hors bande, à `excursion_floor_mm` (12 mm, sans quoi une apnée qui remplit la fenêtre ferait couper la respiration restante ; près d'un passant, ses bords de 1 à 3 mm seraient au contraire gardés), même sous `motion_ptp_mm` (par exemple, le transitoire du centre suivi quand un écho statique saute, comme une main qui se met à bouger). Poids 0.
+  - **Segments courts** : un segment de moins de `min_segment_s` (5 s) entre deux coupures reçoit le poids 0. Avec son propre décalage, il ne peut pas contenir une respiration, et sa dérive donnait un faux pic au bord de la bande (pièce vide traversée par des marcheurs, étape 5).
   - **Attribution** : une anomalie est attribuée à un passant si l'activité hors bande a dépassé son seuil dans les `activity_lead_s` (10 s) qui précèdent son début. Sinon, elle est attribuée à la cible.
   - **Deuxième passe (M2 avec M3)** : les sous-fenêtres de M2 qui contiennent une anomalie donnent un mauvais centre, car les points quittent le cercle. Il en résulte de fausses marches jusqu'à une demi-sous-fenêtre (5 s) de l'anomalie. Le centre est donc réajusté sans les échantillons coupés (`track_center(..., exclude=...)`), puis l'analyse est refaite. Cette seconde passe n'est gardée que si elle coupe moins d'échantillons. Après un saut de l'écho statique, comme une main qui se met à bouger, ce n'est pas le cas : aucune interpolation linéaire du centre ne le suit.
   - Constat en simulation : le glissement de 2π du marcheur venait surtout du centre faussé. Avec la seconde passe, la fenêtre redevient souvent entièrement valide, et la respiration est détectée 95 % du temps, contre 81 % sans elle.
@@ -486,6 +487,19 @@ En SISO, ces composantes sont spectralement indiscernables de la cible.
 - `docs: motion robustness in README.md and README.fr.md`, puis résumé final.
 
 Chaque commit concerne une modification cohérente, avec la suite verte. Si un test change parce que le comportement change volontairement, le message de commit l'explique. Aucune fusion sans votre accord.
+
+**Écarts constatés pendant la réalisation** (détails dans les messages de commit) :
+- **Simulation :** les perturbateurs restent immobiles hors de leur intervalle (un écho allumé d'un coup tombait dans la bande). L'amplitude par défaut d'un tronc est 12,7 à 1 m, et non 500.
+- **M1 :** le plancher de bruit du détecteur est mesuré dans la bande passante, car M1 vide la bande de référence.
+- **M2 :**
+  - le centre suivi n'est utilisé que s'il s'ajuste mieux qu'un centre fixe ;
+  - le retrait de tendance n'est gardé que s'il réduit le résidu, sans quoi l'amplitude était biaisée et l'alerte d'apnée devenait intermittente ;
+  - une seconde passe réajuste le centre sans les anomalies.
+- **M3 :**
+  - anomalies et excursions coupées, avec un plancher de 12 mm ;
+  - attribution à un passant par l'activité hors bande, mesurée contre le bruit au-dessus du Doppler humain ;
+  - un décalage par segment entre les trous.
+- **Tests de validation :** l'alerte d'apnée arrive 1,82 s plus tard et le préchauffage dure 3,6 s, à cause du retard de M1.
 
 ### Références
 
