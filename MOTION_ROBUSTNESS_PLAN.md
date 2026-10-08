@@ -238,7 +238,7 @@ Mesure : médiane sur 30 tirages, 8 mm de respiration, sous-fenêtres de 10 s ; 
   - Un échantillon de poids inférieur à 0,5 compte comme « contaminé ».
   - Les poids sont retardés du retard de M1 (1,82 s) pour rester alignés avec le temps lent filtré.
   - Un bloc qui contient des échantillons saturés reçoit le poids 0.
-- **Activité hors bande** (ajoutée à l'étape 4) : densité hors bande du bloc rapportée à son plancher (quantile 10 % sur la dernière minute, à la manière des statistiques minimales de Martin, 2001). Elle dit « quelqu'un bouge autour du radar », quelle que soit la force de la cible : un marcheur à 3–6 m donne +8 à +22 dB, le bruit seul ±1 dB. Seuil : 6 dB.
+- **Activité hors bande** (ajoutée à l'étape 4) : densité dans la bande du Doppler humain [3 ; 28 Hz] rapportée à la densité dans une bande au-dessus, [30 ; 38 Hz], qui ne contient que le bruit du récepteur et reste dans la bande passante de la décimation. Elle dit « quelqu'un bouge autour du radar », quelle que soit la force de la cible et quel que soit le passé. Une première version comparait la densité hors bande à son plancher sur la dernière minute : un perturbateur présent depuis le début devenait le plancher, et ses anomalies étaient prises pour la cible (11 % de pause dans une pièce vide avec gestes). La bande commence à 3 Hz pour que les bandes latérales d'une respiration profonde (excursion de 3 rad) restent dehors. Bruit seul : 0 ± 3 dB par bloc ; marcheur à 3–6 m : +8 à +22 dB. Seuil : 6 dB. Le premier bloc après un redémarrage vaut 0 dB, car les filtres sont en régime transitoire.
 - **Estimation pondérée :** périodogramme de **Lomb-Scargle pondéré**, sous la forme généralisée avec moyenne flottante (VanderPlas, §5–6), sur le déplacement de la fenêtre avec les poids des échantillons.
   - Pour chaque fréquence, on fait un ajustement pondéré de A·cos + B·sin + c ; la puissance est la réduction du χ² pondéré.
   - Les échantillons de poids nul ne comptent pas : l'estimation tolère les trous.
@@ -307,7 +307,9 @@ motion_robustness:
     weight_midpoint_db: 6.0   # κ₀
     weight_slope_db: 2.0      # s
     contaminated_below: 0.5
-    activity_threshold_db: 6.0  # activité hors bande au-dessus de son plancher
+    activity_band_hz: [3.0, 28.0]       # Doppler humain ...
+    activity_reference_hz: [30.0, 38.0] # ... contre le bruit au-dessus
+    activity_threshold_db: 6.0  # activité hors bande au-dessus du bruit
     activity_lead_s: 10.0       # fenêtre d'attribution d'une anomalie à un passant
     excursion_factor: 2.5       # excursions coupées au-delà de 2,5 × la médiane locale ...
     excursion_floor_mm: 12.0    # ... et de 12 mm (garde la respiration à côté d'une apnée)

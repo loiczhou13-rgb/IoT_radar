@@ -19,12 +19,19 @@ The weights feed the weighted, gap-tolerant estimation of the breathing
 rate (:func:`iot_radar.dsp.estimation.weighted_lomb_scargle`; J. T.
 VanderPlas, "Understanding the Lomb-Scargle periodogram", ApJS 236(1), 2018).
 
-Each block also gets an *activity*: its out-of-band density relative to the
-floor of that density (low quantile over the last minute, in the spirit of
-the minimum-statistics noise estimate of R. Martin, IEEE T-SAP 9(5), 2001).
-It tells that someone moves around the radar, whatever the strength of the
-target, and serves to attribute an in-band anomaly to a passer-by rather
-than to the target (MOTION_ROBUSTNESS_PLAN.md §3.4).
+Each block also gets an *activity*: the density in the band of the human
+Doppler (3–28 Hz: gestures up to 16 Hz, walking up to 25 Hz at 2.45 GHz;
+from 3 Hz so that the sidebands of a deep breath stay out) over the density
+in a band above it (30–38 Hz), which only holds the receiver noise and is
+still inside the pass band of the decimation::
+
+    activity = 10·log10( (E_act / B_act) / (E_ref / B_ref) )      [dB]
+
+About 0 dB when nobody moves, whatever the strength of the target and
+whatever the past (a disturber present from the start is still seen).  It
+tells that someone moves around the radar, and serves to attribute an
+in-band anomaly to a passer-by rather than to the target
+(MOTION_ROBUSTNESS_PLAN.md §3.4).
 """
 
 from __future__ import annotations
@@ -59,7 +66,7 @@ class ContaminationBlock:
     weight : float
         Weight of its samples, in [0, 1].
     activity_db : float
-        Out-of-band density relative to its recent floor (dB, ≥ 0 up to noise).
+        Density in the band of the human Doppler over the noise density (dB, ≈ 0 when nobody moves).
     saturated : bool
         Some of its samples come from ADC samples at full scale (weight 0).
     """
@@ -90,11 +97,9 @@ class ContaminationMeter:
         Butterworth order of the two streaming filters.
     history_s : float, optional
         Length of the block history kept for :meth:`block_at` (s).
-    floor_window_s : float, optional
-        Length of the past over which the floor of the out-of-band density
-        is taken (s).
-    floor_quantile : float, optional
-        Quantile of the out-of-band densities taken as their floor.
+    activity_band_hz, reference_band_hz : tuple[float, float], optional
+        Band of the human Doppler and noise-only band above it (Hz), both
+        inside the pass band of the decimation to ``f_s_hz``.
     """
 
     def __init__(
@@ -107,35 +112,39 @@ class ContaminationMeter:
         slope_db: float = 2.0,
         order: int = 4,
         history_s: float = 120.0,
-        floor_window_s: float = 60.0,
-        floor_quantile: float = 0.1,
+        activity_band_hz: tuple[float, float] = (3.0, 28.0),
+        reference_band_hz: tuple[float, float] = (30.0, 38.0),
     ) -> None:
         self.f_s_hz = float(f_s_hz)
         self.block_length = max(1, int(round(block_s * self.f_s_hz)))
         self.midpoint_db, self.slope_db = float(midpoint_db), float(slope_db)
         self._highpass = butter(order, out_of_band_start_hz, btype="highpass", fs=self.f_s_hz, output="sos")
-        self._bandpass = butter(order, in_band_hz, btype="bandpass", fs=self.f_s_hz, output="sos")
+        self._filters = {
+            "out": butter(order, out_of_band_start_hz, btype="highpass", fs=self.f_s_hz, output="sos"),
+            "in": butter(order, in_band_hz, btype="bandpass", fs=self.f_s_hz, output="sos"),
+            "act": butter(order, activity_band_hz, btype="bandpass", fs=self.f_s_hz, output="sos"),
+            "ref": butter(order, reference_band_hz, btype="bandpass", fs=self.f_s_hz, output="sos"),
+        }
         # Two-sided bandwidths of a complex signal.
-        self._out_bandwidth_hz = 2.0 * (self.f_s_hz / 2.0 - out_of_band_start_hz)
-        self._in_bandwidth_hz = 2.0 * (in_band_hz[1] - in_band_hz[0])
+        self._bandwidths_hz = {
+            "out": 2.0 * (self.f_s_hz / 2.0 - out_of_band_start_hz),
+            "in": 2.0 * (in_band_hz[1] - in_band_hz[0]),
+            "act": 2.0 * (activity_band_hz[1] - activity_band_hz[0]),
+            "ref": 2.0 * (reference_band_hz[1] - reference_band_hz[0]),
+        }
         self.blocks: deque[ContaminationBlock] = deque(maxlen=max(1, int(history_s / block_s)))
-        self._out_densities: deque[float] = deque(maxlen=max(1, int(round(floor_window_s / block_s))))
-        self.floor_quantile = float(floor_quantile)
         self.reset()
 
     def reset(self) -> None:
         """Forget the past (after a discontinuity of the stream)."""
-        out_shape, in_shape = (self._highpass.shape[0], 2), (self._bandpass.shape[0], 2)
-        self._state = {"out_re": np.zeros(out_shape), "out_im": np.zeros(out_shape),
-                       "in_re": np.zeros(in_shape), "in_im": np.zeros(in_shape)}
-        self._out_energy = 0.0
-        self._in_energy = 0.0
+        self._state = {name: (np.zeros((sos.shape[0], 2)), np.zeros((sos.shape[0], 2)))
+                       for name, sos in self._filters.items()}           # real and imaginary parts
+        self._energies = dict.fromkeys(self._filters, 0.0)
         self._in_block = 0          # samples already in the current block
         self._block_start = 0       # index of the first sample of the current block
         self._started = False
         self._block_saturated = False
         self.blocks.clear()
-        self._out_densities.clear()
 
     def process(self, x: np.ndarray, saturated: bool = False) -> None:
         """Take a chunk of complex samples at ``f_s_hz`` into account.
@@ -150,21 +159,20 @@ class ContaminationMeter:
             # Filters started in steady state on the first sample: the step of
             # the static echo would otherwise ring in the band-pass for tens
             # of seconds and pass for in-band energy.
-            for name, sos, value in (("out_re", self._highpass, x[0].real), ("out_im", self._highpass, x[0].imag),
-                                     ("in_re", self._bandpass, x[0].real), ("in_im", self._bandpass, x[0].imag)):
-                self._state[name] = sosfilt_zi(sos) * value
+            self._state = {name: (sosfilt_zi(sos) * x[0].real, sosfilt_zi(sos) * x[0].imag)
+                           for name, sos in self._filters.items()}
             self._started = True
-        out_re, self._state["out_re"] = sosfilt(self._highpass, x.real, zi=self._state["out_re"])
-        out_im, self._state["out_im"] = sosfilt(self._highpass, x.imag, zi=self._state["out_im"])
-        in_re, self._state["in_re"] = sosfilt(self._bandpass, x.real, zi=self._state["in_re"])
-        in_im, self._state["in_im"] = sosfilt(self._bandpass, x.imag, zi=self._state["in_im"])
-        out_power = out_re ** 2 + out_im ** 2
-        in_power = in_re ** 2 + in_im ** 2
+        powers = {}
+        for name, sos in self._filters.items():
+            real, state_re = sosfilt(sos, x.real, zi=self._state[name][0])
+            imag, state_im = sosfilt(sos, x.imag, zi=self._state[name][1])
+            self._state[name] = (state_re, state_im)
+            powers[name] = real ** 2 + imag ** 2
         position = 0
         while position < x.size:
             take = min(self.block_length - self._in_block, x.size - position)
-            self._out_energy += float(out_power[position:position + take].sum())
-            self._in_energy += float(in_power[position:position + take].sum())
+            for name, power in powers.items():
+                self._energies[name] += float(power[position:position + take].sum())
             self._in_block += take
             position += take
             if saturated and position == x.size:
@@ -173,18 +181,16 @@ class ContaminationMeter:
                 self._close_block()
 
     def _close_block(self) -> None:
-        out_density = self._out_energy / self._out_bandwidth_hz
-        in_density = self._in_energy / self._in_bandwidth_hz
-        index_db = float(10.0 * np.log10(max(out_density, 1e-300) / max(in_density, 1e-300)))
+        density = {name: max(self._energies[name] / self._bandwidths_hz[name], 1e-300) for name in self._filters}
+        index_db = float(10.0 * np.log10(density["out"] / density["in"]))
+        # The first block after a (re)start holds the transient of the filters.
+        activity_db = float(10.0 * np.log10(density["act"] / density["ref"])) if self.blocks else 0.0
         weight = 0.0 if self._block_saturated else float(contamination_weight(index_db, self.midpoint_db,
                                                                                    self.slope_db))
-        self._out_densities.append(out_density)
-        floor = float(np.quantile(np.array(self._out_densities), self.floor_quantile))
-        activity_db = float(10.0 * np.log10(max(out_density, 1e-300) / max(floor, 1e-300)))
         self.blocks.append(ContaminationBlock(self._block_start, index_db, weight, activity_db,
                                               self._block_saturated))
         self._block_start += self.block_length
-        self._out_energy = self._in_energy = 0.0
+        self._energies = dict.fromkeys(self._filters, 0.0)
         self._in_block = 0
         self._block_saturated = False
 

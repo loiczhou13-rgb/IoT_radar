@@ -164,9 +164,12 @@ class MotionRobustnessSettings:
         Logistic weight: 0.5 at the midpoint, slope in dB.
     contaminated_below : float
         A block with a lower weight counts as contaminated.
+    activity_band_hz, activity_reference_hz : tuple[float, float]
+        Band of the human Doppler and noise-only band above it (Hz), inside
+        the pass band of the decimation to ``doppler_rate_hz``.
     activity_threshold_db : float
-        Out-of-band density above its floor (dB) from which someone is
-        considered moving around the radar.
+        Density of the human-Doppler band over the noise density (dB) from
+        which someone is considered moving around the radar.
     activity_lead_s : float
         An in-band anomaly preceded by such activity within this time (s) is
         attributed to a passer-by, not to the target (no pause).
@@ -197,6 +200,8 @@ class MotionRobustnessSettings:
     weight_midpoint_db: float = 6.0
     weight_slope_db: float = 2.0
     contaminated_below: float = 0.5
+    activity_band_hz: tuple[float, float] = (3.0, 28.0)
+    activity_reference_hz: tuple[float, float] = (30.0, 38.0)
     activity_threshold_db: float = 6.0
     activity_lead_s: float = 10.0
     excursion_factor: float = 2.5
@@ -231,6 +236,8 @@ class MotionRobustnessSettings:
             weight_midpoint_db=float(weighting.get("weight_midpoint_db", d.weight_midpoint_db)),
             weight_slope_db=float(weighting.get("weight_slope_db", d.weight_slope_db)),
             contaminated_below=float(weighting.get("contaminated_below", d.contaminated_below)),
+            activity_band_hz=tuple(weighting.get("activity_band_hz", d.activity_band_hz)),
+            activity_reference_hz=tuple(weighting.get("activity_reference_hz", d.activity_reference_hz)),
             activity_threshold_db=float(weighting.get("activity_threshold_db", d.activity_threshold_db)),
             activity_lead_s=float(weighting.get("activity_lead_s", d.activity_lead_s)),
             excursion_factor=float(weighting.get("excursion_factor", d.excursion_factor)),
@@ -696,7 +703,9 @@ class VitalSignsPipeline:
             m = self.motion
             self._contamination = ContaminationMeter(m.doppler_rate_hz, m.contamination_block_s,
                                                      m.out_of_band_start_hz, m.in_band_hz,
-                                                     m.weight_midpoint_db, m.weight_slope_db)
+                                                     m.weight_midpoint_db, m.weight_slope_db,
+                                                     activity_band_hz=m.activity_band_hz,
+                                                     reference_band_hz=m.activity_reference_hz)
             self._doppler_per_slow = int(round(m.doppler_rate_hz / slow_time_rate_hz))
             self._delay_doppler_samples = int(round(self.doppler_delay_s * m.doppler_rate_hz))
         self._warmup_samples = int(round(warmup_s * slow_time_rate_hz))
