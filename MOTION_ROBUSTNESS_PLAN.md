@@ -21,14 +21,14 @@
 
 ## 0. Décisions
 
-**À valider avant le code :**
+**Validées** (réponses du 2026-10-08) :
 
-| # | Question | Recommandation |
-|---|---|---|
-| Q1 | Les chiffres Doppler de la demande sont donnés à **2,45 GHz** (f_D ≈ 16·v), mais `radar.yaml` émet à **3,5 GHz**, où f_D ≈ 23·v et où la marche monte jusqu'à 35 Hz. Faut-il passer la chaîne SISO à 2,45 GHz ? | Passer à 2,45 GHz : c'est cohérent avec la demande, et 3,5 GHz n'est pas une bande ISM. La conception (§3) fonctionne aux deux fréquences. |
-| Q2 | L'indice de contamination est le rapport d'énergies hors bande / dans la bande. Faut-il le normaliser par les largeurs de bande (rapport de densités) ? | Oui. Un bruit blanc vaut alors 0 dB quelle que soit la fréquence d'échantillonnage. Sans normalisation, il vaut +17 dB et le seuil dépend du débit (§3.4). |
-| Q3 | `feature/mimo-localization` n'est pas fusionnée dans `dev`. Deux de ses commits sont utiles ici : le test qui fige la chaîne à une voie (`8c903c8`) et l'extraction de `SimulatedPerson` (`6151685`). | Les reprendre par `cherry-pick` : même contenu, donc moins de conflits à la fusion future. |
-| Q4 | Données réelles pour l'évaluation : seules les 69 anciennes sessions converties sont disponibles. Elles sont annotées `empty` / `breathing`, sans annotation de perturbation, et la chaîne de phase n'y détecte presque rien (REFACTOR_PLAN §19.3). | Des enregistrements HDF5 du problème constaté (radar en pause en milieu ouvert), même courts, rendraient l'évaluation (§6) bien plus probante. |
+| # | Décision |
+|---|---|
+| Q1 | La chaîne SISO passe à **2,45 GHz** (bande ISM, f_D ≈ 16·v), dans un commit séparé qui met aussi à jour les chiffres des README. |
+| Q2 | Indice de contamination **normalisé par les largeurs de bande** (rapport de densités) : un bruit blanc vaut 0 dB. |
+| Q3 | `feature/mimo-localization` est ignorée pour le moment. Le test qui fige la chaîne à une voie est écrit sur cette branche. |
+| Q4 | Évaluation sur la simulation et les 69 anciennes sessions ; aucun enregistrement du problème constaté n'est disponible. |
 
 **Prises par défaut, à contester si besoin :**
 
@@ -395,18 +395,19 @@ En SISO, ces composantes sont spectralement indiscernables de la cible.
 | Peu d'échantillons de poids élevé | Pics parasites du Lomb-Scargle | Confiance × poids moyen ; `min_valid_fraction` |
 | Modèle de marche simplifié | Évaluation optimiste | Paramètres variés ; données réelles demandées (Q4) |
 | Anciennes sessions déjà filtrées passe-haut à 2 kHz, sans annotation de perturbation | Évaluation réelle limitée | Signalé dans le rapport |
-| Fusion future avec `feature/mimo-localization` (`pipeline.py`, `sources.py`, `radar.yaml`) | Conflits | Cherry-pick des commits communs (Q3) ; modifications localisées |
-| Porteuse SISO à 3,5 GHz | Doppler ×1,43 ; bande non ISM | Q1 ; 100 Hz couvre les deux cas |
+| Fusion future avec `feature/mimo-localization` (`pipeline.py`, `sources.py`, `radar.yaml`) | Conflits | Ignorée pour le moment (Q3) ; modifications localisées |
+| 2,45 GHz est aussi la fréquence des fours à micro-ondes | Brouillage possible près d'une cuisine | Documenté ; la porteuse reste configurable |
 
 ---
 
 ## 9. Étapes et commits
 
 **Étape 1**
-- `docs: add MOTION_ROBUSTNESS_PLAN.md`
+- `docs: add MOTION_ROBUSTNESS_PLAN.md`, puis les décisions Q1 à Q4
+- `config: SISO carrier at 2.45 GHz` (Q1)
 
 **Étape 2 — Simulation des perturbateurs**
-- reprise de `8c903c8` et `6151685` (Q3), ou un équivalent ;
+- `test: pin the single-channel simulation and phase pipeline outputs` (Q3) ;
 - `feat(sources): walking person, sway and gesture disturbers with path masking` ;
 - `feat(recording): disturbance intervals in the ground truth`.
 
