@@ -129,6 +129,10 @@ class MotionRobustnessSettings:
         M1: linear-phase low-pass on the IQ before the demodulation.
     cutoff_hz, transition_hz, stopband_attenuation_db : float
         Template of the M1 filter (−6 dB frequency, transition width, stop-band attenuation).
+    noise_band_hz : tuple[float, float]
+        With M1, band of the noise floor of the detector (inside the pass
+        band, peak and harmonics excluded), instead of the reference band
+        that M1 empties.
     alias_band_hz, min_alias_attenuation_db : float
         Aliasing audit: half-width of the protected band and required attenuation.
     center_tracking_enabled : bool
@@ -158,6 +162,7 @@ class MotionRobustnessSettings:
     cutoff_hz: float = 1.5
     transition_hz: float = 1.0
     stopband_attenuation_db: float = 60.0
+    noise_band_hz: tuple[float, float] = (0.1, 1.4)
     alias_band_hz: float = 1.0
     min_alias_attenuation_db: float = 60.0
     center_tracking_enabled: bool = False
@@ -187,6 +192,7 @@ class MotionRobustnessSettings:
             cutoff_hz=float(doppler.get("cutoff_hz", d.cutoff_hz)),
             transition_hz=float(doppler.get("transition_hz", d.transition_hz)),
             stopband_attenuation_db=float(doppler.get("stopband_attenuation_db", d.stopband_attenuation_db)),
+            noise_band_hz=tuple(doppler.get("noise_band_hz", d.noise_band_hz)),
             alias_band_hz=float(alias.get("band_hz", d.alias_band_hz)),
             min_alias_attenuation_db=float(alias.get("min_attenuation_db", d.min_alias_attenuation_db)),
             center_tracking_enabled=bool(center.get("enabled", d.center_tracking_enabled)),
@@ -357,8 +363,9 @@ class VitalSignsProcessor:
         whole_window_ptp_mm = float(np.ptp(detrended_mm)) if result.calibrated else float("nan")
         measurable = [v for v in (whole_window_ptp_mm, self._recent_peak_to_peak_mm(z)) if np.isfinite(v)]
         displacement_ptp_mm = max(measurable) if measurable else float("nan")
+        reference_band_hz = self.motion.noise_band_hz if self.motion.doppler_filter_enabled else s.reference_band_hz
         metrics = breathing_metrics(spectrum, displacement_ptp_mm, s.breathing_band_hz,
-                                    s.reference_band_hz, s.detection)
+                                    reference_band_hz, s.detection)
 
         cycles = estimation.breath_cycles(breath_mm, self.f_s_hz, s.breathing_band_hz)
         rates_hz = {

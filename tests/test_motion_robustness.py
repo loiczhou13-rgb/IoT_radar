@@ -181,3 +181,11 @@ def test_without_a_valid_sub_window_the_former_demodulation_is_used() -> None:
     noise = 30.0 + rng.standard_normal(400) + 1j * rng.standard_normal(400)
     result = demodulate_tracked(noise, F_SLOW_HZ)
     assert result.method == "linear" and not result.calibrated
+
+
+def test_with_m1_an_empty_room_is_not_detected() -> None:
+    """M1 empties the former reference band (2.5–5 Hz): the noise floor is measured in the pass band."""
+    outputs, _ = _run(_config(M1_ONLY, presence=False, seed=1), 60.0)
+    analysed = [o for o in outputs if o.analysis is not None]
+    assert all(o.breathing.state != "BREATHING" for o in analysed)
+    assert np.median([o.analysis.metrics.snr_db for o in analysed]) < 10.0

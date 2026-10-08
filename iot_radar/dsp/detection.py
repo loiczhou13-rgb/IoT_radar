@@ -180,7 +180,13 @@ def breathing_metrics(
         Peak-to-peak displacement (mm), or NaN when the demodulation is not
         calibrated (linear fallback): motion is then not assessed.
     breathing_band_hz, reference_band_hz : tuple[float, float]
-        Bands (Hz).
+        Bands (Hz).  The noise floor is the median power of the reference
+        band, without the bins within ±``peak_halfwidth_hz`` of the peak and
+        of its harmonics 2 and 3.  The exclusion matters only when the
+        reference band overlaps the breathing harmonics: with the Doppler
+        filter M1 the spectrum is empty above ~2 Hz, so the noise is measured
+        inside the pass band (MOTION_ROBUSTNESS_PLAN.md §3.2); with the
+        former reference band (2.5–5 Hz) nothing is excluded.
     settings : DetectionSettings
         Detector parameters.
     """
@@ -196,7 +202,11 @@ def breathing_metrics(
     rises_to_the_right = k < psd.size - 1 and psd[k + 1] > psd[k]
     genuine = not (rises_to_the_left or rises_to_the_right)
     rate_hz = _parabolic_peak_hz(f_hz, psd, k)
-    noise_floor = float(max(np.median(psd[in_reference]), 1e-300))
+    near_harmonic = np.zeros_like(in_reference)
+    for order in (1, 2, 3):
+        near_harmonic |= np.abs(f_hz - order * f_hz[k]) <= settings.peak_halfwidth_hz
+    noise_bins = in_reference & ~near_harmonic
+    noise_floor = float(max(np.median(psd[noise_bins] if noise_bins.any() else psd[in_reference]), 1e-300))
     snr_db = float(10.0 * np.log10(psd[k] / noise_floor))
 
     around_peak = in_band & (np.abs(f_hz - f_hz[k]) <= settings.peak_halfwidth_hz)
