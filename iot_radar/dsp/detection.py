@@ -207,7 +207,8 @@ def breathing_metrics(
         near_harmonic |= np.abs(f_hz - order * f_hz[k]) <= settings.peak_halfwidth_hz
     noise_bins = in_reference & ~near_harmonic
     noise_floor = float(max(np.median(psd[noise_bins] if noise_bins.any() else psd[in_reference]), 1e-300))
-    snr_db = float(10.0 * np.log10(psd[k] / noise_floor))
+    # An empty spectrum (every sample of weight 0 with M3) has no SNR at all.
+    snr_db = float(10.0 * np.log10(psd[k] / noise_floor)) if psd[k] > 0 else float("-inf")
 
     around_peak = in_band & (np.abs(f_hz - f_hz[k]) <= settings.peak_halfwidth_hz)
     band_energy = float(psd[in_band].sum())
