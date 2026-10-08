@@ -25,6 +25,7 @@ import numpy as np
 
 from iot_radar.dsp import estimation
 from iot_radar.dsp.decimation import Decimator
+from iot_radar.dsp.doppler import alias_audit, dc_group_delay_s, doppler_lowpass_decimator
 from iot_radar.dsp.detection import (
     BreathingDetector,
     BreathingState,
@@ -109,6 +110,96 @@ class VitalSignsSettings:
             lo_drift_compensation=bool(section.get("lo_drift_compensation", defaults.lo_drift_compensation)),
             bandpass_order=int(section.get("bandpass_order", defaults.bandpass_order)),
             detection=DetectionSettings.from_config(section.get("detection", {})),
+        )
+
+
+@dataclass
+class MotionRobustnessSettings:
+    """Suppression of the residual motion of the people around the radar (``motion_robustness`` section).
+
+    Every method is disabled by default, which gives the former behaviour
+    exactly (MOTION_ROBUSTNESS_PLAN.md §3).
+
+    Attributes
+    ----------
+    doppler_rate_hz : float
+        Intermediate rate where M1 and M3 work (Hz), between the ADC and the slow time.
+    doppler_filter_enabled : bool
+        M1: linear-phase low-pass on the IQ before the demodulation.
+    cutoff_hz, transition_hz, stopband_attenuation_db : float
+        Template of the M1 filter (−6 dB frequency, transition width, stop-band attenuation).
+    alias_band_hz, min_alias_attenuation_db : float
+        Aliasing audit: half-width of the protected band and required attenuation.
+    center_tracking_enabled : bool
+        M2: sliding estimate of the centre of the IQ arc.
+    center_window_s, center_step_s : float
+        Length and step of the M2 sub-windows (s).
+    center_method : str
+        ``"pratt"``, ``"geometric"`` or ``"kasa"`` (MOTION_ROBUSTNESS_PLAN.md §3.3).
+    contamination_enabled : bool
+        M3: contamination weights, weighted estimation and the new pause rule.
+    contamination_block_s : float
+        Length of the blocks of the contamination index (s).
+    out_of_band_start_hz : float
+        Lower edge of the out-of-band energy (Hz); it ends at half the Doppler rate.
+    in_band_hz : tuple[float, float]
+        Band of the in-band energy (Hz).
+    weight_midpoint_db, weight_slope_db : float
+        Logistic weight: 0.5 at the midpoint, slope in dB.
+    contaminated_below : float
+        A block with a lower weight counts as contaminated.
+    pause_on_saturation : bool
+        Pause the measurement while the ADC saturates.
+    """
+
+    doppler_rate_hz: float = 100.0
+    doppler_filter_enabled: bool = False
+    cutoff_hz: float = 1.5
+    transition_hz: float = 1.0
+    stopband_attenuation_db: float = 60.0
+    alias_band_hz: float = 1.0
+    min_alias_attenuation_db: float = 60.0
+    center_tracking_enabled: bool = False
+    center_window_s: float = 10.0
+    center_step_s: float = 1.0
+    center_method: str = "pratt"
+    contamination_enabled: bool = False
+    contamination_block_s: float = 1.0
+    out_of_band_start_hz: float = 2.0
+    in_band_hz: tuple[float, float] = (0.1, 1.0)
+    weight_midpoint_db: float = 6.0
+    weight_slope_db: float = 2.0
+    contaminated_below: float = 0.5
+    pause_on_saturation: bool = True
+
+    @classmethod
+    def from_config(cls, section: dict[str, Any]) -> "MotionRobustnessSettings":
+        """Build the settings from the ``motion_robustness`` section (defaults for missing keys)."""
+        d = cls()
+        doppler = section.get("doppler_filter", {})
+        alias = section.get("alias_check", {})
+        center = section.get("center_tracking", {})
+        weighting = section.get("contamination_weighting", {})
+        return cls(
+            doppler_rate_hz=float(section.get("doppler_rate_hz", d.doppler_rate_hz)),
+            doppler_filter_enabled=bool(doppler.get("enabled", d.doppler_filter_enabled)),
+            cutoff_hz=float(doppler.get("cutoff_hz", d.cutoff_hz)),
+            transition_hz=float(doppler.get("transition_hz", d.transition_hz)),
+            stopband_attenuation_db=float(doppler.get("stopband_attenuation_db", d.stopband_attenuation_db)),
+            alias_band_hz=float(alias.get("band_hz", d.alias_band_hz)),
+            min_alias_attenuation_db=float(alias.get("min_attenuation_db", d.min_alias_attenuation_db)),
+            center_tracking_enabled=bool(center.get("enabled", d.center_tracking_enabled)),
+            center_window_s=float(center.get("window_s", d.center_window_s)),
+            center_step_s=float(center.get("step_s", d.center_step_s)),
+            center_method=str(center.get("method", d.center_method)),
+            contamination_enabled=bool(weighting.get("enabled", d.contamination_enabled)),
+            contamination_block_s=float(weighting.get("block_s", d.contamination_block_s)),
+            out_of_band_start_hz=float(weighting.get("out_of_band_start_hz", d.out_of_band_start_hz)),
+            in_band_hz=tuple(weighting.get("in_band_hz", d.in_band_hz)),
+            weight_midpoint_db=float(weighting.get("weight_midpoint_db", d.weight_midpoint_db)),
+            weight_slope_db=float(weighting.get("weight_slope_db", d.weight_slope_db)),
+            contaminated_below=float(weighting.get("contaminated_below", d.contaminated_below)),
+            pause_on_saturation=bool(weighting.get("pause_on_saturation", d.pause_on_saturation)),
         )
 
 
@@ -347,6 +438,8 @@ class VitalSignsPipeline:
         FFT size of the micro-Doppler columns (zero-padded).
     micro_doppler_window : str, optional
         Analysis window of the micro-Doppler columns.
+    motion : MotionRobustnessSettings or None, optional
+        Suppression of the residual motion (M1 to M3); disabled by default.
 
     Notes
     -----
@@ -368,6 +461,7 @@ class VitalSignsPipeline:
         micro_doppler_window_s: float = 3.2,
         micro_doppler_n_fft: int = 256,
         micro_doppler_window: str = "hann",
+        motion: MotionRobustnessSettings | None = None,
     ) -> None:
         decimation_ratio = input_rate_hz / slow_time_rate_hz
         if abs(decimation_ratio - round(decimation_ratio)) > 1e-9:
@@ -378,9 +472,12 @@ class VitalSignsPipeline:
         self.settings = settings
         self.input_rate_hz = float(input_rate_hz)
         self.slow_time_rate_hz = float(slow_time_rate_hz)
+        self.motion = motion or MotionRobustnessSettings()
         self._mixer = Mixer(input_rate_hz, tx_offset_hz)
         max_frequency_hz = max(settings.reference_band_hz[1], settings.heart_band_hz[1])
-        self._decimator = Decimator(input_rate_hz, int(round(decimation_ratio)), max_frequency_hz)
+        self._build_decimation(int(round(decimation_ratio)), max_frequency_hz)
+        if self.motion.doppler_filter_enabled:  # the FIR must fill before its output is valid
+            warmup_s = max(warmup_s, 2.0 * self.doppler_delay_s)
         self._processor = VitalSignsProcessor(slow_time_rate_hz, wavelength_m, settings)
         self._warmup_samples = int(round(warmup_s * slow_time_rate_hz))
         self._update_samples = max(1, int(round(settings.update_period_s * slow_time_rate_hz)))
@@ -413,12 +510,15 @@ class VitalSignsPipeline:
             micro_doppler_window_s=float(view.get("window_s", 3.2)),
             micro_doppler_n_fft=int(view.get("n_fft", 256)),
             micro_doppler_window=str(view.get("window", "hann")),
+            motion=MotionRobustnessSettings.from_config(cfg.get("motion_robustness", {})),
         )
 
     def reset(self) -> None:
         """Forget the past: restart the oscillator, filters, history and detector."""
         self._mixer.reset()
         self._decimator.reset()
+        if self._doppler_stage is not None:
+            self._doppler_stage.reset()
         self._history.clear()
         self._samples_in_history = 0
         self._samples_since_update = 0
@@ -436,7 +536,11 @@ class VitalSignsPipeline:
             self._discontinuity_pending = True
         self._next_sample_start = block.sample_start + samples.size
 
-        slow_samples = self._decimator(self._mixer(samples))
+        if self._doppler_stage is None:
+            slow_samples = self._decimator(self._mixer(samples))
+        else:
+            doppler_iq = self._decimator(self._mixer(samples))
+            slow_samples = self._doppler_stage(doppler_iq)
         outputs: list[PipelineOutput] = []
         for value in slow_samples:
             self._slow_samples_total += 1
@@ -450,6 +554,44 @@ class VitalSignsPipeline:
                 self._samples_since_update = 0
                 outputs.append(self._make_output())
         return outputs
+
+    def _build_decimation(self, decimation_factor: int, max_frequency_hz: float) -> None:
+        """Decimation to the slow time: one cascade, or cut at the Doppler rate for M1 / M3.
+
+        Without M1 nor M3, the former cascade is used unchanged.  Otherwise it
+        is cut at ``doppler_rate_hz`` (complex128 in between, so that the cut
+        alone changes nothing); the last stage is the Doppler low-pass filter
+        (M1) or the former Chebyshev stage.  The aliasing audit of the chain
+        is checked against ``min_alias_attenuation_db``.
+        """
+        m = self.motion
+        self._doppler_stage: Decimator | None = None
+        self.doppler_delay_s = 0.0
+        if not (m.doppler_filter_enabled or m.contamination_enabled):
+            self._decimator = Decimator(self.input_rate_hz, decimation_factor, max_frequency_hz)
+            stages = self._decimator.stages
+        else:
+            to_doppler = self.input_rate_hz / m.doppler_rate_hz
+            to_slow = m.doppler_rate_hz / self.slow_time_rate_hz
+            if abs(to_doppler - round(to_doppler)) > 1e-9 or abs(to_slow - round(to_slow)) > 1e-9:
+                raise ValueError(f"The Doppler rate {m.doppler_rate_hz} Hz must divide the input rate and be a "
+                                 f"multiple of the slow-time rate {self.slow_time_rate_hz} Hz.")
+            self._decimator = Decimator(self.input_rate_hz, int(round(to_doppler)), max_frequency_hz,
+                                        output_dtype=np.complex128)
+            if m.doppler_filter_enabled:
+                self._doppler_stage, self.doppler_delay_s = doppler_lowpass_decimator(
+                    m.doppler_rate_hz, int(round(to_slow)), m.cutoff_hz, m.transition_hz, m.stopband_attenuation_db)
+            else:
+                self._doppler_stage = Decimator(m.doppler_rate_hz, int(round(to_slow)), max_frequency_hz)
+                self.doppler_delay_s = dc_group_delay_s(self._doppler_stage.stages)
+            stages = self._decimator.stages + self._doppler_stage.stages
+        worst = min(stage.worst_attenuation_db for stage in alias_audit(stages, m.alias_band_hz))
+        self.alias_attenuation_db = worst
+        if worst < m.min_alias_attenuation_db:
+            logger.warning("Aliasing into ±%.1f Hz attenuated by only %.1f dB (required %.1f dB)",
+                           m.alias_band_hz, worst, m.min_alias_attenuation_db)
+        else:
+            logger.info("Aliasing into ±%.1f Hz attenuated by at least %.1f dB", m.alias_band_hz, worst)
 
     def run(self, source: Source) -> Iterator[PipelineOutput]:
         """Process every block of *source* (and close it at the end)."""

@@ -26,6 +26,7 @@ delay, harmless for signals well below the cut-off (~0.4 x output rate).
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 import numpy as np
 from scipy.signal import cheby1, lfilter
@@ -107,6 +108,14 @@ class Decimator:
         rate is ``f_s_hz / decimation_factor``.
     max_frequency_hz : float
         Highest frequency of interest (Hz), only used for the Shannon check.
+    output_dtype : numpy dtype, optional
+        Type of the output samples (``complex64`` by default).  A cascade cut
+        into two decimators gives exactly the samples of the single cascade
+        when the first one outputs ``complex128``.
+    stages : list or None, optional
+        ``[(b, a, q), ...]`` — filters and factors to use instead of the
+        Chebyshev cascade (e.g. the FIR of :mod:`iot_radar.dsp.doppler`); the
+        product of the factors must be *decimation_factor*.
 
     Notes
     -----
@@ -115,7 +124,14 @@ class Decimator:
     filtered separately (real filters), each with its own state.
     """
 
-    def __init__(self, f_s_hz: float, decimation_factor: int, max_frequency_hz: float) -> None:
+    def __init__(
+        self,
+        f_s_hz: float,
+        decimation_factor: int,
+        max_frequency_hz: float,
+        output_dtype: Any = np.complex64,
+        stages: list[tuple[np.ndarray, np.ndarray, int]] | None = None,
+    ) -> None:
         self.f_s_in_hz = float(f_s_hz)
         self.decimation_factor = int(decimation_factor)
         self.f_s_out_hz = self.f_s_in_hz / self.decimation_factor
@@ -126,9 +142,15 @@ class Decimator:
         self._zi_re: list[np.ndarray] = []
         self._zi_im: list[np.ndarray] = []
         self._phase: list[int] = []
+        self._output_dtype = output_dtype
 
-        for q in _factorise(self.decimation_factor):
-            b, a = cheby1(_CHEBY_ORDER, _CHEBY_RIPPLE_DB, 0.8 / q)
+        if stages is None:
+            stages = [(*cheby1(_CHEBY_ORDER, _CHEBY_RIPPLE_DB, 0.8 / q), q)
+                      for q in _factorise(self.decimation_factor)]
+        elif int(np.prod([q for _, _, q in stages])) != self.decimation_factor:
+            raise ValueError("The product of the stage factors must be the decimation factor.")
+        for b, a, q in stages:
+            b, a = np.atleast_1d(np.asarray(b, dtype=np.float64)), np.atleast_1d(np.asarray(a, dtype=np.float64))
             n_state = max(len(a), len(b)) - 1
             self._stages.append((b, a, q))
             self._zi_re.append(np.zeros(n_state, dtype=np.float64))
@@ -157,7 +179,7 @@ class Decimator:
             sample, depending on the sub-sampling phase.
         """
         if self.decimation_factor == 1:
-            return iq.astype(np.complex64, copy=False)
+            return iq.astype(self._output_dtype, copy=False)
 
         re = iq.real.astype(np.float64, copy=False)
         im = iq.imag.astype(np.float64, copy=False)
@@ -185,7 +207,17 @@ class Decimator:
             re = re[keep]
             im = im[keep]
 
-        return (re + 1j * im).astype(np.complex64)
+        return (re + 1j * im).astype(self._output_dtype)
+
+    @property
+    def stages(self) -> list[tuple[np.ndarray, np.ndarray, int, float]]:
+        """``(b, a, q, f_in_hz)`` of every stage, in order (for the aliasing audit)."""
+        stages = []
+        f_in_hz = self.f_s_in_hz
+        for b, a, q in self._stages:
+            stages.append((b, a, q, f_in_hz))
+            f_in_hz /= q
+        return stages
 
     def reset(self) -> None:
         """Clear the filter states and sub-sampling phases (start of a new stream)."""
