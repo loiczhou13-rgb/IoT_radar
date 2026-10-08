@@ -34,9 +34,11 @@ sdr:
   # USB:     "usb:" (automatic detection).
   uri: "ip:192.168.2.1"
 
-  # Carrier (local-oscillator) frequency (Hz).  lambda = c / f_c = 8.57 cm at
-  # 3.5 GHz.  Sets the sensitivity to a chest displacement D: dphi = 4 pi D / lambda.
-  center_frequency_hz: 3.5e+9
+  # Carrier (local-oscillator) frequency (Hz), in the 2.4 GHz ISM band
+  # (2400–2483.5 MHz).  lambda = c / f_c = 12.24 cm at 2.45 GHz.  Sets the
+  # sensitivity to a chest displacement D: dphi = 4 pi D / lambda, and the
+  # Doppler of a radial speed v: f_D = 2 v / lambda ≈ 16·v Hz.
+  center_frequency_hz: 2.45e+9
 
   # ADC sampling rate (Hz).  Pluto hardware minimum: about 521 kHz.
   # Breathing only needs the 20 Hz slow time, so the rate is set by what the

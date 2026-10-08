@@ -41,16 +41,16 @@ exactement la même chaîne de traitement.
 
 ### Physique
 
-Le Pluto émet une onde continue à `f_c = 3,5 GHz` (longueur d'onde
-`λ = c / f_c = 8,57 cm`).  Un thorax qui se déplace de `d(t)` vers le radar
+Le Pluto émet une onde continue à `f_c = 2,45 GHz`, dans la bande ISM
+(longueur d'onde `λ = c / f_c = 12,24 cm`).  Un thorax qui se déplace de `d(t)` vers le radar
 décale la phase de son écho de
 
 ```
 φ(t) = −4π · d(t) / λ
 ```
 
-Une respiration de 10 mm donne 1,47 rad ; un battement cardiaque de 0,1 mm
-donne 0,015 rad.  Dans le plan IQ, les échantillons en temps lent sont sur un
+Une respiration de 10 mm donne 1,03 rad ; un battement cardiaque de 0,1 mm
+donne 0,010 rad.  Dans le plan IQ, les échantillons en temps lent sont sur un
 **arc de cercle** centré sur la composante continue statique (fuite TX→RX,
 murs, DC du récepteur).  Le déplacement se lit dans l'angle **autour de ce
 centre** : c'est pourquoi la chaîne ajuste le cercle au lieu de filtrer l'IQ

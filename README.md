@@ -41,15 +41,15 @@ the same processing chain.
 
 ### Physics
 
-The Pluto transmits a CW tone at `f_c = 3.5 GHz` (wavelength
-`λ = c / f_c = 8.57 cm`).  A chest moving by `d(t)` towards the radar shifts
+The Pluto transmits a CW tone at `f_c = 2.45 GHz`, in the ISM band
+(wavelength `λ = c / f_c = 12.24 cm`).  A chest moving by `d(t)` towards the radar shifts
 the phase of its echo by
 
 ```
 φ(t) = −4π · d(t) / λ
 ```
 
-A 10 mm breath gives 1.47 rad; a 0.1 mm heartbeat gives 0.015 rad.  In the
+A 10 mm breath gives 1.03 rad; a 0.1 mm heartbeat gives 0.010 rad.  In the
 IQ plane, the slow-time samples lie on an **arc of circle** centred on the
 static DC offset (TX→RX leakage, walls, receiver DC).  The displacement is
 read from the angle **around that centre**, which is why the chain fits the
