@@ -61,6 +61,8 @@ CONFIGS: dict[str, tuple[str, ...]] = {
     "M1+M2+M3": METHODS,
 }
 """Methods enabled in each compared configuration ("former": the pause on any movement)."""
+DEFAULT_CONFIG = "M1+M3"
+"""Combination enabled in configs/radar.yaml: used for the κ₀ sweep and the time example."""
 
 SCENES: dict[str, str] = {
     "S1": "target alone",
@@ -302,7 +304,7 @@ def summarize(results: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def summarize_sweep(results: list[dict[str, Any]]) -> dict[str, dict[str, float]]:
-    """Pd, Pfa, inconclusive share and pause share of M1+M2+M3 for each κ₀ of the sweep."""
+    """Pd, Pfa, inconclusive share and pause share of the default combination for each κ₀ of the sweep."""
     sweep = [r for r in results if r["kind"] == "midpoint_sweep"]
     table = {}
     for midpoint_db in sorted({r["midpoint_db"] for r in sweep}):
@@ -350,7 +352,7 @@ def markdown_tables(summary: dict[str, Any]) -> str:
                          f"{100 * row['Pd']:.0f} % | {100 * row['inconclusive_target']:.0f} % | "
                          f"{100 * row['Pfa']:.0f} % | {100 * row['inconclusive_empty']:.0f} % |")
     if summary.get("midpoint_sweep"):
-        lines += ["", "### Sensibilité à κ₀ (M1+M2+M3, S2, S5, S6, S7)", "",
+        lines += ["", f"### Sensibilité à κ₀ ({DEFAULT_CONFIG}, S2, S5, S6, S7)", "",
                   "| κ₀ (dB) | Pd | non conclu (cible) | Pfa | non conclu (vide) | pause |", "|---|---|---|---|---|---|"]
         for midpoint, row in summary["midpoint_sweep"].items():
             lines.append(f"| {midpoint} | {100 * row['Pd']:.0f} % | {100 * row['inconclusive_target']:.0f} % | "
@@ -420,13 +422,13 @@ def plot_figures(summary: dict[str, Any], examples: dict[str, dict[str, Any]], f
     fig.savefig(figures_dir / "rate_error.png", dpi=120)
     plt.close(fig)
 
-    # Time example of S2, former chain against M1+M2+M3.
+    # Time example of S2, former chain against the default combination.
     if examples:
         state_colors = {"WARMUP": "#9ecae1", "NO_BREATHING": "#bdbdbd", "BREATHING": "#31a354", "MOTION": "#fd8d3c"}
         fig, axes = plt.subplots(3, 1, figsize=(11, 7), sharex=True, constrained_layout=True,
                                  gridspec_kw={"height_ratios": (2, 2, 1.3)})
         top = None
-        for ax, config in zip(axes[:2], ("former", "M1+M2+M3")):
+        for ax, config in zip(axes[:2], ("former", DEFAULT_CONFIG)):
             trace = examples[config]["trace"]
             t_s = np.array(trace["t_s"])
             f_hz = np.array(trace["f_hz"])
@@ -441,12 +443,12 @@ def plot_figures(summary: dict[str, Any], examples: dict[str, dict[str, Any]], f
             ax.set_ylabel("Doppler du temps lent (Hz)")
             ax.set_title(f"{config} — micro-Doppler à 20 Hz et état (bande du bas : vert respiration, "
                          "orange pause, gris non détecté)", fontsize=9)
-        trace = examples["M1+M2+M3"]["trace"]
+        trace = examples[DEFAULT_CONFIG]["trace"]
         axes[2].plot(trace["t_s"], trace["weight"], color="#8c6d31", label="poids M3 du dernier bloc")
-        axes[2].plot(trace["t_s"], trace["confidence"], color="black", label="confiance lissée (M1+M2+M3)")
+        axes[2].plot(trace["t_s"], trace["confidence"], color="black", label=f"confiance lissée ({DEFAULT_CONFIG})")
         axes[2].plot(examples["former"]["trace"]["t_s"], examples["former"]["trace"]["confidence"],
                      color="0.6", label="confiance lissée (référence)")
-        for start_s, stop_s in examples["M1+M2+M3"].get("disturbances_s", []):
+        for start_s, stop_s in examples[DEFAULT_CONFIG].get("disturbances_s", []):
             axes[2].axvspan(start_s + 1.82, stop_s + 1.82, color="tab:red", alpha=0.1)
         axes[2].set_ylim(-0.05, 1.05)
         axes[2].set_xlabel("Temps (s) — en rouge pâle : marcheur dans le champ (vérité terrain, + retard de M1)")
@@ -472,7 +474,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--jobs", type=int, default=None, help="worker processes (default: all cores)")
     p.add_argument("--quick", action="store_true", help="1 seed, 90 s, 10 sessions (smoke run)")
     p.add_argument("--midpoints-db", type=float, nargs="*", default=[],
-                   help="also sweep κ₀ (weight_midpoint_db) of M1+M2+M3 on S2, S5, S6 and S7, e.g. 0 3 6 9 12")
+                   help="also sweep κ₀ (weight_midpoint_db) of the default combination on S2, S5, S6 and S7, "
+                        "e.g. 0 3 6 9 12")
     p.add_argument("--results-dir", type=Path, default=RESULTS_DIR)
     p.add_argument("--figures-dir", type=Path, default=FIGURES_DIR)
     return p.parse_args(argv)
@@ -488,7 +491,7 @@ def main(argv: list[str] | None = None) -> dict[str, Any]:
                          for scene in SCENES for seed in range(args.seeds) for config in CONFIGS]
     sessions = [] if args.no_sessions else sorted(args.sessions.glob("*.h5"))[:args.max_sessions]
     jobs += [("session", str(path), config) for path in sessions for config in CONFIGS]
-    jobs += [("sweep", scene, seed, "M1+M2+M3", args.duration_s, False, midpoint_db)
+    jobs += [("sweep", scene, seed, DEFAULT_CONFIG, args.duration_s, False, midpoint_db)
              for midpoint_db in args.midpoints_db for scene in ("S2", "S5", "S6", "S7") for seed in range(args.seeds)]
     logger.info("%d jobs (%d simulated, %d on %d sessions)", len(jobs), len(SCENES) * args.seeds * len(CONFIGS),
                 len(sessions) * len(CONFIGS), len(sessions))
@@ -497,7 +500,7 @@ def main(argv: list[str] | None = None) -> dict[str, Any]:
     with ProcessPoolExecutor(max_workers=args.jobs) as pool:
         futures = [pool.submit(session_job if job[0] == "session" else simulated_job, *job[1:]) for job in jobs]
         examples = {config: pool.submit(simulated_job, "S2", 0, config, args.duration_s, True)
-                    for config in ("former", "M1+M2+M3")}
+                    for config in ("former", DEFAULT_CONFIG)}
         for k, future in enumerate(futures, 1):
             results.append(future.result())
             if k % 50 == 0 or k == len(futures):
