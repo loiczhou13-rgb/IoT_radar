@@ -35,7 +35,7 @@
 | # | Décision |
 |---|---|
 | D1 | M1 et M3 travaillent à une **fréquence Doppler intermédiaire de 100 Hz**. La cascade actuelle y passe déjà juste avant son dernier étage ×5 (§1) : la couper en deux ne change rien au calcul. |
-| D2 | M1 à M3 sont **activés par défaut**. Les désactiver tous redonne la chaîne actuelle au bit près (test de référence). |
+| D2 | M1 à M3 sont **activés par défaut**. Les désactiver tous redonne la chaîne actuelle au bit près (test de référence). **Révisé après l'évaluation (réponse du 2026-10-09) : M2 est désactivé par défaut**, car M1+M3 fait au moins aussi bien que M1+M2+M3 dans toutes les scènes évaluées. |
 | D3 | Les intervalles de perturbation simulés sont stockés dans **`/ground_truth/disturbances`** (début, longueur, type). Le vocabulaire des labels de `/annotations` ne change pas. |
 | D4 | `CLAUDE.md` n'existe toujours pas. J'applique les critères de lisibilité de la première demande. |
 
@@ -296,7 +296,7 @@ motion_robustness:
     band_hz: 1.0              # f_b
     min_attenuation_db: 60.0  # exigence de la demande, vérifiée au démarrage
   center_tracking:            # M2
-    enabled: true
+    enabled: false            # désactivé par défaut après l'évaluation (D2)
     window_s: 10.0            # 2 à 3 cycles à 12–18 /min
     step_s: 1.0
     method: pratt             # pratt | geometric | kasa (§3.3)
