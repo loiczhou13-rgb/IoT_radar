@@ -24,16 +24,158 @@ exactement la même chaîne de traitement.
 
 ## Sommaire
 
-1. [Principe](#principe)
-2. [Organisation du dépôt](#organisation-du-dépôt)
-3. [Installation](#installation)
-4. [Démarrage rapide](#démarrage-rapide)
-5. [Configuration](#configuration)
-6. [Fichiers de session (HDF5)](#fichiers-de-session-hdf5)
-7. [Tableau de bord](#tableau-de-bord)
-8. [Tests](#tests)
-9. [Règles d'organisation du code](#règles-dorganisation-du-code)
-10. [Limites connues](#limites-connues)
+1. [Inventaire](#inventaire)
+2. [Principe](#principe)
+3. [Organisation du dépôt](#organisation-du-dépôt)
+4. [Installation](#installation)
+5. [Démarrage rapide](#démarrage-rapide)
+6. [Configuration](#configuration)
+7. [Fichiers de session (HDF5)](#fichiers-de-session-hdf5)
+8. [Tableau de bord](#tableau-de-bord)
+9. [Tests](#tests)
+10. [Règles d'organisation du code](#règles-dorganisation-du-code)
+11. [Limites connues](#limites-connues)
+
+---
+
+## Inventaire
+
+État : branche où le composant existe (`dev`, `feature/mimo-localization`, `siso-detection`).  Tests : couvert par `tests/` de cette branche.
+
+### Acquisition et matériel
+
+| Composant | Emplacement | Méthode | Référence | État | Tests |
+|---|---|---|---|---|---|
+| Émission CW | `acquisition/pluto.py` (`cw_tx_buffer`) | buffer TX cyclique, décalage arrondi à un nombre entier de périodes | | dev | oui |
+| Configuration du Pluto | `acquisition/pluto.py` (`open_pluto`) | pyadi-iio, 1 MS/s, 16 buffers noyau, émission cyclique | | dev | oui |
+| Contrôles RX | `acquisition/pluto.py` | registre de pertes `0x80000088`, alerte de saturation à 80 % | | dev | oui |
+| Source Pluto | `acquisition/sources.py` (`PlutoSource`) | blocs horodatés, signalement des pertes | | dev | oui |
+| Interface des sources | `acquisition/sources.py` (`Block`, `Source`, `open_source`) | protocole commun Pluto / simulation / relecture | | dev | oui |
+| Mode 2r2t | `acquisition/pluto.py` (`open_pluto_2r2t`) | `adi.ad9361`, 2 RX cohérents, 1 ou 2 TX, un ton par TX | | feature/mimo-localization, non testé sur matériel | oui |
+| Nœud de localisation | `acquisition/sources.py` (`NodeSetup`, `open_node_source`) | nœud de `localization.yaml` : Pluto 2r2t ou scène simulée | | feature/mimo-localization, non testé sur matériel | oui |
+
+### Simulation
+
+| Composant | Emplacement | Méthode | Référence | État | Tests |
+|---|---|---|---|---|---|
+| Radar CW simulé | `acquisition/sources.py` (`CWSimulationSource`) | fouillis à f_TX, DC du récepteur, dérive de LO, quantification ADC, chronologie | | dev | oui |
+| Personne simulée | `acquisition/sources.py` (`SimulatedPerson`) | respiration, cœur, mouvement, apnée | | feature/mimo-localization | oui |
+| Scène multi-nœuds | `acquisition/sources.py` (`SceneSimulationSource`) | n_tx tons, n_rx voies cohérentes, réflecteurs, tons de l'autre nœud | | feature/mimo-localization | oui |
+| Perturbateurs | `acquisition/disturbers.py` | marcheur (tronc et membres), balancement, geste | Chen 2006 | siso-detection | oui |
+| Masquage des trajets | `acquisition/disturbers.py` (`path_masking`) | jusqu'à −20 dB, transition en cosinus surélevé | | siso-detection | oui |
+| Réflecteurs statiques | `acquisition/sources.py` (`static_scatterers`) | murs masqués par les perturbateurs | | siso-detection | oui |
+
+### Données
+
+| Composant | Emplacement | Méthode | Référence | État | Tests |
+|---|---|---|---|---|---|
+| Sessions HDF5 v1 | `acquisition/recording.py` | IQ int16, blocs, annotations, vérité terrain, SWMR | | dev | oui |
+| Sessions de nœud (v2) | `acquisition/recording.py` | un fichier par nœud, géométrie, positions de la cible | | feature/mimo-localization | oui |
+| Intervalles de perturbation | `acquisition/recording.py` | `/ground_truth/disturbances` : début, durée, type | | siso-detection | oui |
+| Relecture | `acquisition/sources.py` (`ReplaySource`) | blocs d'une session au rythme d'origine | | dev | oui |
+| Conversion des anciens `.iq` | `scripts/convert_legacy_iq.py` | `.iq` + `.json` → HDF5 v1 | | dev | oui |
+| Fichiers de calibration | `localization.py` (`save_calibration`, `load_calibration`) | YAML par nœud | | feature/mimo-localization | oui |
+
+### Traitement du signal
+
+| Composant | Emplacement | Méthode | Référence | État | Tests |
+|---|---|---|---|---|---|
+| Mélangeur | `dsp/mixer.py` | NCO à phase continue, écho → 0 Hz | | dev | oui |
+| Décimation | `dsp/decimation.py` | cascade de Tchebychev I d'ordre 8, facteurs premiers ≤ 13 | | dev | oui |
+| Vue micro-Doppler | `dsp/spectral.py` | fenêtres, colonnes de TFCT (affichage) | | dev | oui |
+| Filtres | `dsp/filters.py` | passe-bande de Butterworth à phase nulle, retrait de tendance | | dev | oui |
+| Ajustement de cercle | `dsp/phase.py` (`fit_circle`) | Kåsa puis Gauss-Newton | Paterniani 2023 | dev | oui |
+| Démodulation de phase | `dsp/phase.py` (`demodulate`) | arctangente, DACM ou linéaire, après dérotation de la dérive de LO | Paterniani 2023 | dev | oui |
+| Filtrage Doppler (M1) | `dsp/doppler.py` | RIF de Kaiser à phase linéaire, −6 dB à 1,5 Hz, retard 1,82 s | Crochiere 1981 | siso-detection | oui |
+| Audit du repliement | `dsp/doppler.py` (`alias_audit`) | atténuation des bandes repliées dans ±1 Hz, par étage et composite | Crochiere 1981 | siso-detection | oui |
+| Centre glissant (M2) | `dsp/phase.py` (`track_center`, `demodulate_tracked`) | Pratt sur sous-fenêtres de 10 s, interpolation linéaire, désactivé par défaut | Pratt 1987, Zakrzewski 2012, Park 2007 | siso-detection | oui |
+| Contamination (M3) | `dsp/contamination.py` | densité hors bande / dans la bande par bloc de 1 s, poids logistique, activité | VanderPlas 2018 | siso-detection | oui |
+| Composante respiratoire multi-voies | `dsp/doa.py` (`breathing_component`, `tx_phase_reference`) | passe-bande commun, référence de phase par TX sur la fuite | | feature/mimo-localization | oui |
+
+### Estimation et détection
+
+| Composant | Emplacement | Méthode | Référence | État | Tests |
+|---|---|---|---|---|---|
+| Estimateurs de fréquence | `dsp/estimation.py` | périodogramme, pic FFT, ACF, comptage de pics, passages par zéro | | dev | oui |
+| Cycles respiratoires | `dsp/estimation.py` (`breath_cycles`) | inspirations, intervalles, profondeur, rapport I:E | | dev | oui |
+| Métriques de détection | `dsp/detection.py` (`breathing_metrics`) | SNR de bande, concentration du pic, mouvement → confiance | | dev | oui |
+| Détecteur | `dsp/detection.py` (`BreathingDetector`) | lissage, hystérésis ON/OFF, maintien de la pause, alerte d'apnée | | dev | oui |
+| Pipeline de phase | `pipeline.py` (`VitalSignsPipeline`) | fenêtre de 20 s toutes les 0,5 s, redémarrage sur discontinuité | | dev | oui |
+| Lomb-Scargle pondéré (M3) | `dsp/estimation.py` (`weighted_lomb_scargle`) | moyenne flottante, un décalage par segment | VanderPlas 2018 | siso-detection | oui |
+| Règle de pause (M3) | `pipeline.py` | anomalies dans la bande coupées, imputées à un passant ou à la cible | | siso-detection | oui |
+| Mode mesure (M4) | `measurement.py`, `pipeline.py` | 30 s sur un silence → décision, fréquence, résumé de qualité | | siso-detection | oui |
+| Pipeline multi-voies | `pipeline.py` (`node_report`) | démodulation par ton, voies virtuelles, voie formée | | feature/mimo-localization | oui |
+
+### Localisation
+
+| Composant | Emplacement | Méthode | Référence | État | Tests |
+|---|---|---|---|---|---|
+| Réseau virtuel | `dsp/doa.py` (`virtual_positions_m`, `steering_vectors`) | éléments tx_k + rx_l, champ lointain | | feature/mimo-localization | oui |
+| Direction d'arrivée | `dsp/doa.py` (`estimate_doa`) | formation de voies de Bartlett, affinage parabolique, borne de Cramér-Rao | | feature/mimo-localization, non testé sur matériel | oui |
+| Calibration des voies | `dsp/doa.py` (`estimate_calibration`), `scripts/calibrate_doa.py` | vecteur propre principal, cible à angle connu | | feature/mimo-localization, non testé sur matériel | oui |
+| Géométrie des nœuds | `localization.py` (`NodeGeometry`) | pose, antennes, repères scène et nœud | | feature/mimo-localization | oui |
+| Triangulation | `localization.py` (`triangulate`) | moindres carrés sur les angles puis Gauss-Newton, ellipse χ² | | feature/mimo-localization, non testé sur matériel | oui |
+| Cohérence entre nœuds | `localization.py` (`check_consistency`) | écart de fréquence, corrélation des formes d'onde | | feature/mimo-localization | oui |
+| Fusion | `localization.py` (`LocalizationFusion`) | dernier rapport par nœud, écart temporel maximal | | feature/mimo-localization | oui |
+| Plan de fréquences | `localization.py` (`check_frequency_plan`) | écart des tons aux harmoniques, images et intermodulations | | feature/mimo-localization, non testé sur matériel | oui |
+| Contrôle de la PIRE | `localization.py` (`estimated_eirp_dbm`) | refus d'émettre au-delà de 10 dBm | | feature/mimo-localization, non testé sur matériel | oui |
+
+### Physique
+
+| Composant | Emplacement | Méthode | Référence | État | Tests |
+|---|---|---|---|---|---|
+| Bilan de liaison | `physics.py` (`radar_range_m`, `range_interval_m`) | équation radar monostatique, portées pessimiste et optimiste | | dev | oui |
+
+### Apprentissage
+
+| Composant | Emplacement | Méthode | Référence | État | Tests |
+|---|---|---|---|---|---|
+| Jeu de données | `ml/dataset.py` | fenêtres de TFCT des anciens spectrogrammes `.npz` | | dev | oui |
+| Autoencodeur | `ml/model.py` | Conv2D encodeur-décodeur + tête de classification | | dev | oui |
+| Entraînement | `ml/train.py`, `scripts/train.py` | AdamW, StepLR, reconstruction + BCE | | dev | oui |
+
+### Interface
+
+| Composant | Emplacement | Méthode | Référence | État | Tests |
+|---|---|---|---|---|---|
+| Tableau de bord de phase | `ui/dashboard.py` | matplotlib, sorties produites dans un thread | | dev | oui |
+| Indicateurs M3 et mesure | `ui/dashboard.py` | poids, part contaminée, cause de pause, touche `m` | | siso-detection | oui |
+| Écran d'accueil | `ui/launcher.py`, `scripts/launcher.py` | pygame, radar lancé en sous-processus | | dev | oui |
+| Tableau de bord de localisation | `ui/localization_dashboard.py` | vue de dessus, relèvements, ellipse, spectres P(θ) | | feature/mimo-localization | oui |
+
+### Outillage
+
+| Composant | Emplacement | Méthode | Référence | État | Tests |
+|---|---|---|---|---|---|
+| Radar en direct | `scripts/run_radar.py` | source → pipeline → tableau de bord ou journal | | dev | oui |
+| Mesure sans écran | `scripts/run_radar.py` (`--measure`) | une mesure M4 puis sortie | | siso-detection | oui |
+| Enregistrement | `scripts/record.py` | sessions IQ brutes, label, scène | | dev, non testé sur matériel | oui |
+| Relecture | `scripts/replay.py` | session → pipeline → tableau de bord | | dev | oui |
+| Localisation en direct | `scripts/run_localization.py` | un processus par nœud, fusion, affichage | | feature/mimo-localization, non testé sur matériel | oui |
+| Contrôle matériel 2RX | `scripts/hardware_check_2rx.py` | 2r2t, puis 1T2R et 2T2R : tons et phases | | feature/mimo-localization, non testé sur matériel | oui |
+| Évaluation de la robustesse | `scripts/evaluate_motion_robustness.py` | scènes S1–S8, sessions, Pd/Pfa, balayage de κ₀ | | siso-detection | non |
+| Configuration | `config.py` | YAML, chemins du dépôt, journalisation | | dev | oui |
+| Références de caractérisation | `tests/characterization_cases.py`, `tests/make_references.py` | sorties DSP comparées au bit près | | dev | oui |
+| Règles de dépendance | `tests/test_architecture.py` | imports interdits entre couches | | dev | oui |
+| Faux Pluto | `tests/fake_pluto.py` | pyadi-iio simulé en 2r2t | | feature/mimo-localization | oui |
+
+### Points d'attention
+
+- Détection jamais validée sur données réelles : 2 % d'analyses `BREATHING` sur les 69 anciennes sessions, cause inconnue (pertes d'échantillons de l'ancien code à 2 MS/s suspectées).
+- Radar complet (TX + RX + tableau de bord) à 1 MS/s sans perte encore à confirmer ; le tableau de bord redessine dans le processus d'acquisition, 2 MS/s impossible.
+- Porteuse : `radar.yaml` à 3,5 GHz sur `dev` (bande des opérateurs mobiles en France, non ISM) ; 2,45 GHz sur `siso-detection`, 2,42 GHz pour les nœuds de `feature/mimo-localization` : à harmoniser.
+- Localisation : chaîne matérielle jamais vérifiée (Pluto rév. C/D et U.FL, mode 2r2t par SSH, stabilité des phases RX1/RX2 et entre TX, 600 kS/s × 2 voies sans perte).
+- PIRE calculée avec P(0 dB) ≈ +7 dBm et des antennes de 6 dBi supposées : à mesurer (limite 10 mW).
+- DoA : hypothèse d'une fuite TX→RX dominant le fouillis ; biais de la référence statique (~0,3°) non corrigé ; une seule cible ; trajets multiples non traités.
+- Seuils de M3 (κ₀ 9 dB, activité 6 dB, excursions 12 mm, segments 5 s) réglés sur simulation seulement ; perturbateurs annotés dans les seules sessions simulées.
+- Une seule antenne : un perturbateur proche bougeant dans la bande respiratoire (balancement à 2 m) reste inséparable de la cible.
+- M3 sans M1 donne de fausses alarmes (Pfa 12 % en simulation) : garder M1 dès que M3 est activé.
+- Fusion des deux branches : toutes deux modifient `sources.py`, `pipeline.py`, `recording.py`, `dashboard.py` et `tests/data/references.npz` (binaire) → conflits, références à régénérer.
+- `ml/` obsolète et non branché : il apprend sur les `.npz` de l'ancienne chaîne micro-Doppler, qui ne sont plus produits.
+- `data/` est ignoré par Git : les 69 sessions converties n'existent que sur une machine.
+- Écarts plan/code : `MOTION_ROBUSTNESS_PLAN.md` annonce une classe `DopplerLowpass` (code : fonction `doppler_lowpass_decimator`) ; B9 de `REFACTOR_PLAN.md` (débit `ip:` à 2 MS/s) est caduc depuis le passage à 1 MS/s.
+- FMCW sur Pluto écarté : USB 2.0 insuffisant pour 20 MS/s, résolution de 8,3 m pour 18 MHz de bande, cibles masquées par la fuite TX→RX.
+- `ed_branch` modifie des fichiers supprimés par le refactor (`MicroDopplerDetection/`) : conflit en cas de fusion.
 
 ---
 
