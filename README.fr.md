@@ -173,7 +173,7 @@ exactement la même chaîne de traitement.
 - Fusion des deux branches : toutes deux modifient `sources.py`, `pipeline.py`, `recording.py`, `dashboard.py` et `tests/data/references.npz` (binaire) → conflits, références à régénérer.
 - `ml/` obsolète et non branché : il apprend sur les `.npz` de l'ancienne chaîne micro-Doppler, qui ne sont plus produits.
 - `data/` est ignoré par Git : les 69 sessions converties n'existent que sur une machine.
-- Écarts plan/code : `MOTION_ROBUSTNESS_PLAN.md` annonce une classe `DopplerLowpass` (code : fonction `doppler_lowpass_decimator`) ; B9 de `REFACTOR_PLAN.md` (débit `ip:` à 2 MS/s) est caduc depuis le passage à 1 MS/s.
+- Écarts plan/code : `MOTION_ROBUSTNESS_PLAN.md` annonce une classe `DopplerLowpass` (code : fonction `doppler_lowpass_decimator`).
 - FMCW sur Pluto écarté : USB 2.0 insuffisant pour 20 MS/s, résolution de 8,3 m pour 18 MHz de bande, cibles masquées par la fuite TX→RX.
 - `ed_branch` modifie des fichiers supprimés par le refactor (`MicroDopplerDetection/`) : conflit en cas de fusion.
 
@@ -273,8 +273,7 @@ IoT_radar/
 ├── tests/                     tests pytest, tests/data/references.npz
 ├── data/sessions/             sessions HDF5 (ignorées par Git)
 ├── logs/                      journaux d'exécution (ignorés par Git)
-├── pyproject.toml, requirements.txt
-└── REFACTOR_PLAN.md           décisions de conception du refactor de 2026
+└── pyproject.toml, requirements.txt
 ```
 
 ---
@@ -567,14 +566,12 @@ DSP.
   session vide assez propre pour le vérifier, la phase reste à 0,007 rad près
   entre des paquets de sauts allant jusqu'à 3 rad, mais quelqu'un qui bouge
   dans la pièce donnerait la même signature.  Il faut de nouveaux
-  enregistrements bruts d'une scène contrôlée (`scripts/record.py`).  Détails
-  au §19.3 de `REFACTOR_PLAN.md`.
+  enregistrements bruts d'une scène contrôlée (`scripts/record.py`).
 - **`ml/`** apprend encore sur les anciens spectrogrammes `.npz` de la chaîne
   micro-Doppler supprimée ; il sera repensé sur le signal de phase des
   sessions HDF5.
 - **FMCW** (respiration avec sélection en distance) a été étudié mais ne fait
-  pas partie de ce paquet ; voir la section « FMCW: findings » de
-  `REFACTOR_PLAN.md`.
+  pas partie de ce paquet ; voir [Points d'attention](#points-dattention).
 
 ---
 

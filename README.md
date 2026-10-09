@@ -173,7 +173,7 @@ State: branch where the component exists (`dev`, `feature/mimo-localization`, `s
 - Merging both branches: each modifies `sources.py`, `pipeline.py`, `recording.py`, `dashboard.py` and `tests/data/references.npz` (binary) → conflicts, references to regenerate.
 - `ml/` obsolete and not connected: it learns from the `.npz` of the old micro-Doppler chain, no longer produced.
 - `data/` is ignored by Git: the 69 converted sessions exist on one machine only.
-- Plan/code gaps: `MOTION_ROBUSTNESS_PLAN.md` announces a `DopplerLowpass` class (code: function `doppler_lowpass_decimator`); B9 of `REFACTOR_PLAN.md` (`ip:` throughput at 2 MS/s) is void since the move to 1 MS/s.
+- Plan/code gaps: `MOTION_ROBUSTNESS_PLAN.md` announces a `DopplerLowpass` class (code: function `doppler_lowpass_decimator`).
 - FMCW on the Pluto ruled out: USB 2.0 too slow for 20 MS/s, 8.3 m range resolution for 18 MHz of bandwidth, targets masked by the TX→RX leakage.
 - `ed_branch` modifies files removed by the refactor (`MicroDopplerDetection/`): conflict if merged.
 
@@ -271,8 +271,7 @@ IoT_radar/
 ├── tests/                     pytest suite, tests/data/references.npz
 ├── data/sessions/             HDF5 sessions (git-ignored)
 ├── logs/                      run logs (git-ignored)
-├── pyproject.toml, requirements.txt
-└── REFACTOR_PLAN.md           design decisions of the 2026 refactor (French)
+└── pyproject.toml, requirements.txt
 ```
 
 ---
@@ -557,12 +556,11 @@ English everywhere, physical names with a unit suffix (`_hz`, `_s`, `_m`,
   clean enough to check, the phase stays within 0.007 rad between bursts of
   jumps of up to 3 rad, but someone moving in the room would look the same.
   New raw recordings of a controlled scene (`scripts/record.py`) are needed.
-  Details in section 19.3 of `REFACTOR_PLAN.md`.
 - **`ml/`** still learns from the legacy `.npz` spectrograms of the removed
   micro-Doppler chain; it will be redesigned on the phase signal of the HDF5
   sessions.
 - **FMCW** (range-gated breathing) was studied but is not part of this
-  package; see the "FMCW: findings" section of `REFACTOR_PLAN.md`.
+  package; see [Points of attention](#points-of-attention).
 
 ---
 
