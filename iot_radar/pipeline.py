@@ -200,7 +200,7 @@ class MotionRobustnessSettings:
     contamination_block_s: float = 1.0
     out_of_band_start_hz: float = 2.0
     in_band_hz: tuple[float, float] = (0.1, 1.0)
-    weight_midpoint_db: float = 6.0
+    weight_midpoint_db: float = 9.0
     weight_slope_db: float = 2.0
     contaminated_below: float = 0.5
     activity_band_hz: tuple[float, float] = (3.0, 28.0)

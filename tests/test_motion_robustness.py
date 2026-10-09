@@ -261,12 +261,12 @@ def test_contamination_index_separates_breathing_from_disturbers() -> None:
         return ([b for b in meter.blocks if b.sample_start >= 21 * F_DOPPLER_HZ],
                 [b for b in meter.blocks if b.sample_start < 19 * F_DOPPLER_HZ])
 
-    near, before = after_and_before(_meter_blocks(breathing + 20.0 * walker_line))
-    assert min(b.index_db for b in near) > 10.0 and max(b.weight for b in near) < 0.1
+    near, before = after_and_before(_meter_blocks(breathing + 30.0 * walker_line))
+    assert min(b.index_db for b in near) > 14.0 and max(b.weight for b in near) < 0.1
     assert max(b.activity_db for b in before) < 3.0
     far, _ = after_and_before(_meter_blocks(breathing + 0.5 * walker_line))
     assert min(b.weight for b in far) > 0.99 and min(b.activity_db for b in far) > 20.0
-    assert contamination_weight(6.0) == pytest.approx(0.5)
+    assert contamination_weight(9.0) == pytest.approx(0.5)
 
 
 def test_weighted_lomb_scargle_skips_the_samples_of_weight_zero() -> None:

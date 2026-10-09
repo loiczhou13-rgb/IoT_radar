@@ -183,7 +183,7 @@ motion_robustness:
     block_s: 1.0                # length of the blocks of the contamination index
     out_of_band_start_hz: 2.0   # out-of-band energy from here to doppler_rate_hz / 2 ...
     in_band_hz: [0.1, 1.0]      # ... against the energy in this band, both per Hz
-    weight_midpoint_db: 6.0     # index (dB) at which the weight is 0.5 (white noise: 0 dB)
+    weight_midpoint_db: 9.0     # index (dB) at which the weight is 0.5 (white noise: 0 dB; evaluation)
     weight_slope_db: 2.0        # slope of the logistic weight
     contaminated_below: 0.5     # a sample with a lower weight counts as contaminated
     activity_band_hz: [3.0, 28.0]       # human Doppler (gestures, walking) ...

@@ -43,12 +43,15 @@ import numpy as np
 from scipy.signal import butter, sosfilt, sosfilt_zi
 
 
-def contamination_weight(index_db: float | np.ndarray, midpoint_db: float = 6.0,
+def contamination_weight(index_db: float | np.ndarray, midpoint_db: float = 9.0,
                          slope_db: float = 2.0) -> float | np.ndarray:
     """Weight in [0, 1] of a block of contamination index *index_db*.
 
-    Logistic: 0.95 at 0 dB (white noise), 0.5 at *midpoint_db*, 0.05 at
-    ``midpoint_db + 6 dB`` with the default slope of 2 dB.
+    Logistic: 0.99 at 0 dB (white noise), 0.5 at *midpoint_db*, 0.05 at
+    ``midpoint_db + 6 dB`` with the default slope of 2 dB.  The default
+    midpoint of 9 dB comes from the evaluation (MOTION_ROBUSTNESS_EVAL.md):
+    with 6 dB, gestures at 1.5 m made a quarter of the measurements with a
+    breathing target inconclusive, for no fewer false alarms.
     """
     return 1.0 / (1.0 + np.exp((np.asarray(index_db, dtype=np.float64) - midpoint_db) / slope_db))
 
@@ -108,7 +111,7 @@ class ContaminationMeter:
         block_s: float = 1.0,
         out_of_band_start_hz: float = 2.0,
         in_band_hz: tuple[float, float] = (0.1, 1.0),
-        midpoint_db: float = 6.0,
+        midpoint_db: float = 9.0,
         slope_db: float = 2.0,
         order: int = 4,
         history_s: float = 120.0,

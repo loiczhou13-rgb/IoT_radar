@@ -233,8 +233,8 @@ Mesure : médiane sur 30 tirages, 8 mm de respiration, sous-fenêtres de 10 s ; 
   - Les filtres sont des Butterworth d'ordre 4 à état, en continu, démarrés en régime établi sur le premier échantillon : sinon l'échelon du statique fait sonner le passe-bande pendant des dizaines de secondes.
   - **Normalisation par les largeurs de bande (Q2)** : un bruit blanc vaut 0 dB. Mesuré en simulation : une cible qui respire est entre −30 et −20 dB ; un marcheur à 3,5 m remonte κ jusqu'à −5 dB environ ; un geste à 1,5 m, autour de 0 dB.
   - Conséquence de la normalisation : une raie Doppler est « diluée » dans les 96 Hz hors bande. Le poids ne baisse donc que pour un perturbateur nettement plus fort que l'écho respiratoire (≈ 10 fois en amplitude pour w = 0,5). C'est voulu : derrière M1, un perturbateur hors bande plus faible est déjà supprimé linéairement.
-- **Poids :** fonction logistique lisse, `w = 1 / (1 + exp((κ − κ₀)/s))`, avec κ₀ = 6 dB et s = 2 dB.
-  - On obtient w ≈ 0,95 à 0 dB, 0,5 à 6 dB et 0,05 à 12 dB.
+- **Poids :** fonction logistique lisse, `w = 1 / (1 + exp((κ − κ₀)/s))`, avec κ₀ = 9 dB et s = 2 dB (κ₀ valait 6 dB jusqu'à l'évaluation de l'étape 5, voir §4).
+  - On obtient w ≈ 0,99 à 0 dB, 0,5 à 9 dB et 0,05 à 15 dB.
   - Un échantillon de poids inférieur à 0,5 compte comme « contaminé ».
   - Les poids sont retardés du retard de M1 (1,82 s) pour rester alignés avec le temps lent filtré.
   - Un bloc qui contient des échantillons saturés reçoit le poids 0.
@@ -305,7 +305,7 @@ motion_robustness:
     block_s: 1.0
     out_of_band_start_hz: 2.0 # = bord de la bande atténuée de M1
     in_band_hz: [0.1, 1.0]
-    weight_midpoint_db: 6.0   # κ₀
+    weight_midpoint_db: 9.0   # κ₀ (6 dB au départ ; 9 dB après l'évaluation)
     weight_slope_db: 2.0      # s
     contaminated_below: 0.5
     activity_band_hz: [3.0, 28.0]       # Doppler humain ...
@@ -325,7 +325,7 @@ Justifications :
 - **Coupure à 1,5 Hz** : demande ; les harmoniques respiratoires montent jusqu'à ~1 Hz.
 - **Atténuation dès 2 Hz** : en dessous des gestes (≥ 3 Hz) ; c'est aussi le début de la bande « hors bande » de M3.
 - **10 s / 1 s** : 2 à 3 cycles respiratoires (demande) ; à 1 s, la dérive du centre due à un passage est suivie.
-- **κ₀ = 6 dB** : 6 dB au-dessus d'un bruit blanc, de sorte qu'une cible faible sans perturbateur garde un poids d'environ 0,95.
+- **κ₀ = 9 dB** : 6 dB au départ, soit 6 dB au-dessus d'un bruit blanc, de sorte qu'une cible faible sans perturbateur garde un poids d'environ 0,95. Le balayage de l'étape 5 (κ₀ = 0, 3, 6, 9, 12 dB, M1+M2+M3, scènes S2, S5, S6, S7) donne pour 9 dB : Pd de 82 % au lieu de 70 %, fenêtres non conclues de 5 % au lieu de 18 %, sans fausse alarme ni pause en plus. 12 dB n'apporte rien de plus. À 6 dB, des gestes à 1,5 m rendaient non concluante une mesure sur quatre, alors que M1 les supprime déjà.
 - κ₀ et s seront ajustés à l'étape 5 si l'évaluation le justifie ; tout changement sera documenté dans `MOTION_ROBUSTNESS_EVAL.md`.
 
 ---
