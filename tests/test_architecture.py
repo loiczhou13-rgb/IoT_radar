@@ -5,9 +5,8 @@ collected; imports under ``if TYPE_CHECKING:`` are ignored because they are
 only used by type checkers.  The rules are those of REFACTOR_PLAN.md:
 
 * ``dsp`` is pure signal processing: it does not know where samples come
-  from, how they are displayed, nor the machine-learning code;
+  from nor how they are displayed;
 * ``ui`` never touches the acquisition hardware, even indirectly;
-* ``ml`` does not depend on the acquisition;
 * ``pipeline`` neither knows the display nor where the blocks come from;
 * ``config`` and ``physics`` are leaves.
 """
@@ -22,14 +21,13 @@ import pytest
 PACKAGE_DIR = Path(__file__).resolve().parents[1] / "iot_radar"
 
 FORBIDDEN: dict[str, set[str]] = {
-    "dsp": {"acquisition", "ui", "ml", "pipeline"},
-    "ml": {"acquisition"},
-    "pipeline": {"ui", "ml", "acquisition"},
-    "config": {"acquisition", "dsp", "ml", "pipeline", "ui", "physics"},
-    "physics": {"acquisition", "dsp", "ml", "pipeline", "ui", "config"},
+    "dsp": {"acquisition", "ui", "pipeline"},
+    "pipeline": {"ui", "acquisition"},
+    "config": {"acquisition", "dsp", "pipeline", "ui", "physics"},
+    "physics": {"acquisition", "dsp", "pipeline", "ui", "config"},
 }
 FORBIDDEN_TRANSITIVELY: dict[str, set[str]] = {
-    "ui": {"acquisition", "ml"},
+    "ui": {"acquisition"},
 }
 
 

@@ -1,9 +1,6 @@
 # IoT_radar — pinned Python dependencies (install in the repository .venv).
 #   python -m venv .venv && source .venv/bin/activate
 #   pip install -r requirements.txt        # pinned versions + the package itself
-#
-# PyTorch: this pin matches the project venv (CUDA 13.0 wheel). For CPU-only or
-# another CUDA version, see https://pytorch.org/get-started/locally/
 # Full freeze: python -m pip freeze > requirements-lock.txt
 
 # --- Core (signal processing, configuration, dashboard, recordings) ---
@@ -12,10 +9,6 @@ scipy==1.17.1
 matplotlib==3.10.8
 PyYAML==6.0.3
 h5py==3.16.0
-
-# --- Machine learning (iot_radar.ml) ---
-torch==2.11.0
-tqdm==4.68.1
 
 # --- PlutoSDR (iot_radar.acquisition) ---
 pyadi-iio==0.0.20

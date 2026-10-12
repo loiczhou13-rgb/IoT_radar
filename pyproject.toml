@@ -18,7 +18,6 @@ dependencies = [
 
 [project.optional-dependencies]
 hardware = ["pyadi-iio", "pylibiio"]
-ml = ["torch", "tqdm"]
 ui = ["pygame"]
 dev = ["pytest"]
 

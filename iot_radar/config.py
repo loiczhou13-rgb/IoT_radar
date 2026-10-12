@@ -29,9 +29,6 @@ DEFAULT_RADAR_CONFIG: Path = REPO_ROOT / "configs" / "radar.yaml"
 LOGS_DIR: Path = REPO_ROOT / "logs"
 """Folder of the timestamped run logs."""
 
-DEFAULT_TRAINING_CONFIG: Path = REPO_ROOT / "configs" / "training.yaml"
-"""Default YAML configuration of the training."""
-
 
 
 def load_config(path: str | Path) -> dict[str, Any]:
