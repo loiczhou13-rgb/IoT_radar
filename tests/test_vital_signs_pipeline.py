@@ -153,3 +153,23 @@ def test_slow_input_rate_of_converted_recordings() -> None:
     logging.disable(logging.NOTSET)
     assert outputs[-1].analysis.metrics.rate_hz == pytest.approx(0.25, abs=0.01)
     assert outputs[-1].micro_doppler_column_db.shape == (256,)
+
+
+def test_unknown_configuration_keys_are_refused() -> None:
+    """5.5: a typo is an error that lists the valid keys, never a silent default."""
+    cfg = _config()
+    cfg["vital_signs"]["window_seconds"] = 30.0
+    with pytest.raises(ValueError, match=r"window_seconds.*'vital_signs'.*Valid keys: .*window_s"):
+        VitalSignsPipeline.from_config(cfg, 100e3, 244.140625)
+    cfg = _config()
+    cfg["vital_signs"]["detection"]["apnea_seconds"] = 10.0
+    with pytest.raises(ValueError, match=r"apnea_seconds.*vital_signs.detection"):
+        VitalSignsPipeline.from_config(cfg, 100e3, 244.140625)
+    cfg = _config()
+    cfg["simulation"]["breath_rate"] = 0.3
+    with pytest.raises(ValueError, match=r"breath_rate.*'simulation'.*breath_rate_hz"):
+        open_source(cfg, simulation=True)
+    cfg = _config()
+    cfg["vital_sign"] = {}
+    with pytest.raises(ValueError, match=r"vital_sign.*radar configuration.*vital_signs"):
+        open_source(cfg, simulation=True)

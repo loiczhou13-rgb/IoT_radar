@@ -14,7 +14,7 @@ import datetime as _dt
 import logging
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable, Mapping
 
 import yaml
 
@@ -46,6 +46,63 @@ def load_config(path: str | Path) -> dict[str, Any]:
     if not isinstance(cfg, dict):
         raise ValueError(f"Invalid configuration (not a mapping): {path}")
     return cfg
+
+
+def check_keys(section_name: str, section: Mapping[str, Any] | None, valid_keys: Iterable[str]) -> None:
+    """Refuse the keys of *section* that are not in *valid_keys*.
+
+    Raises
+    ------
+    ValueError
+        Naming the unknown keys, the section and the valid keys (a typo in a
+        configuration file would otherwise be silently replaced by a default).
+    """
+    valid = sorted(valid_keys)
+    unknown = sorted(set(section or {}) - set(valid))
+    if unknown:
+        raise ValueError(f"Unknown configuration key(s) {', '.join(unknown)} in '{section_name}'. "
+                         f"Valid keys: {', '.join(valid)}.")
+
+
+_SCENARIO_KEYS = {"tx_power_dbm", "tx_antenna_gain_dbi", "rx_antenna_gain_dbi", "radar_cross_section_m2",
+                  "noise_figure_db", "system_losses_db", "min_snr_db"}
+
+RADAR_CONFIG_KEYS: dict[str, Any] = {
+    "logging": {"level", "to_file"},
+    "sdr": {"uri", "center_frequency_hz", "sample_rate_hz", "rx_gain_db", "tx_gain_db", "buffer_size",
+            "rx_kernel_buffers"},
+    "tx": {"waveform", "offset_hz"},
+    "slow_time": {"rate_hz", "warmup_s"},
+    "vital_signs": "settings",
+    "motion_robustness": "settings",
+    "measurement": "settings",
+    "micro_doppler_view": {"window_s", "n_fft", "window", "display_max_hz"},
+    "display": {"history_s", "waterfall_columns", "full_screen"},
+    "link_budget": {"optimistic": _SCENARIO_KEYS, "pessimistic": _SCENARIO_KEYS, "noise_bandwidth_hz": None},
+    "recording": {"sessions_dir", "flush_interval_s"},
+    "simulation": {"enabled", "presence", "timeline", "breath_rate_hz", "breath_amplitude_mm", "heart_rate_hz",
+                   "heart_amplitude_mm", "motion_amplitude_mm", "target_range_m", "target_amplitude",
+                   "static_clutter_amplitude", "receiver_dc_amplitude", "lo_offset_hz", "snr_db", "seed",
+                   "realtime", "static_scatterers", "disturbers"},
+}
+"""Valid keys of ``configs/radar.yaml``: a set of leaf keys, a mapping for nested
+sections, ``None`` for a leaf, ``"settings"`` for the sections checked by
+their settings class (``VitalSignsSettings``, ``MotionRobustnessSettings``,
+``MeasurementSettings``)."""
+
+
+def check_radar_config(cfg: Mapping[str, Any]) -> None:
+    """Refuse any unknown key of a radar configuration (see :data:`RADAR_CONFIG_KEYS`)."""
+
+    def check(name: str, section: Any, valid: Any) -> None:
+        if valid is None or valid == "settings" or not isinstance(section, Mapping):
+            return
+        check_keys(name or "radar configuration", section, valid)
+        if isinstance(valid, Mapping):
+            for key, value in section.items():
+                check(f"{name}.{key}" if name else key, value, valid[key])
+
+    check("", cfg, RADAR_CONFIG_KEYS)
 
 
 def resolve_repo_path(path: str | Path) -> Path:

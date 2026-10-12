@@ -18,6 +18,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from iot_radar.config import check_keys
+
 DECISION_BREATHING = "breathing"
 DECISION_NO_BREATHING = "no_breathing"
 DECISION_INCONCLUSIVE = "inconclusive"
@@ -46,6 +48,7 @@ class MeasurementSettings:
     @classmethod
     def from_config(cls, section: dict[str, Any]) -> "MeasurementSettings":
         """Build the settings from the ``measurement`` section (defaults for missing keys)."""
+        check_keys("measurement", section, ["duration_s", "min_valid_fraction"])
         d = cls()
         return cls(
             duration_s=float(section.get("duration_s", d.duration_s)),

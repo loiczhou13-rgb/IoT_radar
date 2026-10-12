@@ -37,6 +37,7 @@ from iot_radar.acquisition.pluto import (
     read_and_clear_rx_overflow,
 )
 from iot_radar.acquisition.recording import SessionReader
+from iot_radar.config import check_radar_config
 from iot_radar.physics import SPEED_OF_LIGHT
 
 logger = logging.getLogger(__name__)
@@ -570,8 +571,10 @@ def open_source(cfg: dict[str, Any], simulation: bool) -> PlutoSource | CWSimula
 
     The simulation is used when *simulation* is true or when
     ``simulation.enabled`` is set in the configuration; otherwise the
-    PlutoSDR is opened and starts transmitting.
+    PlutoSDR is opened and starts transmitting.  Raises ``ValueError`` on any
+    unknown key of the configuration.
     """
+    check_radar_config(cfg)
     sdr = cfg["sdr"]
     sim = cfg["simulation"]
     tx_offset_hz = effective_tx_offset_hz(cfg)

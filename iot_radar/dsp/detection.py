@@ -37,6 +37,7 @@ from typing import Any
 
 import numpy as np
 
+from iot_radar.config import check_keys
 from iot_radar.dsp.estimation import Spectrum
 
 STATE_WARMUP = "WARMUP"
@@ -98,7 +99,8 @@ class DetectionSettings:
 
     @classmethod
     def from_config(cls, section: dict[str, Any]) -> "DetectionSettings":
-        """Build from a YAML mapping; missing keys keep their default."""
+        """Build from a YAML mapping; missing keys keep their default, unknown keys are refused."""
+        check_keys("vital_signs.detection", section, [f.name for f in fields(cls)])
         known = {f.name: section[f.name] for f in fields(cls) if f.name in section}
         settings = cls(**known)
         if not settings.threshold_off <= settings.threshold_on:

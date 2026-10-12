@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import logging
 from collections import deque
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field, fields, replace
 from typing import TYPE_CHECKING, Any, Iterator
 
 import numpy as np
@@ -53,6 +53,7 @@ from iot_radar.measurement import (
     MeasurementStatus,
     measurement_decision,
 )
+from iot_radar.config import check_keys, check_radar_config
 from iot_radar.physics import SPEED_OF_LIGHT
 
 if TYPE_CHECKING:  # only for the type hints: the pipeline does not depend on the acquisition
@@ -103,6 +104,7 @@ class VitalSignsSettings:
     @classmethod
     def from_config(cls, section: dict[str, Any]) -> "VitalSignsSettings":
         """Build the settings from the ``vital_signs`` section (defaults for missing keys)."""
+        check_keys("vital_signs", section, [f.name for f in fields(cls)])
         defaults = cls()
         return cls(
             window_s=float(section.get("window_s", defaults.window_s)),
@@ -198,9 +200,19 @@ class MotionRobustnessSettings:
     def from_config(cls, section: dict[str, Any]) -> "MotionRobustnessSettings":
         """Build the settings from the ``motion_robustness`` section (defaults for missing keys)."""
         d = cls()
+        check_keys("motion_robustness", section,
+                   ["doppler_rate_hz", "doppler_filter", "alias_check", "contamination_weighting"])
         doppler = section.get("doppler_filter", {})
         alias = section.get("alias_check", {})
         weighting = section.get("contamination_weighting", {})
+        check_keys("motion_robustness.doppler_filter", doppler,
+                   ["enabled", "cutoff_hz", "transition_hz", "stopband_attenuation_db", "noise_band_hz"])
+        check_keys("motion_robustness.alias_check", alias, ["band_hz", "min_attenuation_db"])
+        check_keys("motion_robustness.contamination_weighting", weighting,
+                   ["enabled", "block_s", "out_of_band_start_hz", "in_band_hz", "weight_midpoint_db",
+                    "weight_slope_db", "contaminated_below", "activity_band_hz", "activity_reference_hz",
+                    "activity_threshold_db", "activity_lead_s", "excursion_factor", "excursion_floor_mm",
+                    "min_segment_s", "pause_on_saturation"])
         return cls(
             doppler_rate_hz=float(section.get("doppler_rate_hz", d.doppler_rate_hz)),
             doppler_filter_enabled=bool(doppler.get("enabled", d.doppler_filter_enabled)),
@@ -685,7 +697,10 @@ class VitalSignsPipeline:
                     adc_full_scale: float | None = None) -> "VitalSignsPipeline":
         """Build the pipeline from the configuration (``sdr``, ``slow_time``,
         ``vital_signs``, ``micro_doppler_view``, ``motion_robustness`` and
-        ``measurement`` sections); *adc_full_scale* as in the constructor."""
+        ``measurement`` sections); *adc_full_scale* as in the constructor.
+
+        Raises ``ValueError`` on any unknown key of the configuration."""
+        check_radar_config(cfg)
         slow_time = cfg.get("slow_time", {})
         view = cfg.get("micro_doppler_view", {})
         return cls(
