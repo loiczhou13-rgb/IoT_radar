@@ -43,7 +43,7 @@ the same processing chain.
 
 ## Inventory
 
-State: branch where the component exists (`dev`, `feature/mimo-localization`, `siso-detection`).  Tests: covered by `tests/` of that branch.
+State: branch where the component exists (`dev`, `feature/mimo-localization`).  Tests: covered by `tests/` of that branch.
 
 ### Acquisition and hardware
 
@@ -64,9 +64,9 @@ State: branch where the component exists (`dev`, `feature/mimo-localization`, `s
 | Simulated CW radar | `acquisition/sources.py` (`CWSimulationSource`) | clutter at f_TX, receiver DC, LO drift, ADC quantisation, timeline | | dev | yes |
 | Simulated person | `acquisition/sources.py` (`SimulatedPerson`) | breathing, heartbeat, motion, apnea | | feature/mimo-localization | yes |
 | Multi-node scene | `acquisition/sources.py` (`SceneSimulationSource`) | n_tx tones, n_rx coherent channels, reflectors, tones of the other node | | feature/mimo-localization | yes |
-| Disturbers | `acquisition/disturbers.py` | walker (torso and limbs), sway, gesture | Chen 2006 | siso-detection | yes |
-| Path masking | `acquisition/disturbers.py` (`path_masking`) | down to −20 dB, raised-cosine transition | | siso-detection | yes |
-| Static reflectors | `acquisition/sources.py` (`static_scatterers`) | walls masked by the disturbers | | siso-detection | yes |
+| Disturbers | `acquisition/disturbers.py` | walker (torso and limbs), sway, gesture | Chen 2006 | dev | yes |
+| Path masking | `acquisition/disturbers.py` (`path_masking`) | down to −20 dB, raised-cosine transition | | dev | yes |
+| Static reflectors | `acquisition/sources.py` (`static_scatterers`) | walls masked by the disturbers | | dev | yes |
 
 ### Data
 
@@ -74,7 +74,7 @@ State: branch where the component exists (`dev`, `feature/mimo-localization`, `s
 |---|---|---|---|---|---|
 | HDF5 sessions v1 | `acquisition/recording.py` | int16 IQ, blocks, annotations, ground truth, SWMR | | dev | yes |
 | Node sessions (v2) | `acquisition/recording.py` | one file per node, geometry, target positions | | feature/mimo-localization | yes |
-| Disturbance intervals | `acquisition/recording.py` | `/ground_truth/disturbances`: start, length, kind | | siso-detection | yes |
+| Disturbance intervals | `acquisition/recording.py` | `/ground_truth/disturbances`: start, length, kind | | dev | yes |
 | Replay | `acquisition/sources.py` (`ReplaySource`) | blocks of a session at the original pace | | dev | yes |
 | Legacy `.iq` conversion | `scripts/convert_legacy_iq.py` | `.iq` + `.json` → HDF5 v1 | | dev | yes |
 | Calibration files | `localization.py` (`save_calibration`, `load_calibration`) | one YAML per node | | feature/mimo-localization | yes |
@@ -89,10 +89,10 @@ State: branch where the component exists (`dev`, `feature/mimo-localization`, `s
 | Filters | `dsp/filters.py` | zero-phase Butterworth band-pass, detrend | | dev | yes |
 | Circle fit | `dsp/phase.py` (`fit_circle`) | Kåsa then Gauss-Newton | Paterniani 2023 | dev | yes |
 | Phase demodulation | `dsp/phase.py` (`demodulate`) | arctangent, DACM or linear, after LO-drift derotation | Paterniani 2023 | dev | yes |
-| Doppler filter (M1) | `dsp/doppler.py` | linear-phase Kaiser FIR, −6 dB at 1.5 Hz, delay 1.82 s | Crochiere 1981 | siso-detection | yes |
-| Aliasing audit | `dsp/doppler.py` (`alias_audit`) | attenuation of the bands folding into ±1 Hz, per stage and composite | Crochiere 1981 | siso-detection | yes |
-| Sliding centre (M2) | `dsp/phase.py` (`track_center`, `demodulate_tracked`) | Pratt on 10 s sub-windows, linear interpolation, off by default | Pratt 1987, Zakrzewski 2012, Park 2007 | siso-detection | yes |
-| Contamination (M3) | `dsp/contamination.py` | out-of-band / in-band density per 1 s block, logistic weight, activity | VanderPlas 2018 | siso-detection | yes |
+| Doppler filter (M1) | `dsp/doppler.py` | linear-phase Kaiser FIR, −6 dB at 1.5 Hz, delay 1.82 s | Crochiere 1981 | dev | yes |
+| Aliasing audit | `dsp/doppler.py` (`alias_audit`) | attenuation of the bands folding into ±1 Hz, per stage and composite | Crochiere 1981 | dev | yes |
+| Sliding centre (M2) | `dsp/phase.py` (`track_center`, `demodulate_tracked`) | Pratt on 10 s sub-windows, linear interpolation, off by default | Pratt 1987, Zakrzewski 2012, Park 2007 | dev | yes |
+| Contamination (M3) | `dsp/contamination.py` | out-of-band / in-band density per 1 s block, logistic weight, activity | VanderPlas 2018 | dev | yes |
 | Multi-channel breathing component | `dsp/doa.py` (`breathing_component`, `tx_phase_reference`) | common band-pass, per-TX phase reference on the leakage | | feature/mimo-localization | yes |
 
 ### Estimation and detection
@@ -104,9 +104,9 @@ State: branch where the component exists (`dev`, `feature/mimo-localization`, `s
 | Detection metrics | `dsp/detection.py` (`breathing_metrics`) | band SNR, peak concentration, motion → confidence | | dev | yes |
 | Detector | `dsp/detection.py` (`BreathingDetector`) | smoothing, ON/OFF hysteresis, pause hold, apnea alert | | dev | yes |
 | Phase pipeline | `pipeline.py` (`VitalSignsPipeline`) | 20 s window every 0.5 s, restart on discontinuity | | dev | yes |
-| Weighted Lomb-Scargle (M3) | `dsp/estimation.py` (`weighted_lomb_scargle`) | floating mean, one offset per segment | VanderPlas 2018 | siso-detection | yes |
-| Pause rule (M3) | `pipeline.py` | in-band anomalies cut, blamed on a passer-by or on the target | | siso-detection | yes |
-| Measurement mode (M4) | `measurement.py`, `pipeline.py` | 30 s over a silence → decision, rate, quality summary | | siso-detection | yes |
+| Weighted Lomb-Scargle (M3) | `dsp/estimation.py` (`weighted_lomb_scargle`) | floating mean, one offset per segment | VanderPlas 2018 | dev | yes |
+| Pause rule (M3) | `pipeline.py` | in-band anomalies cut, blamed on a passer-by or on the target | | dev | yes |
+| Measurement mode (M4) | `measurement.py`, `pipeline.py` | 30 s over a silence → decision, rate, quality summary | | dev | yes |
 | Multi-channel pipeline | `pipeline.py` (`node_report`) | per-tone demodulation, virtual channels, beamformed channel | | feature/mimo-localization | yes |
 
 ### Localization
@@ -142,7 +142,7 @@ State: branch where the component exists (`dev`, `feature/mimo-localization`, `s
 | Component | Location | Method | Reference | State | Tests |
 |---|---|---|---|---|---|
 | Phase dashboard | `ui/dashboard.py` | matplotlib, outputs produced in a thread | | dev | yes |
-| M3 and measurement indicators | `ui/dashboard.py` | weight, contaminated share, pause cause, key `m` | | siso-detection | yes |
+| M3 and measurement indicators | `ui/dashboard.py` | weight, contaminated share, pause cause, key `m` | | dev | yes |
 | Home screen | `ui/launcher.py`, `scripts/launcher.py` | pygame, radar started in a subprocess | | dev | yes |
 | Localization dashboard | `ui/localization_dashboard.py` | top view, bearings, ellipse, P(θ) spectra | | feature/mimo-localization | yes |
 
@@ -151,12 +151,12 @@ State: branch where the component exists (`dev`, `feature/mimo-localization`, `s
 | Component | Location | Method | Reference | State | Tests |
 |---|---|---|---|---|---|
 | Live radar | `scripts/run_radar.py` | source → pipeline → dashboard or log | | dev | yes |
-| Headless measurement | `scripts/run_radar.py` (`--measure`) | one M4 measurement, then exit | | siso-detection | yes |
+| Headless measurement | `scripts/run_radar.py` (`--measure`) | one M4 measurement, then exit | | dev | yes |
 | Recording | `scripts/record.py` | raw IQ sessions, label, scene | | dev, not tested on hardware | yes |
 | Replay | `scripts/replay.py` | session → pipeline → dashboard | | dev | yes |
 | Live localization | `scripts/run_localization.py` | one process per node, fusion, display | | feature/mimo-localization, not tested on hardware | yes |
 | 2RX hardware check | `scripts/hardware_check_2rx.py` | 2r2t, then 1T2R and 2T2R: tones and phases | | feature/mimo-localization, not tested on hardware | yes |
-| Robustness evaluation | `scripts/evaluate_motion_robustness.py` | scenes S1–S8, sessions, Pd/Pfa, κ₀ sweep | | siso-detection | no |
+| Robustness evaluation | `scripts/evaluate_motion_robustness.py` | scenes S1–S8, sessions, Pd/Pfa, κ₀ sweep | | dev | no |
 | Configuration | `config.py` | YAML, repository paths, logging | | dev | yes |
 | Characterisation references | `tests/characterization_cases.py`, `tests/make_references.py` | DSP outputs compared bit for bit | | dev | yes |
 | Dependency rules | `tests/test_architecture.py` | forbidden imports between layers | | dev | yes |
@@ -166,17 +166,17 @@ State: branch where the component exists (`dev`, `feature/mimo-localization`, `s
 
 - Detection never validated on real data: 2 % of `BREATHING` analyses on the 69 legacy sessions, cause unknown (sample losses of the old 2 MS/s code suspected).
 - Full radar (TX + RX + dashboard) at 1 MS/s without loss still to confirm; the dashboard redraws in the acquisition process, 2 MS/s impossible.
-- Carrier: `radar.yaml` at 3.5 GHz on `dev` (mobile-operator band in France, not ISM); 2.45 GHz on `siso-detection`, 2.42 GHz for the nodes of `feature/mimo-localization`: to harmonise.
+- Carrier: 2.45 GHz for the single-channel chain of `dev`, 2.42 GHz for the nodes of `feature/mimo-localization`, whose `radar.yaml` stayed at 3.5 GHz (mobile-operator band in France, not ISM): to harmonise.
 - Localization: hardware chain never checked (Pluto rev. C/D and U.FL, 2r2t mode over SSH, RX1/RX2 and inter-TX phase stability, 600 kS/s × 2 channels without loss).
 - EIRP computed from an assumed P(0 dB) ≈ +7 dBm and 6 dBi antennas: to measure (10 mW limit).
 - DoA: assumes the TX→RX leakage dominates the clutter; bias of the static reference (~0.3°) not corrected; single target; multipath not handled.
 - M3 thresholds (κ₀ 9 dB, activity 6 dB, excursions 12 mm, segments 5 s) tuned on simulation only; disturbers annotated in simulated sessions only.
 - Single antenna: a nearby disturber moving within the breathing band (sway at 2 m) cannot be separated from the target.
 - M3 without M1 gives false alarms (Pfa 12 % in simulation): keep M1 whenever M3 is enabled.
-- Merging both branches: each modifies `sources.py`, `pipeline.py`, `recording.py`, `dashboard.py` and `tests/data/references.npz` (binary) → conflicts, references to regenerate.
+- `feature/mimo-localization` against the new `dev`: conflicts expected in `recording.py`, `pipeline.py`, `dashboard.py`, `tests/characterization_cases.py`, the READMEs and `REFACTOR_PLAN.md` (modified / deleted).
 - `ml/` obsolete and not connected: it learns from the `.npz` of the old micro-Doppler chain, no longer produced.
 - `data/` is ignored by Git: the 69 converted sessions exist on one machine only.
-- Plan/code gaps: `MOTION_ROBUSTNESS_PLAN.md` announces a `DopplerLowpass` class (code: function `doppler_lowpass_decimator`).
+- Blame of the anomalies (M3): a target moving while a passer-by is active is not paused; someone starting to walk next to it causes a short pause.
 - FMCW on the Pluto ruled out: USB 2.0 too slow for 20 MS/s, 8.3 m range resolution for 18 MHz of bandwidth, targets masked by the TX→RX leakage.
 - `ed_branch` modifies files removed by the refactor (`MicroDopplerDetection/`): conflict if merged.
 
