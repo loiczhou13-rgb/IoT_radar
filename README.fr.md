@@ -390,7 +390,6 @@ IoT_radar/
 │   └── ml/                    ancien autoencodeur de spectrogrammes (voir son README)
 ├── scripts/                   points d'entrée en ligne de commande (voir Démarrage rapide)
 ├── configs/                   radar.yaml, training.yaml
-├── notebooks/                 inference.ipynb (ml/)
 ├── tests/                     tests pytest, tests/data/references.npz
 ├── docs/figures/              figures de l'évaluation de la robustesse aux mouvements
 ├── data/sessions/             sessions HDF5 (ignorées par Git)
@@ -447,7 +446,6 @@ pip install -e ".[hardware,ui,dev]"
 | `hardware` | pyadi-iio, pylibiio | le PlutoSDR |
 | `ui` | pygame | l'écran d'accueil |
 | `ml` | torch, tqdm | `scripts/train.py` |
-| `notebook` | ipykernel | `notebooks/inference.ipynb` |
 | `dev` | pytest | les tests |
 
 ---

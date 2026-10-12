@@ -18,9 +18,9 @@
 | `model.py` | `SpectrogramAutoencoder`: Conv2D encoder / decoder and a binary classification head on the latent |
 | `train.py` | training loop (library part): composite loss `α · reconstruction + (1 − α) · BCE`, AdamW, StepLR, best checkpoint, CSV history |
 
-Entry points: [`scripts/train.py`](../../scripts/train.py) and
-[`notebooks/inference.ipynb`](../../notebooks/inference.ipynb) (training
-curves, confusion matrix, reconstructions).  Every hyper-parameter is in
+Entry point: [`scripts/train.py`](../../scripts/train.py).  The inference
+notebook was removed: it loaded a trained model and `.npz` files that no
+longer exist.  Every hyper-parameter is in
 [`configs/training.yaml`](../../configs/training.yaml).
 
 ## Running it

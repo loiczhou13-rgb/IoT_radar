@@ -21,9 +21,6 @@ tqdm==4.68.1
 pyadi-iio==0.0.20
 pylibiio==0.25
 
-# --- Notebooks (notebooks/inference.ipynb) ---
-ipykernel==7.2.0
-
 # --- Launcher UI (iot_radar.ui.launcher) ---
 pygame==2.6.1
 

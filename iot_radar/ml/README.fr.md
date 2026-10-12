@@ -18,10 +18,10 @@
 | `model.py` | `SpectrogramAutoencoder` : encodeur / décodeur Conv2D et tête de classification binaire sur l'espace latent |
 | `train.py` | boucle d'entraînement (partie bibliothèque) : perte composite `α · reconstruction + (1 − α) · BCE`, AdamW, StepLR, meilleur checkpoint, historique CSV |
 
-Points d'entrée : [`scripts/train.py`](../../scripts/train.py) et
-[`notebooks/inference.ipynb`](../../notebooks/inference.ipynb) (courbes
-d'entraînement, matrice de confusion, reconstructions).  Tous les
-hyperparamètres sont dans [`configs/training.yaml`](../../configs/training.yaml).
+Point d'entrée : [`scripts/train.py`](../../scripts/train.py).  Le notebook
+d'inférence a été supprimé : il chargeait un modèle entraîné et des fichiers
+`.npz` qui n'existent plus.  Tous les hyperparamètres sont dans
+[`configs/training.yaml`](../../configs/training.yaml).
 
 ## Lancement
 

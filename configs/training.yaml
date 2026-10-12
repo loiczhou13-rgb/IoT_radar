@@ -105,6 +105,6 @@ output:
   checkpoint_name: best.pt
   log_file: results/train.log
 
-  # Per-epoch metrics history (CSV) for plotting in notebooks/inference.ipynb.
+  # Per-epoch metrics history (CSV), for plotting the training curves.
   save_metrics: true
   metrics_file: results/history.csv
