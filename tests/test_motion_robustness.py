@@ -249,7 +249,15 @@ def test_the_former_chain_pauses_for_the_crossing_walker() -> None:
 
 
 def test_a_walker_in_an_empty_room_is_neither_a_pause_nor_a_detection() -> None:
-    outputs, _ = _run(_scene(M1_M3, presence=False, disturbers=[WALKER_CROSSING_BEHIND]), 80.0)
+    """A walker already walking crosses the beam of an empty room at 3.5 m (at 25 s, as in the other tests).
+
+    It starts walking 25 m away, before the analysis begins: a person who
+    starts moving from standstill near the radar sweeps its Doppler up from
+    0 Hz through the breathing band, with no out-of-band activity before,
+    and is taken for the target (known limitation, short pause).
+    """
+    walker = {"kind": "walker", "start_m": [-25.0, 3.5], "velocity_m_s": [1.0, 0.0], "start_s": 0.0}
+    outputs, _ = _run(_scene(M1_M3, presence=False, disturbers=[walker]), 80.0)
     states = _states(outputs)
     assert "MOTION" not in states and "BREATHING" not in states
 

@@ -80,7 +80,10 @@ class VitalSignsSettings:
     min_arc_rad, max_circle_residual : float
         Validity limits of the circle fit.
     lo_drift_compensation : bool
-        Remove a common phase ramp (residual TX/RX LO offset) first.
+        Remove a common phase ramp (residual TX/RX LO offset) first.  Off by
+        default: on a Pluto the TX and RX share one local oscillator, so there
+        is no offset to remove, and the ramp fitted on a window also takes a
+        part of a slow chest movement.
     bandpass_order : int
         Butterworth order of the band-pass filters.
     detection : DetectionSettings
@@ -93,7 +96,7 @@ class VitalSignsSettings:
     reference_band_hz: tuple[float, float] = (2.5, 5.0)
     min_arc_rad: float = 0.3
     max_circle_residual: float = 0.3
-    lo_drift_compensation: bool = True
+    lo_drift_compensation: bool = False
     bandpass_order: int = 4
     detection: DetectionSettings = field(default_factory=DetectionSettings)
 

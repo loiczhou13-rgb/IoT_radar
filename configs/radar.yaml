@@ -125,7 +125,10 @@ vital_signs:
   max_circle_residual: 0.3
 
   # Remove a common phase ramp (residual TX/RX LO offset) before the circle fit.
-  lo_drift_compensation: true
+  # Off: the Pluto TX and RX share one local oscillator (no offset), and the
+  # ramp fitted on a window would also take a part of a slow chest movement.
+  # Enable it only with separate transmit and receive oscillators.
+  lo_drift_compensation: false
 
   # Butterworth order of the breathing band-pass filter.
   bandpass_order: 4
