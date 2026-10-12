@@ -259,8 +259,7 @@ In SISO, any movement in the beam used to pause the measurement, so in an
 open area the radar was almost always paused.  In the field the search
 happens during silences, but residual movement remains (people further
 away, someone swaying, gestures).  It is now **removed by processing instead
-of pausing** (design and choices: [`MOTION_ROBUSTNESS_PLAN.md`](MOTION_ROBUSTNESS_PLAN.md),
-in French).
+of pausing**.
 
 A radial speed `v` gives the Doppler `f_D = 2·v/λ ≈ 16·v Hz` at 2.45 GHz:
 
@@ -305,14 +304,18 @@ M1 and M3 are on by default, M2 is off.  Each of them can be enabled or
 disabled in the `motion_robustness` section; with all three disabled, the
 former behaviour is restored exactly.
 
-**Evaluation** ([`MOTION_ROBUSTNESS_EVAL.md`](MOTION_ROBUSTNESS_EVAL.md), in
-French; simulated scenes and the 69 legacy sessions).  With M1 + M3, against
-the former chain:
+**Evaluation** (`scripts/evaluate_motion_robustness.py`: 8 simulated scenes,
+5 seeds × 150 s, and the 69 legacy sessions; figures in
+[`docs/figures/motion_robustness/`](docs/figures/motion_robustness/)).  With
+M1 + M3, against the former chain:
 - the time in pause with people moving around falls from 34–100 % to 0–1 %;
 - 30 s measurements: Pd from 58 % to 74 % (walkers crossing at 3 m: from 5 %
   to 70 %), Pfa from 5 % to 0 %;
 - a motion of the target still pauses, and its measurements stay
-  inconclusive.
+  inconclusive;
+- legacy sessions: pause from 57 % to 1 %, Pfa from 12 % to 7 %;
+- in an empty room with someone moving, half of the measurements stay
+  inconclusive (with continuous gestures: too contaminated).
 
 ---
 
@@ -379,12 +382,10 @@ IoT_radar/
 ├── configs/                   radar.yaml, training.yaml
 ├── notebooks/                 inference.ipynb (ml/)
 ├── tests/                     pytest suite, tests/data/references.npz
-├── docs/figures/              figures of the evaluation reports
+├── docs/figures/              figures of the motion-robustness evaluation
 ├── data/sessions/             HDF5 sessions (git-ignored)
 ├── logs/                      run logs (git-ignored)
-├── pyproject.toml, requirements.txt
-├── MOTION_ROBUSTNESS_PLAN.md  design of the robustness to residual motion (French)
-└── MOTION_ROBUSTNESS_EVAL.md  its evaluation (French)
+└── pyproject.toml, requirements.txt
 ```
 
 ---
@@ -701,9 +702,7 @@ English everywhere, physical names with a unit suffix (`_hz`, `_s`, `_m`,
   clean enough to check, the phase stays within 0.007 rad between bursts of
   jumps of up to 3 rad, but someone moving in the room would look the same.
   New raw recordings of a controlled scene (`scripts/record.py`) are needed.
-- **Robustness to motion: limits of a single antenna** (details in
-  `MOTION_ROBUSTNESS_PLAN.md` §3.4 and §7, figures in
-  `MOTION_ROBUSTNESS_EVAL.md`):
+- **Robustness to motion: limits of a single antenna**:
   - a person near the beam whose movements stay **in the breathing band**
     (swaying, shifting weight), with an echo comparable to the victim's,
     cannot be removed: the measurement is then not conclusive.  Only

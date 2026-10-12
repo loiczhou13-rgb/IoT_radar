@@ -263,8 +263,7 @@ En SISO, toute activité dans le faisceau mettait la mesure en pause : en
 milieu ouvert, le radar était presque toujours en pause.  Sur le terrain, la
 recherche se fait pendant des silences, mais il reste des mouvements
 résiduels (personnes plus loin, balancement, gestes).  Ils sont désormais
-**supprimés par traitement au lieu de mettre en pause** (conception et
-choix : [`MOTION_ROBUSTNESS_PLAN.md`](MOTION_ROBUSTNESS_PLAN.md)).
+**supprimés par traitement au lieu de mettre en pause**.
 
 Une vitesse radiale `v` donne le Doppler `f_D = 2·v/λ ≈ 16·v Hz` à 2,45 GHz :
 
@@ -314,15 +313,19 @@ M1 et M3 sont activés par défaut, M2 est désactivé.  Chacune peut être
 activée ou désactivée dans la section `motion_robustness` ; les trois
 désactivées, on retrouve exactement l'ancien comportement.
 
-**Évaluation** ([`MOTION_ROBUSTNESS_EVAL.md`](MOTION_ROBUSTNESS_EVAL.md) ;
-scènes simulées et 69 anciennes sessions).  Avec M1 + M3, par rapport à
-l'ancienne chaîne :
+**Évaluation** (`scripts/evaluate_motion_robustness.py` : 8 scènes simulées,
+5 graines × 150 s, et les 69 anciennes sessions ; figures dans
+[`docs/figures/motion_robustness/`](docs/figures/motion_robustness/)).  Avec
+M1 + M3, par rapport à l'ancienne chaîne :
 - le temps en pause avec des personnes qui bougent autour passe de 34–100 %
   à 0–1 % ;
 - mesures de 30 s : Pd de 58 % à 74 % (marcheurs qui coupent le faisceau à
   3 m : de 5 % à 70 %), Pfa de 5 % à 0 % ;
 - un mouvement de la cible met toujours en pause, et ses mesures restent non
-  concluantes.
+  concluantes ;
+- anciennes sessions : pause de 57 % à 1 %, Pfa de 12 % à 7 % ;
+- dans une pièce vide où quelqu'un bouge, la moitié des mesures restent non
+  concluantes (avec des gestes continus : trop contaminées).
 
 ---
 
@@ -389,12 +392,10 @@ IoT_radar/
 ├── configs/                   radar.yaml, training.yaml
 ├── notebooks/                 inference.ipynb (ml/)
 ├── tests/                     tests pytest, tests/data/references.npz
-├── docs/figures/              figures des rapports d'évaluation
+├── docs/figures/              figures de l'évaluation de la robustesse aux mouvements
 ├── data/sessions/             sessions HDF5 (ignorées par Git)
 ├── logs/                      journaux d'exécution (ignorés par Git)
-├── pyproject.toml, requirements.txt
-├── MOTION_ROBUSTNESS_PLAN.md  conception de la robustesse aux mouvements parasites
-└── MOTION_ROBUSTNESS_EVAL.md  son évaluation
+└── pyproject.toml, requirements.txt
 ```
 
 ---
@@ -721,9 +722,7 @@ DSP.
   entre des paquets de sauts allant jusqu'à 3 rad, mais quelqu'un qui bouge
   dans la pièce donnerait la même signature.  Il faut de nouveaux
   enregistrements bruts d'une scène contrôlée (`scripts/record.py`).
-- **Robustesse aux mouvements : limites d'une seule antenne** (détails dans
-  `MOTION_ROBUSTNESS_PLAN.md` §3.4 et §7, figures dans
-  `MOTION_ROBUSTNESS_EVAL.md`) :
+- **Robustesse aux mouvements : limites d'une seule antenne** :
   - une personne proche du faisceau dont les mouvements restent **dans la
     bande respiratoire** (balancement, report du poids), avec un écho
     comparable à celui de la victime, ne peut pas être supprimée : la mesure
