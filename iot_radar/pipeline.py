@@ -40,7 +40,6 @@ from iot_radar.dsp.mixer import Mixer
 from iot_radar.dsp.phase import (
     DemodulationResult,
     demodulate,
-    demodulate_tracked,
     phase_to_displacement_m,
     remove_common_rotation,
 )
@@ -146,12 +145,6 @@ class MotionRobustnessSettings:
         that M1 empties.
     alias_band_hz, min_alias_attenuation_db : float
         Aliasing audit: half-width of the protected band and required attenuation.
-    center_tracking_enabled : bool
-        M2: sliding estimate of the centre of the IQ arc.
-    center_window_s, center_step_s : float
-        Length and step of the M2 sub-windows (s).
-    center_method : str
-        ``"pratt"``, ``"geometric"`` or ``"kasa"`` (MOTION_ROBUSTNESS_PLAN.md §3.3).
     contamination_enabled : bool
         M3: contamination weights, weighted estimation and the new pause rule.
     contamination_block_s : float
@@ -192,10 +185,6 @@ class MotionRobustnessSettings:
     noise_band_hz: tuple[float, float] = (0.1, 1.4)
     alias_band_hz: float = 1.0
     min_alias_attenuation_db: float = 60.0
-    center_tracking_enabled: bool = False
-    center_window_s: float = 10.0
-    center_step_s: float = 1.0
-    center_method: str = "pratt"
     contamination_enabled: bool = False
     contamination_block_s: float = 1.0
     out_of_band_start_hz: float = 2.0
@@ -218,7 +207,6 @@ class MotionRobustnessSettings:
         d = cls()
         doppler = section.get("doppler_filter", {})
         alias = section.get("alias_check", {})
-        center = section.get("center_tracking", {})
         weighting = section.get("contamination_weighting", {})
         return cls(
             doppler_rate_hz=float(section.get("doppler_rate_hz", d.doppler_rate_hz)),
@@ -229,10 +217,6 @@ class MotionRobustnessSettings:
             noise_band_hz=tuple(doppler.get("noise_band_hz", d.noise_band_hz)),
             alias_band_hz=float(alias.get("band_hz", d.alias_band_hz)),
             min_alias_attenuation_db=float(alias.get("min_attenuation_db", d.min_alias_attenuation_db)),
-            center_tracking_enabled=bool(center.get("enabled", d.center_tracking_enabled)),
-            center_window_s=float(center.get("window_s", d.center_window_s)),
-            center_step_s=float(center.get("step_s", d.center_step_s)),
-            center_method=str(center.get("method", d.center_method)),
             contamination_enabled=bool(weighting.get("enabled", d.contamination_enabled)),
             contamination_block_s=float(weighting.get("block_s", d.contamination_block_s)),
             out_of_band_start_hz=float(weighting.get("out_of_band_start_hz", d.out_of_band_start_hz)),
@@ -322,7 +306,6 @@ class _InBandAnomalies:
     """M3 cuts of one window (:meth:`VitalSignsProcessor._cut_in_band_anomalies`)."""
 
     weights: np.ndarray          # weights, 0 on the cut samples
-    cut: np.ndarray              # samples cut out (anomalies and excursions)
     own: np.ndarray              # samples in anomalies attributed to the target
     recent_ptp_mm: float         # target's motion over the last motion_window_s (mm)
 
@@ -343,7 +326,7 @@ class VitalSignsProcessor:
     settings : VitalSignsSettings
         Processing parameters.
     motion : MotionRobustnessSettings or None, optional
-        Robustness to residual motion; here M2 (sliding centre of the arc).
+        Robustness to residual motion (M1 noise band, M3 weights).
     """
 
     def __init__(self, f_s_hz: float, wavelength_m: float, settings: VitalSignsSettings,
@@ -413,22 +396,9 @@ class VitalSignsProcessor:
         lo_drift_hz = 0.0
         if s.lo_drift_compensation:
             z, lo_drift_hz = remove_common_rotation(z, self.f_s_hz)
-        tracked = self.motion.center_tracking_enabled and s.dc_compensation == "circle"
-        result, displacement_mm = self._demodulate(z, tracked)
+        result, displacement_mm = self._demodulate(z)
         if weighted:
             anomalies = self._cut_in_band_anomalies(displacement_mm, result.calibrated, weights, disturber_active)
-            if tracked and anomalies.cut.any():
-                # Second pass: the sub-windows that contain an anomaly gave wrong
-                # centres (the points leave the circle), hence false steps up to
-                # half a sub-window away.  The centre is fitted again without
-                # them; kept if it explains the window better (fewer samples
-                # cut).  It does not after a jump of the static echo (a hand
-                # starting to move), which no linear interpolation of the centre follows.
-                second = self._demodulate(z, tracked, exclude=anomalies.cut)
-                second_anomalies = self._cut_in_band_anomalies(second[1], second[0].calibrated, weights,
-                                                               disturber_active)
-                if second_anomalies.cut.sum() < anomalies.cut.sum():
-                    (result, displacement_mm), anomalies = second, second_anomalies
         # The band-pass filters remove the drift themselves; the linear
         # detrend is only used for the spectrum and the motion check, because
         # on a short window it also biases the breathing amplitude.
@@ -498,15 +468,10 @@ class VitalSignsProcessor:
             target_motion_fraction=target_motion_fraction,
         )
 
-    def _demodulate(self, z: np.ndarray, tracked: bool,
-                    exclude: np.ndarray | None = None) -> tuple[DemodulationResult, np.ndarray]:
-        """Demodulation (M2 sliding centre if *tracked*) and displacement in mm, mean removed."""
-        s, m = self.settings, self.motion
-        if tracked:
-            result = demodulate_tracked(z, self.f_s_hz, s.demodulation, m.center_window_s, m.center_step_s,
-                                        m.center_method, s.min_arc_rad, s.max_circle_residual, exclude)
-        else:
-            result = demodulate(z, s.demodulation, s.dc_compensation, s.min_arc_rad, s.max_circle_residual)
+    def _demodulate(self, z: np.ndarray) -> tuple[DemodulationResult, np.ndarray]:
+        """Demodulation and displacement in mm, mean removed."""
+        s = self.settings
+        result = demodulate(z, s.demodulation, s.dc_compensation, s.min_arc_rad, s.max_circle_residual)
         if result.calibrated:
             displacement_mm = phase_to_displacement_m(result.phase_rad, self.wavelength_m) * 1e3
         else:
@@ -542,15 +507,14 @@ class VitalSignsProcessor:
         Returns
         -------
         _InBandAnomalies
-            The weights with the cuts, the cut and target masks, and the
+            The weights with the cuts, the target mask, and the
             largest local peak-to-peak displacement (mm) of the last
             ``motion_window_s`` outside the passers-by's anomalies (NaN when
             the window is not calibrated: no anomaly assessed).
         """
         w = np.asarray(weights, dtype=np.float64).copy()
         if not calibrated:
-            none = np.zeros(w.size, dtype=bool)
-            return _InBandAnomalies(w, none, none, float("nan"))
+            return _InBandAnomalies(w, np.zeros(w.size, dtype=bool), float("nan"))
         s = self.settings.detection
         span = max(3, int(round(3.0 * self.f_s_hz)))
         local_ptp_mm = (maximum_filter1d(displacement_mm, span, mode="nearest")
@@ -581,7 +545,7 @@ class VitalSignsProcessor:
                 w[start:stop] = 0.0
         n_recent = int(round(s.motion_window_s * self.f_s_hz))
         ptp_mm = float(np.max(local_ptp_mm[-n_recent:], where=~attributed[-n_recent:], initial=0.0))
-        return _InBandAnomalies(w, cut, anomaly & ~attributed, ptp_mm)
+        return _InBandAnomalies(w, anomaly & ~attributed, ptp_mm)
 
 
 @dataclass
@@ -671,7 +635,7 @@ class VitalSignsPipeline:
     micro_doppler_window : str, optional
         Analysis window of the micro-Doppler columns.
     motion : MotionRobustnessSettings or None, optional
-        Suppression of the residual motion (M1 to M3); disabled by default.
+        Suppression of the residual motion (M1 and M3); disabled by default.
     adc_full_scale : float or None, optional
         Full scale of the raw samples (2048 for the Pluto ADC); with M3, a
         block reaching it pauses the measurement (saturation).  ``None`` for

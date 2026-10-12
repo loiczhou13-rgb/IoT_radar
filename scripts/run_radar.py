@@ -155,8 +155,6 @@ def dashboard_context(
         ("M1 Doppler filter", f"{motion.cutoff_hz} Hz, delay {pipeline.doppler_delay_s:.2f} s"
          if motion.doppler_filter_enabled else "off"),
         ("Aliasing into ±1 Hz", f"≥ {pipeline.alias_attenuation_db:.0f} dB"),
-        ("M2 centre tracking", f"{motion.center_method} {motion.center_window_s:.0f} s / {motion.center_step_s:.0f} s"
-         if motion.center_tracking_enabled else "off"),
         ("M3 weighting", f"κ₀ {motion.weight_midpoint_db:.0f} dB, slope {motion.weight_slope_db:.0f} dB"
          if motion.contamination_enabled else "off (former pause)"),
         ("M4 measurement", f"{pipeline.measurement_settings.duration_s:.0f} s (key m)"),

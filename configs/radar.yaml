@@ -156,8 +156,7 @@ vital_signs:
 # ---------------------------------------------------------------------------
 # The people moving around (distant activity, sway, gestures) are suppressed
 # by processing instead of pausing the measurement.  Each method can be
-# enabled or disabled (M1 and M3 on, M2 off by default); with all three
-# disabled, the former behaviour is restored exactly
+# enabled or disabled; with both disabled, the former behaviour is restored exactly
 # (any large movement in the window pauses the measurement).
 motion_robustness:
   doppler_rate_hz: 100.0        # intermediate rate of M1 and M3; must divide sdr.sample_rate_hz
@@ -172,13 +171,6 @@ motion_robustness:
   alias_check:                  # aliasing audit of the decimation chain, logged at start-up
     band_hz: 1.0                # band of interest [-f_b, +f_b]
     min_attenuation_db: 60.0    # a warning is logged below this
-
-  center_tracking:              # M2: sliding centre of the IQ arc (drifting static reflections)
-    enabled: false              # off by default: no gain in the evaluation (MOTION_ROBUSTNESS_EVAL.md);
-                                # enable it where the static clutter drifts slowly
-    window_s: 10.0              # sub-window: 2 to 3 breathing cycles
-    step_s: 1.0
-    method: "pratt"             # "pratt", "geometric" or "kasa"
 
   contamination_weighting:      # M3: weights, gap-tolerant estimation, pause rule
     enabled: true

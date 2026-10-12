@@ -1,5 +1,4 @@
-"""Robustness to residual motion (MOTION_ROBUSTNESS_PLAN.md): M1 Doppler filter, M2 centre tracking,
-M3 weighting, M4 measurement mode."""
+"""Robustness to residual motion: M1 Doppler filter, M3 contamination weighting, M4 measurement mode."""
 
 from __future__ import annotations
 
@@ -118,10 +117,8 @@ def test_breathing_is_recovered_through_m1() -> None:
 
 
 # ---------------------------------------------------------------------------
-# M2 — sliding centre of the arc
+# Synthetic slow-time arcs
 # ---------------------------------------------------------------------------
-
-from iot_radar.dsp.phase import demodulate, demodulate_tracked, fit_circle, fit_circle_pratt, track_center  # noqa: E402
 
 LAMBDA_M = 299_792_458.0 / 2.45e9
 F_SLOW_HZ = 20.0
@@ -136,73 +133,6 @@ def _arc(drift: complex, n_seconds: float = 20.0, snr_db: float = 30.0, seed: in
     noise = 10 ** (-snr_db / 20) / np.sqrt(2) * (rng.standard_normal(t.size) + 1j * rng.standard_normal(t.size))
     z = centre + np.exp(1j * (1.1 - 4 * np.pi * displacement_m / LAMBDA_M)) + noise
     return z, displacement_m
-
-
-def _displacement_error_mm(phase_rad: np.ndarray, truth_m: np.ndarray) -> float:
-    estimate = -phase_rad * LAMBDA_M / (4 * np.pi)
-    error = (estimate - estimate.mean()) - (truth_m - truth_m.mean())
-    return float(np.sqrt(np.mean(error ** 2)) * 1e3)
-
-
-def test_pratt_fit_agrees_with_the_geometric_fit() -> None:
-    z, _ = _arc(drift=0.0, snr_db=40.0)
-    pratt, geometric = fit_circle_pratt(z), fit_circle(z)
-    assert pratt.valid and geometric.valid
-    assert abs(pratt.center - geometric.center) < 0.02 and pratt.radius == pytest.approx(geometric.radius, rel=0.02)
-
-
-def test_drifting_centre_is_tracked_without_phase_jumps() -> None:
-    """The centre moves by one radius during the window (a person changes the static reflections)."""
-    z, truth_m = _arc(drift=1.0 * np.exp(2.0j))
-    fixed = demodulate(z, "arctan", "circle", 0.3, 0.3)
-    tracked = demodulate_tracked(z, F_SLOW_HZ, "arctan", window_s=10.0, step_s=1.0)
-    assert tracked.method == "arctan_tracked"
-    assert _displacement_error_mm(tracked.phase_rad, truth_m) < 1.0
-    assert not fixed.calibrated or _displacement_error_mm(fixed.phase_rad, truth_m) > 2.0
-    undetrended = track_center(z, F_SLOW_HZ, window_s=10.0, step_s=1.0, detrend=False)
-    assert _displacement_error_mm(np.unwrap(np.angle(z - undetrended.center_per_sample)), truth_m) > 5.0
-    # Continuity: no step between two samples beyond the breathing motion itself (≈ 0.04 rad here).
-    assert np.max(np.abs(np.diff(tracked.phase_rad))) < 0.15
-    track = track_center(z, F_SLOW_HZ, window_s=10.0, step_s=1.0)
-    assert track.valid.all() and len(track.times_s) == 11
-    assert np.max(np.abs(np.diff(track.center_per_sample))) < 0.02     # interpolated: no step
-
-
-@pytest.mark.parametrize("method", ["pratt", "geometric", "kasa"])
-def test_centre_estimators_can_be_selected(method: str) -> None:
-    z, _ = _arc(drift=0.0)
-    assert track_center(z, F_SLOW_HZ, method=method) is not None
-    with pytest.raises(ValueError):
-        track_center(z, F_SLOW_HZ, method="median")
-
-
-def test_samples_excluded_from_the_centre_fits() -> None:
-    """A passer-by's echo turning around the centre for 2 s leaves the circle: the fits that contain
-    it give wrong centres, unless those samples are excluded (second pass of M3)."""
-    from iot_radar.dsp.estimation import remove_segment_offsets
-
-    z, truth_m = _arc(drift=0.0)
-    t = np.arange(z.size) / F_SLOW_HZ
-    burst = (t >= 9.0) & (t < 11.0)
-    z = z + burst * 1.5 * np.exp(2j * np.pi * 0.5 * t)
-    true_centre = 30.0 * np.exp(0.4j)
-    assert np.max(np.abs(track_center(z, F_SLOW_HZ).center_per_sample - true_centre)) > 1.0
-    cleaned = track_center(z, F_SLOW_HZ, exclude=burst)
-    assert np.max(np.abs(cleaned.center_per_sample - true_centre)) < 0.15     # 0.09 without the burst
-    # The burst still makes the phase slip by 2π (λ/2): one offset per segment removes it.
-    phase = demodulate_tracked(z, F_SLOW_HZ, exclude=burst).phase_rad
-    keep = (~burst).astype(float)
-    estimate_m = remove_segment_offsets(-phase * LAMBDA_M / (4 * np.pi), keep)
-    truth_segments_m = remove_segment_offsets(truth_m, keep)
-    error_mm = np.sqrt(np.mean((estimate_m - truth_segments_m)[~burst] ** 2)) * 1e3
-    assert error_mm < 0.5
-
-
-def test_without_a_valid_sub_window_the_former_demodulation_is_used() -> None:
-    rng = np.random.default_rng(1)
-    noise = 30.0 + rng.standard_normal(400) + 1j * rng.standard_normal(400)
-    result = demodulate_tracked(noise, F_SLOW_HZ)
-    assert result.method == "linear" and not result.calibrated
 
 
 def test_with_m1_an_empty_room_is_not_detected() -> None:
@@ -222,8 +152,7 @@ from iot_radar.dsp.contamination import ContaminationMeter, contamination_weight
 from iot_radar.dsp.estimation import remove_segment_offsets, weighted_lomb_scargle  # noqa: E402
 from iot_radar.pipeline import VitalSignsProcessor, VitalSignsSettings  # noqa: E402
 
-M1_M2_M3 = {"doppler_filter": {"enabled": True}, "center_tracking": {"enabled": True},
-            "contamination_weighting": {"enabled": True}}
+M1_M3 = {"doppler_filter": {"enabled": True}, "contamination_weighting": {"enabled": True}}
 F_DOPPLER_HZ = 100.0
 WALKER_CROSSING_BEHIND = {"kind": "walker", "start_m": [-8.0, 3.5], "velocity_m_s": [1.0, 0.0], "start_s": 25.0}
 
@@ -308,7 +237,7 @@ def _states(outputs) -> list[str]:
     {"kind": "walker", "start_m": [1.5, 12.0], "velocity_m_s": [0.0, -1.0], "start_s": 25.0, "stop_s": 34.0},
 ], ids=["crossing_behind", "crossing_in_front", "approaching"])
 def test_a_walker_at_3_m_neither_pauses_nor_hides_the_breathing(walker: dict[str, Any]) -> None:
-    outputs, _ = _run(_scene(M1_M2_M3, disturbers=[walker]), 80.0)
+    outputs, _ = _run(_scene(M1_M3, disturbers=[walker]), 80.0)
     assert "MOTION" not in _states(outputs)
     assert outputs[-1].breathing.state == "BREATHING"
     assert outputs[-1].breathing.rate_bpm == pytest.approx(18.0, abs=1.0)
@@ -320,13 +249,13 @@ def test_the_former_chain_pauses_for_the_crossing_walker() -> None:
 
 
 def test_a_walker_in_an_empty_room_is_neither_a_pause_nor_a_detection() -> None:
-    outputs, _ = _run(_scene(M1_M2_M3, presence=False, disturbers=[WALKER_CROSSING_BEHIND]), 80.0)
+    outputs, _ = _run(_scene(M1_M3, presence=False, disturbers=[WALKER_CROSSING_BEHIND]), 80.0)
     states = _states(outputs)
     assert "MOTION" not in states and "BREATHING" not in states
 
 
 def test_a_motion_of_the_target_still_pauses() -> None:
-    outputs, _ = _run(_scene(M1_M2_M3, timeline=[[0, "breathing"], [40, "motion"], [50, "breathing"]]), 75.0)
+    outputs, _ = _run(_scene(M1_M3, timeline=[[0, "breathing"], [40, "motion"], [50, "breathing"]]), 75.0)
     paused = [o.t_s for o in outputs if o.breathing.state == "MOTION"]
     assert paused and all(o.breathing.pause_reason == "motion" for o in outputs if o.breathing.state == "MOTION")
     assert 40.0 <= min(paused) <= 45.0                    # within the M1 delay and the 3 s local measure
@@ -358,7 +287,7 @@ class _SaturatingSource:
 
 
 def test_adc_saturation_pauses_the_measurement() -> None:
-    cfg = _scene(M1_M2_M3)
+    cfg = _scene(M1_M3)
     logging.disable(logging.WARNING)
     source = _SaturatingSource(open_source(cfg, simulation=True), 40.0, 42.0, full_scale=2048.0)
     pipeline = VitalSignsPipeline.from_config(cfg, source.sample_rate_hz, effective_tx_offset_hz(cfg),
@@ -421,7 +350,7 @@ def test_measurement_decision_rule() -> None:
 
 
 def test_measurement_gives_a_decision_and_a_quality_summary() -> None:
-    outputs, result = _measure(_scene(M1_M2_M3), start_s=5.0)
+    outputs, result = _measure(_scene(M1_M3), start_s=5.0)
     running = [o.measurement.elapsed_s for o in outputs if o.measurement.state == "running"]
     assert running == sorted(running) and running[-1] < 30.0
     assert result.decision == "breathing" and result.reasons == ()
@@ -436,19 +365,19 @@ def test_measurement_gives_a_decision_and_a_quality_summary() -> None:
 
 
 def test_measurement_of_an_empty_room() -> None:
-    _, result = _measure(_scene(M1_M2_M3, presence=False), start_s=5.0)
+    _, result = _measure(_scene(M1_M3, presence=False), start_s=5.0)
     assert result.decision == "no_breathing" and result.rate_bpm is None
 
 
 def test_measurement_with_a_passer_by_stays_conclusive() -> None:
     walker = dict(WALKER_CROSSING_BEHIND, start_s=10.0)
-    _, result = _measure(_scene(M1_M2_M3, disturbers=[walker]), start_s=5.0)
+    _, result = _measure(_scene(M1_M3, disturbers=[walker]), start_s=5.0)
     assert result.decision == "breathing" and result.rate_bpm == pytest.approx(18.0, abs=1.0)
     assert result.activity_fraction > 0.2 and not result.target_motion
 
 
 def test_measurement_with_a_target_motion_is_inconclusive() -> None:
-    cfg = _scene(M1_M2_M3, timeline=[[0, "breathing"], [20, "motion"], [25, "breathing"]])
+    cfg = _scene(M1_M3, timeline=[[0, "breathing"], [20, "motion"], [25, "breathing"]])
     _, result = _measure(cfg, start_s=5.0)
     assert result.decision == "inconclusive" and "target_motion" in result.reasons
 
@@ -465,7 +394,7 @@ class _OverflowingSource(_SaturatingSource):
 
 
 def test_a_discontinuity_cuts_the_measurement_short() -> None:
-    outputs, result = _measure(_scene(M1_M2_M3), start_s=5.0,
+    outputs, result = _measure(_scene(M1_M3), start_s=5.0,
                                source_wrapper=lambda s: _OverflowingSource(s, 15.0, 16.0, 0.0))
     assert result.decision == "inconclusive" and result.reasons == ("discontinuity",)
     assert result.analysis is None and outputs[-1].t_s < 20.0
@@ -477,7 +406,7 @@ def test_run_radar_measures_once_and_logs_the_result(tmp_path) -> None:
 
     from script_loader import load_script
 
-    cfg = _scene(M1_M2_M3)
+    cfg = _scene(M1_M3)
     cfg["measurement"] = {"duration_s": 20.0}
     cfg["simulation"].update(enabled=True, realtime=False)
     cfg["logging"] = {"level": "INFO", "to_file": True}
@@ -497,7 +426,7 @@ def test_a_measurement_request_is_applied_by_the_producer() -> None:
     from script_loader import load_script
 
     run_radar = load_script("run_radar")
-    cfg = _scene(M1_M2_M3)
+    cfg = _scene(M1_M3)
     logging.disable(logging.WARNING)
     source = open_source(cfg, simulation=True)
     pipeline = VitalSignsPipeline.from_config(cfg, source.sample_rate_hz, effective_tx_offset_hz(cfg))
@@ -514,7 +443,7 @@ def test_a_measurement_request_is_applied_by_the_producer() -> None:
 
 def test_back_to_back_measurements_all_report_their_result() -> None:
     """A measurement started right after the previous one ends does not hide its "done" output."""
-    cfg = _scene(M1_M2_M3)
+    cfg = _scene(M1_M3)
     cfg["measurement"] = {"duration_s": 10.0}
     logging.disable(logging.WARNING)
     source = open_source(cfg, simulation=True)

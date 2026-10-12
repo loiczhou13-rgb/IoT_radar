@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Evaluate the robustness to residual motion: former chain against every combination of M1 to M3.
+"""Evaluate the robustness to residual motion: former chain against every combination of M1 and M3.
 
 Protocol of MOTION_ROBUSTNESS_PLAN.md §6.  Each configuration processes:
 
@@ -49,16 +49,12 @@ ROOT = Path(__file__).resolve().parents[1]
 RESULTS_DIR = ROOT / "results" / "motion_robustness"
 FIGURES_DIR = ROOT / "docs" / "figures" / "motion_robustness"
 
-METHODS = ("doppler_filter", "center_tracking", "contamination_weighting")
+METHODS = ("doppler_filter", "contamination_weighting")
 CONFIGS: dict[str, tuple[str, ...]] = {
     "former": (),
     "M1": ("doppler_filter",),
-    "M2": ("center_tracking",),
     "M3": ("contamination_weighting",),
-    "M1+M2": ("doppler_filter", "center_tracking"),
-    "M1+M3": ("doppler_filter", "contamination_weighting"),
-    "M2+M3": ("center_tracking", "contamination_weighting"),
-    "M1+M2+M3": METHODS,
+    "M1+M3": METHODS,
 }
 """Methods enabled in each compared configuration ("former": the pause on any movement)."""
 DEFAULT_CONFIG = "M1+M3"
