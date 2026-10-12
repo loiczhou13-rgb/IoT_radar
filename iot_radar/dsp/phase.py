@@ -84,8 +84,9 @@ def fit_circle(
 ) -> CircleFit:
     """Fit a circle to complex samples (algebraic start + geometric refinement).
 
-    The algebraic Kåsa fit (linear least squares on
-    ``x² + y² + D·x + E·y + F = 0``) gives the starting point, refined by
+    The algebraic fit of I. Kåsa ("A circle fitting procedure and its error
+    analysis", IEEE Trans. Instrum. Meas. IM-25(1), 8–14, 1976: linear least
+    squares on ``x² + y² + D·x + E·y + F = 0``) gives the starting point, refined by
     Gauss–Newton iterations on the geometric distance ``|z − c| − r``.  The
     data are centred and scaled first, for numerical conditioning.
 

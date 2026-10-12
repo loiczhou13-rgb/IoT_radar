@@ -20,8 +20,7 @@ is a smooth function of κ — no binary pause::
     w = 1 / (1 + exp((κ − κ₀) / s))
 
 The weights feed the weighted, gap-tolerant estimation of the breathing
-rate (:func:`iot_radar.dsp.estimation.weighted_lomb_scargle`; J. T.
-VanderPlas, "Understanding the Lomb-Scargle periodogram", ApJS 236(1), 2018).
+rate (:func:`iot_radar.dsp.estimation.weighted_lomb_scargle`).
 
 Each block also gets an *activity*: the density in the band of the human
 Doppler (3–28 Hz: gestures up to 16 Hz, walking up to 25 Hz at 2.45 GHz;

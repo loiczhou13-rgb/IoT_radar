@@ -1,9 +1,7 @@
 """Breathing detection: per-window metrics and temporal decision.
 
 Place in the chain: last processing step, after the phase demodulation.
-:func:`breathing_metrics` and :class:`BreathingDetector` follow the logic of commercial radar vital-sign
-pipelines (TI mmWave "vital signs" demo, Acconeer / Infineon breathing
-applications): per analysis window, a few **spectral quality metrics** of the
+Per analysis window, a few **spectral quality metrics** of the
 chest displacement give an instantaneous confidence; a **temporal decision
 layer** smooths it and applies hysteresis so that the state does not flicker.
 
@@ -15,7 +13,7 @@ layer** smooths it and applies hysteresis so that the state does not flicker.
 * Band SNR — peak power / noise floor (median power in a reference band
   free of vital signs, e.g. 2.5–5 Hz).
 * Peak concentration — share of the breathing-band energy within
-  ±``peak_halfwidth_hz`` of the peak (TI's "confidence metric").
+  ±``peak_halfwidth_hz`` of the peak.
 * Motion — body movements give displacements far larger than breathing;
   above ``motion_ptp_mm`` peak to peak the window is declared corrupted.
 

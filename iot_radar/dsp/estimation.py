@@ -86,10 +86,11 @@ def weighted_lomb_scargle(
 
     For every frequency ``f``, the model ``A·cos(2πft) + B·sin(2πft) + c`` is
     fitted to *x* by weighted least squares; the power is the reduction of
-    the weighted χ² it brings, divided by the weighted variance of *x*
-    (J. T. VanderPlas, "Understanding the Lomb-Scargle periodogram", ApJS
-    236(1), 2018, §5–6: generalised periodogram with per-point weights).
-    Samples of weight 0 do not count at all, so contaminated segments of a
+    the weighted χ² it brings, divided by the weighted variance of *x*.
+    This is the generalised Lomb-Scargle periodogram, with a floating mean
+    and per-point weights, of M. Zechmeister and M. Kürster, "The generalised
+    Lomb-Scargle periodogram: a new formalism for the floating-mean and
+    Keplerian periodograms", A&A 496, 577–584, 2009.  Samples of weight 0 do not count at all, so contaminated segments of a
     window are skipped instead of suspending the measurement (M3).
 
     Parameters
@@ -149,8 +150,8 @@ def remove_segment_offsets(x: np.ndarray, weights: np.ndarray) -> np.ndarray:
     passer-by's echo crosses the breathing band, the phasor around the arc
     centre can turn once around it and the unwrapped phase slips by 2π, i.e.
     λ/2 of displacement.  Each segment between gaps then gets its own offset,
-    as the floating mean of the generalised Lomb-Scargle periodogram does for
-    a single segment (J. T. VanderPlas, ApJS 236(1), 2018, §6).
+    as the floating mean of the generalised Lomb-Scargle periodogram
+    (Zechmeister & Kürster, A&A 496, 2009) does for a single segment.
 
     Parameters
     ----------

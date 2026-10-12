@@ -71,9 +71,9 @@ def design_doppler_lowpass(
 
     Notes
     -----
-    Kaiser's formula ``N ≈ (A − 7.95) / (2.285 · 2π · Δf / f_s)`` gives 365
-    taps for the default template at 100 Hz (Crochiere & Rabiner, 1981, on
-    FIR design for decimation).
+    Kaiser's estimate of the length of a Kaiser-window FIR,
+    ``N ≈ (A − 7.95) / (2.285 · 2π · Δf / f_s)`` (``scipy.signal.kaiserord``),
+    gives 365 taps for the default template at 100 Hz.
     """
     n_taps, beta = kaiserord(attenuation_db, transition_hz / (0.5 * f_s_hz))
     if n_taps % 2 == 0:
@@ -140,7 +140,7 @@ def alias_audit(stages: list[tuple[np.ndarray, np.ndarray, int, float]], band_hz
 
     For a stage of input rate ``F`` and factor ``q``, the frequencies
     ``m·F/q ± band`` (``m = 1 … ⌊(F/2 + band)/(F/q)⌋``) fold into
-    ``[−band, +band]`` at its output (Crochiere & Rabiner, 1981, §II).
+    ``[−band, +band]`` at its output (Crochiere & Rabiner, 1981).
 
     Parameters
     ----------
