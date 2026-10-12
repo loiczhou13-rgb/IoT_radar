@@ -102,14 +102,25 @@ docs/_build/
 
 # ===== Data: radar sessions (HDF5) and legacy .npz for ml/ =====
 /data/
+# Recordings never go into Git, wherever they are (sessions live under data/).
+*.h5
+*.hdf5
+*.wav
+*.npz
+# ... except the reference outputs of the characterisation tests.
+!tests/data/*.npz
 
-# ===== Training outputs of ml/ (checkpoints, metrics, logs) =====
+# ===== Results: evaluation outputs, ml/ training outputs and checkpoints =====
 /results/
+*.pt
+*.pth
+*.ckpt
 
 # ===== Run logs =====
 # *.log is already ignored globally; the folder is kept through .gitkeep.
 logs/*
 !logs/.gitkeep
 
-# ===== Claude Code (local settings and worktrees, never committed) =====
+# ===== AI coding assistants (local settings and worktrees, never committed) =====
 .claude/
+.code/
