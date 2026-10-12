@@ -1,10 +1,9 @@
-"""Spectral analysis: analysis windows, STFT columns and spectrograms.
+"""Spectral analysis: analysis windows and STFT columns.
 
 Place in the chain: visualisation only — nothing here feeds the breathing
 decision.  The pipeline computes one STFT column of the slow-time IQ at each
 update (:func:`compute_single_column`) for the micro-Doppler waterfall of the
-dashboard; a complete signal (e.g. a replayed session) can be turned offline
-into a spectrogram framed the same way (:func:`compute_spectrogram`).
+dashboard.
 """
 
 from __future__ import annotations
@@ -154,57 +153,3 @@ def compute_single_column(
         power_db=power_db.astype(np.float64),
         f_hz=frequency_axis(n_fft, f_s_hz),
     )
-
-
-# ---------------------------------------------------------------------------
-# Whole spectrogram (offline)
-# ---------------------------------------------------------------------------
-
-def compute_spectrogram(
-    iq: np.ndarray,
-    f_s_hz: float,
-    window: np.ndarray,
-    hop: int,
-    skip_frames: int = 0,
-) -> np.ndarray:
-    """Spectrogram of a complete signal, framed exactly like the stream.
-
-    A stream framed with a buffer that, whenever it holds ``n_fft`` samples,
-    turns the first ``n_fft`` of them into one column and drops the first
-    ``hop`` has segments starting at sample ``k * hop`` (k = 0, 1, 2, ...).
-    This function cuts the whole array the same way, so its columns are
-    identical to the streamed ones.
-
-    Parameters
-    ----------
-    iq : numpy.ndarray
-        Complex IQ samples (1-D) at rate *f_s_hz* — e.g. the slow-time
-        signal.
-    f_s_hz : float
-        Sampling rate of *iq* (Hz).
-    window : numpy.ndarray
-        Analysis window; its length is the FFT size ``n_fft``.
-    hop : int
-        Step between the starts of two successive segments (samples).
-    skip_frames : int, optional
-        Number of initial columns to drop (e.g. during the warm-up of the
-        decimation filters).
-
-    Returns
-    -------
-    numpy.ndarray
-        Power in dB, shape ``(n_frames, n_fft)``; row ``k`` is the column of
-        the ``(k + skip_frames)``-th segment.  Each column is fftshifted (see
-        :func:`frequency_axis` for the frequency axis).
-    """
-    n_fft = len(window)
-    columns: list[np.ndarray] = []
-    frame_number = 0
-    start = 0
-    while start + n_fft <= len(iq):
-        frame_number += 1
-        if frame_number > skip_frames:
-            segment = iq[start:start + n_fft]
-            columns.append(compute_single_column(segment, f_s_hz, window).power_db)
-        start += hop
-    return np.array(columns, dtype=np.float64).reshape(len(columns), n_fft)

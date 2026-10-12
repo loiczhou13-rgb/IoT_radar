@@ -17,7 +17,6 @@ def test_all_estimators_on_a_sinusoid(rate_hz: float) -> None:
     x = np.sin(2 * np.pi * rate_hz * t_s)
     assert estimation.fft_peak_rate(x, F_S_HZ, BAND_HZ)[0] == pytest.approx(rate_hz, abs=0.01)
     assert estimation.acf_rate(x, F_S_HZ, BAND_HZ)[0] == pytest.approx(rate_hz, abs=0.01)
-    assert estimation.peak_count_rate(x, F_S_HZ, BAND_HZ) == pytest.approx(rate_hz, abs=0.02)
     assert estimation.zero_crossing_rate(x, F_S_HZ, BAND_HZ) == pytest.approx(rate_hz, abs=0.02)
 
 

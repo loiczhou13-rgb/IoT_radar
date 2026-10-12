@@ -100,7 +100,7 @@ exactement la même chaîne de traitement.
 
 | Composant | Emplacement | Méthode | Référence | État | Tests |
 |---|---|---|---|---|---|
-| Estimateurs de fréquence | `dsp/estimation.py` | périodogramme, pic FFT, ACF, comptage de pics, passages par zéro | | dev | oui |
+| Estimateurs de fréquence | `dsp/estimation.py` | périodogramme, pic FFT, ACF, passages par zéro | | dev | oui |
 | Cycles respiratoires | `dsp/estimation.py` (`breath_cycles`) | inspirations, intervalles, profondeur, rapport I:E | | dev | oui |
 | Métriques de détection | `dsp/detection.py` (`breathing_metrics`) | SNR de bande, concentration du pic, mouvement → confiance | | dev | oui |
 | Détecteur | `dsp/detection.py` (`BreathingDetector`) | lissage, hystérésis ON/OFF, maintien de la pause, alerte d'apnée | | dev | oui |

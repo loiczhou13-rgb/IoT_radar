@@ -6,20 +6,19 @@ displacement) sampled at ``f_s_hz`` and a search band ``(low, high)`` in Hz.
 They return a rate in **Hz** (× 60 for breaths per minute) or ``None`` when
 no estimate is possible.
 
-Four complementary estimators are provided, because they fail in different
+Three complementary estimators are provided, because they fail in different
 ways:
 
 * :func:`fft_peak_rate` — spectral peak; robust to noise, resolution
   ``1 / T_window`` (refined by zero-padding and parabolic interpolation);
 * :func:`acf_rate` — first dominant autocorrelation lag; robust to
   non-sinusoidal breathing (harmonics);
-* :func:`peak_count_rate` — mean interval between peaks; breath by breath,
-  sensitive to residual noise;
 * :func:`zero_crossing_rate` — zero-crossing count; cheap, needs a clean
   band-passed signal.
 
 The detector uses the FFT peak; the others are cross-checks.
-:func:`breath_cycles` analyses the individual breaths (intervals,
+:func:`breath_cycles` analyses the individual breaths (rate from the peaks,
+intervals,
 variability, depth, inhalation/exhalation ratio, time since the last breath).
 """
 
@@ -286,29 +285,6 @@ def acf_rate(
         k_refined = float(k)
     lag = lag_min + k_refined
     return float(f_s_hz / lag), float(np.clip(searched[k], -1.0, 1.0))
-
-
-def peak_count_rate(
-    x: np.ndarray,
-    f_s_hz: float,
-    band_hz: tuple[float, float],
-    prominence_std: float = 0.5,
-) -> float | None:
-    """Breathing rate from the mean interval between successive peaks.
-
-    Peaks closer than ``1 / high`` are merged and must have a prominence of
-    at least ``prominence_std`` standard deviations of the signal.
-    """
-    x = np.asarray(x, dtype=np.float64)
-    if x.size < 4 or x.std() == 0:
-        return None
-    peaks, _ = find_peaks(
-        x, distance=max(1, int(f_s_hz / band_hz[1])), prominence=prominence_std * x.std(),
-    )
-    if peaks.size < 2:
-        return None
-    rate_hz = float(f_s_hz / np.mean(np.diff(peaks)))
-    return rate_hz if band_hz[0] <= rate_hz <= band_hz[1] else None
 
 
 def zero_crossing_rate(

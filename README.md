@@ -99,7 +99,7 @@ State: branch where the component exists (`dev`, `feature/mimo-localization`).  
 
 | Component | Location | Method | Reference | State | Tests |
 |---|---|---|---|---|---|
-| Rate estimators | `dsp/estimation.py` | periodogram, FFT peak, ACF, peak count, zero crossings | | dev | yes |
+| Rate estimators | `dsp/estimation.py` | periodogram, FFT peak, ACF, zero crossings | | dev | yes |
 | Breath cycles | `dsp/estimation.py` (`breath_cycles`) | inhalations, intervals, depth, I:E ratio | | dev | yes |
 | Detection metrics | `dsp/detection.py` (`breathing_metrics`) | band SNR, peak concentration, motion → confidence | | dev | yes |
 | Detector | `dsp/detection.py` (`BreathingDetector`) | smoothing, ON/OFF hysteresis, pause hold, apnea alert | | dev | yes |
