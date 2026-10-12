@@ -76,13 +76,7 @@ def radar_log_file(cfg: dict[str, Any], explicit: str | Path | None = None) -> P
     return LOGS_DIR / f"radar_{stamp}.log"
 
 
-def setup_logging(
-    level: str = "INFO",
-    log_file: Path | None = None,
-    *,
-    console_level: str | None = None,
-    file_mode: str = "w",
-) -> None:
+def setup_logging(level: str = "INFO", log_file: Path | None = None) -> None:
     """Configure the root logger (the only logging set-up of the project).
 
     A console handler is always installed; when *log_file* is given, a file
@@ -92,21 +86,12 @@ def setup_logging(
     Parameters
     ----------
     level : str, optional
-        Level name of the root logger and of the file (``"DEBUG"``,
-        ``"INFO"``, ``"WARNING"``…).
+        Level name of the root logger, the console and the file
+        (``"DEBUG"``, ``"INFO"``, ``"WARNING"``…).
     log_file : pathlib.Path or None, optional
         File receiving the records (its folder is created if needed).
-    console_level : str or None, optional
-        Level of the console handler; defaults to *level*.  The training
-        uses ``"WARNING"`` to keep the console for its progress bar.
-    file_mode : str, optional
-        ``"w"`` (overwrite, default) or ``"a"`` (append).
     """
     level_value = getattr(logging, str(level).upper(), logging.INFO)
-    console_value = (
-        level_value if console_level is None
-        else getattr(logging, str(console_level).upper(), logging.INFO)
-    )
     fmt = "%(asctime)s [%(levelname)s] %(name)s — %(message)s"
 
     root = logging.getLogger()
@@ -115,14 +100,14 @@ def setup_logging(
         root.removeHandler(handler)
 
     console = logging.StreamHandler()
-    console.setLevel(console_value)
+    console.setLevel(level_value)
     console.setFormatter(logging.Formatter(fmt, datefmt="%H:%M:%S"))
     root.addHandler(console)
 
     if log_file is None:
         return
     log_file.parent.mkdir(parents=True, exist_ok=True)
-    file_handler = logging.FileHandler(log_file, mode=file_mode, encoding="utf-8")
+    file_handler = logging.FileHandler(log_file, mode="w", encoding="utf-8")
     file_handler.setLevel(level_value)
     file_handler.setFormatter(logging.Formatter(fmt))
     root.addHandler(file_handler)

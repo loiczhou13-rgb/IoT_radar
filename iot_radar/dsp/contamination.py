@@ -121,7 +121,6 @@ class ContaminationMeter:
         self.f_s_hz = float(f_s_hz)
         self.block_length = max(1, int(round(block_s * self.f_s_hz)))
         self.midpoint_db, self.slope_db = float(midpoint_db), float(slope_db)
-        self._highpass = butter(order, out_of_band_start_hz, btype="highpass", fs=self.f_s_hz, output="sos")
         self._filters = {
             "out": butter(order, out_of_band_start_hz, btype="highpass", fs=self.f_s_hz, output="sos"),
             "in": butter(order, in_band_hz, btype="bandpass", fs=self.f_s_hz, output="sos"),
