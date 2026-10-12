@@ -6,7 +6,6 @@ import numpy as np
 from scipy.signal import butter, sosfilt
 
 from iot_radar.dsp.phase import (
-    dacm_demodulation,
     demodulate,
     fit_circle,
     phase_to_displacement_m,
@@ -46,18 +45,10 @@ def test_circle_fit_recovers_dc_offset() -> None:
 
 def test_arctan_after_circle_fit_gives_displacement() -> None:
     z, displacement_m = breathing_iq(noise=0.0)
-    result = demodulate(z, "arctan", "circle")
+    result = demodulate(z)
     measured_m = phase_to_displacement_m(result.phase_rad, WAVELENGTH_M)
     error_m = (measured_m - measured_m.mean()) - (displacement_m - displacement_m.mean())
     assert np.max(np.abs(error_m)) < 1e-9
-
-
-def test_dacm_matches_arctan() -> None:
-    z, _ = breathing_iq(noise=0.0)
-    centred = z - fit_circle(z).center
-    arctan_rad = np.unwrap(np.angle(centred))
-    dacm_rad = dacm_demodulation(centred)
-    assert np.max(np.abs((arctan_rad - arctan_rad[0]) - dacm_rad)) < 0.05
 
 
 def test_highpass_before_arctan_destroys_phase() -> None:

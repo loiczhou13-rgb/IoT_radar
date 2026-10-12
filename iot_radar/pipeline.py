@@ -4,7 +4,7 @@ Place in the chain: everything between the acquisition and the display::
 
     Block (ADC rate) → Mixer (echo to 0 Hz) → Decimator (slow time, ~20 Hz)
       → sliding window → VitalSignsProcessor: LO-drift derotation, circle fit
-        (DC compensation), arctangent / DACM, displacement, band-pass,
+        (DC compensation), arctangent, displacement, band-pass,
         spectrum, breathing metrics
       → BreathingDetector (smoothing, hysteresis, motion, apnea)
       → PipelineOutput (dataclasses, consumed by the dashboard)
@@ -75,12 +75,8 @@ class VitalSignsSettings:
         Length of the analysis window (s); ≥ 2 periods of the slowest breath.
     update_period_s : float
         Time between two analyses (s).
-    breathing_band_hz, heart_band_hz, reference_band_hz : tuple[float, float]
-        Breathing, heartbeat and noise-only bands (Hz).
-    demodulation : str
-        ``"arctan"``, ``"dacm"`` or ``"linear"``.
-    dc_compensation : str
-        ``"circle"`` (recommended), ``"mean"`` or ``"none"``.
+    breathing_band_hz, reference_band_hz : tuple[float, float]
+        Breathing and noise-only bands (Hz).
     min_arc_rad, max_circle_residual : float
         Validity limits of the circle fit.
     lo_drift_compensation : bool
@@ -94,10 +90,7 @@ class VitalSignsSettings:
     window_s: float = 20.0
     update_period_s: float = 0.5
     breathing_band_hz: tuple[float, float] = (0.1, 0.5)
-    heart_band_hz: tuple[float, float] = (0.8, 2.0)
     reference_band_hz: tuple[float, float] = (2.5, 5.0)
-    demodulation: str = "arctan"
-    dc_compensation: str = "circle"
     min_arc_rad: float = 0.3
     max_circle_residual: float = 0.3
     lo_drift_compensation: bool = True
@@ -112,10 +105,7 @@ class VitalSignsSettings:
             window_s=float(section.get("window_s", defaults.window_s)),
             update_period_s=float(section.get("update_period_s", defaults.update_period_s)),
             breathing_band_hz=tuple(section.get("breathing_band_hz", defaults.breathing_band_hz)),
-            heart_band_hz=tuple(section.get("heart_band_hz", defaults.heart_band_hz)),
             reference_band_hz=tuple(section.get("reference_band_hz", defaults.reference_band_hz)),
-            demodulation=str(section.get("demodulation", defaults.demodulation)),
-            dc_compensation=str(section.get("dc_compensation", defaults.dc_compensation)),
             min_arc_rad=float(section.get("min_arc_rad", defaults.min_arc_rad)),
             max_circle_residual=float(section.get("max_circle_residual", defaults.max_circle_residual)),
             lo_drift_compensation=bool(section.get("lo_drift_compensation", defaults.lo_drift_compensation)),
@@ -250,9 +240,6 @@ class WindowAnalysis:
         Displacement, mean removed.
     breath_mm : numpy.ndarray
         Displacement band-passed in the breathing band.
-    heart_mm : numpy.ndarray or None
-        Displacement band-passed in the heartbeat band (``None`` if the
-        slow-time rate is too low).
     spectrum_f_hz, spectrum_psd : numpy.ndarray
         One-sided periodogram of the detrended displacement.
     metrics : BreathMetrics
@@ -262,11 +249,6 @@ class WindowAnalysis:
     iq : numpy.ndarray
         Complex window actually demodulated (after the LO-drift derotation),
         for the IQ-constellation display.
-    rates_hz : dict
-        Cross-check estimators: ``fft``, ``acf``, ``peaks``, ``zero_crossing``
-        (the detector uses ``metrics.rate_hz``).
-    heart_rate_hz : float or None
-        Heartbeat-band spectral peak (indicative only).
     lo_drift_hz : float
         Common rotation removed before the demodulation (Hz).
     demodulation : DemodulationResult
@@ -285,14 +267,11 @@ class WindowAnalysis:
     t_s: np.ndarray
     displacement_mm: np.ndarray
     breath_mm: np.ndarray
-    heart_mm: np.ndarray | None
     spectrum_f_hz: np.ndarray
     spectrum_psd: np.ndarray
     metrics: BreathMetrics
     cycles: estimation.BreathCycles
     iq: np.ndarray
-    rates_hz: dict[str, float | None]
-    heart_rate_hz: float | None
     lo_drift_hz: float
     demodulation: DemodulationResult
     weights: np.ndarray | None = None
@@ -347,7 +326,6 @@ class VitalSignsProcessor:
                 "(%.2f Hz): estimates near the band edge will be unreliable.",
                 settings.window_s, settings.breathing_band_hz[0],
             )
-        self._heart_band_usable = settings.heart_band_hz[1] < nyquist_hz
         self._n_fft = int(2 ** np.ceil(np.log2(self.window_length * _ZERO_PAD)))
         # Frequencies of the weighted Lomb-Scargle periodogram (M3): same
         # interpolation step as the zero-padded periodogram, up to the noise bands.
@@ -356,9 +334,8 @@ class VitalSignsProcessor:
         self._ls_frequencies_hz = np.arange(step_hz, top_hz, step_hz)
         logger.info(
             "VitalSignsProcessor — %.2f Hz slow time, %d-sample window (%.1f s), "
-            "λ=%.4f m, demodulation=%s, DC=%s",
+            "λ=%.4f m",
             self.f_s_hz, self.window_length, settings.window_s, self.wavelength_m,
-            settings.demodulation, settings.dc_compensation,
         )
 
     def _recent_peak_to_peak_mm(self, z: np.ndarray) -> float:
@@ -371,8 +348,7 @@ class VitalSignsProcessor:
         n = int(round(self.settings.detection.motion_window_s * self.f_s_hz))
         if n < 4 or n >= z.size:
             return float("nan")
-        result = demodulate(z[-n:], "arctan", "circle", self.settings.min_arc_rad,
-                            self.settings.max_circle_residual)
+        result = demodulate(z[-n:], self.settings.min_arc_rad, self.settings.max_circle_residual)
         if not result.calibrated:
             return float("nan")
         return float(np.ptp(phase_to_displacement_m(result.phase_rad, self.wavelength_m)) * 1e3)
@@ -406,10 +382,6 @@ class VitalSignsProcessor:
 
         breath_mm = bandpass(displacement_mm, self.f_s_hz,
                              widened_band(s.breathing_band_hz, self.f_s_hz), s.bandpass_order)
-        heart_mm = None
-        if self._heart_band_usable:
-            heart_mm = bandpass(displacement_mm, self.f_s_hz,
-                                widened_band(s.heart_band_hz, self.f_s_hz, 1.2), s.bandpass_order)
 
         if weighted:
             w, displacement_ptp_mm = anomalies.weights, anomalies.recent_ptp_mm
@@ -433,15 +405,6 @@ class VitalSignsProcessor:
             metrics = replace(metrics, confidence=metrics.confidence * mean_weight)
 
         cycles = estimation.breath_cycles(breath_mm, self.f_s_hz, s.breathing_band_hz)
-        rates_hz = {
-            "fft": metrics.rate_hz,
-            "acf": estimation.acf_rate(breath_mm, self.f_s_hz, s.breathing_band_hz)[0],
-            "peaks": cycles.rate_hz,
-            "zero_crossing": estimation.zero_crossing_rate(breath_mm, self.f_s_hz, s.breathing_band_hz),
-        }
-        heart_rate_hz = None
-        if heart_mm is not None:
-            heart_rate_hz = estimation.fft_peak_rate(heart_mm, self.f_s_hz, s.heart_band_hz)[0]
 
         logger.debug(
             "Window — rate=%s Hz, SNR=%.1f dB, concentration=%.2f, motion=%s, confidence=%.2f, demod=%s",
@@ -452,14 +415,11 @@ class VitalSignsProcessor:
             t_s=t_s,
             displacement_mm=displacement_mm,
             breath_mm=breath_mm,
-            heart_mm=heart_mm,
             spectrum_f_hz=spectrum.f_hz,
             spectrum_psd=spectrum.psd,
             metrics=metrics,
             cycles=cycles,
             iq=z,
-            rates_hz=rates_hz,
-            heart_rate_hz=heart_rate_hz,
             lo_drift_hz=lo_drift_hz,
             demodulation=result,
             weights=w if weighted else None,
@@ -471,7 +431,7 @@ class VitalSignsProcessor:
     def _demodulate(self, z: np.ndarray) -> tuple[DemodulationResult, np.ndarray]:
         """Demodulation and displacement in mm, mean removed."""
         s = self.settings
-        result = demodulate(z, s.demodulation, s.dc_compensation, s.min_arc_rad, s.max_circle_residual)
+        result = demodulate(z, s.min_arc_rad, s.max_circle_residual)
         if result.calibrated:
             displacement_mm = phase_to_displacement_m(result.phase_rad, self.wavelength_m) * 1e3
         else:
@@ -678,7 +638,7 @@ class VitalSignsPipeline:
         self.slow_time_rate_hz = float(slow_time_rate_hz)
         self.motion = motion or MotionRobustnessSettings()
         self._mixer = Mixer(input_rate_hz, tx_offset_hz)
-        max_frequency_hz = max(settings.reference_band_hz[1], settings.heart_band_hz[1])
+        max_frequency_hz = settings.reference_band_hz[1]
         self._build_decimation(int(round(decimation_ratio)), max_frequency_hz)
         if self.motion.doppler_filter_enabled:  # the FIR must fill before its output is valid
             warmup_s = max(warmup_s, 2.0 * self.doppler_delay_s)

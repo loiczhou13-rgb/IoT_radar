@@ -31,7 +31,7 @@ Layout (GridSpec 3 × 5)::
   by state.
 * **Measured quantities** — rates of four estimators, breath interval and
   variability, depth, I:E ratio, time since the last breath, SNR,
-  concentration, echo / DC amplitudes, LO drift, indicative heart rate;
+  concentration, echo / DC amplitudes, LO drift;
   motion robustness (current weight, contaminated share, saturation) and the
   last measurement (decision, rate, confidence, quality summary).
 * **Rate history**, **displacement spectrum** (bands, peak window, noise
@@ -134,7 +134,7 @@ class PhaseDashboard:
           ``display_max_hz`` (half-span shown);
         * ``waterfall_columns`` (int) and ``history_s`` (length of the
           timelines, s);
-        * ``breathing_band_hz``, ``heart_band_hz``, ``reference_band_hz``,
+        * ``breathing_band_hz``, ``reference_band_hz``,
           ``threshold_on``, ``threshold_off``, ``peak_halfwidth_hz``;
         * ``parameters`` — ``[(section title, [(name, value), ...]), ...]``.
     full_screen : bool, optional
@@ -155,7 +155,6 @@ class PhaseDashboard:
         self._n_columns = int(context.get("waterfall_columns", 240))
         self._breathing_band_hz = tuple(context.get("breathing_band_hz", (0.1, 0.5)))
         self._reference_band_hz = tuple(context.get("reference_band_hz", (2.5, 5.0)))
-        self._heart_band_hz = tuple(context.get("heart_band_hz", (0.8, 2.0)))
         self._threshold_on = float(context.get("threshold_on", 0.6))
         self._threshold_off = float(context.get("threshold_off", 0.4))
         self._peak_halfwidth_hz = float(context.get("peak_halfwidth_hz", 0.1))
@@ -285,7 +284,6 @@ class PhaseDashboard:
         # --- Displacement spectrum ---------------------------------------------
         ax = self.ax_spectrum
         ax.axvspan(*self._breathing_band_hz, color="tab:green", alpha=0.10, label="breathing band")
-        ax.axvspan(*self._heart_band_hz, color="tab:pink", alpha=0.06, label="heart band")
         ax.axvspan(*self._reference_band_hz, color="tab:red", alpha=0.06, label="noise reference")
         (self._line_spectrum,) = ax.plot([], [], color="tab:purple", linewidth=1.0)
         self._peak_span = ax.axvspan(0, 0, color="tab:green", alpha=0.35, label="peak window")
@@ -543,7 +541,6 @@ class PhaseDashboard:
         """Text of the measured-quantities panel."""
         metrics, cycles, demodulation = analysis.metrics, analysis.cycles, analysis.demodulation
         unit = "mm" if demodulation.calibrated else "a.u."
-        rates = analysis.rates_hz
 
         def bpm(rate_hz: float | None) -> str:
             return _fmt(60 * rate_hz if rate_hz else None, ".1f")
@@ -554,8 +551,8 @@ class PhaseDashboard:
             interval = _fmt(cycles.intervals_s.mean() if cycles.intervals_s.size else None, ".2f", " s")
         breathing_rows = [
             ("Reported rate", _fmt(breathing.rate_bpm, ".1f", " /min")),
-            ("FFT | ACF", f"{bpm(rates.get('fft'))} | {bpm(rates.get('acf'))} /min"),
-            ("Cycles | ZC", f"{bpm(rates.get('peaks'))} | {bpm(rates.get('zero_crossing'))} /min"),
+            ("Spectral peak", f"{bpm(metrics.rate_hz)} /min"),
+            ("From the cycles", f"{bpm(cycles.rate_hz)} /min"),
             ("Breath interval", interval),
             ("Depth", _fmt(cycles.depth, ".1f", f" {unit}")),
             ("I:E ratio", _fmt(cycles.ie_ratio, ".2f") if demodulation.calibrated else "— (sign unknown)"),
@@ -576,7 +573,6 @@ class PhaseDashboard:
             ]
         signal_rows += [
             ("LO drift", f"{analysis.lo_drift_hz * 1e3:+.1f} mHz"),
-            ("Heart rate (ind.)", bpm(analysis.heart_rate_hz) + " /min"),
         ]
         sections = [("Breathing", breathing_rows), ("Detection", detection_rows), ("Signal", signal_rows)]
         if contamination is not None:

@@ -11,7 +11,7 @@ The chest displacement ``d`` is carried by the angle *around C*, not around
 the origin, hence the order of operations:
 
 1. estimate ``C`` (circle fitting, :func:`fit_circle`) and subtract it;
-2. extract the angle (arctangent + unwrapping, or DACM);
+2. extract the angle (arctangent + unwrapping);
 3. convert to displacement ``d = −λ/(4π) · φ`` (:func:`phase_to_displacement_m`).
 
 .. warning::
@@ -34,8 +34,6 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-VALID_DC_METHODS = ("circle", "mean", "none")
-VALID_DEMODULATIONS = ("arctan", "dacm", "linear")
 
 
 # ---------------------------------------------------------------------------
@@ -228,8 +226,8 @@ class DemodulationResult:
     method : str
         Demodulation actually used (``"linear"`` after a fallback).
     calibrated : bool
-        ``True`` if ``phase_rad`` is a true phase in radians (arctangent or
-        DACM on a valid DC compensation).
+        ``True`` if ``phase_rad`` is a true phase in radians (arctangent on
+        a valid circle fit).
     circle : CircleFit or None
         Circle used for the DC compensation, if any.
     """
@@ -247,25 +245,6 @@ def arctangent_demodulation(z: np.ndarray) -> np.ndarray:
     than π between two samples (true for breathing at ≥ 10 Hz slow time).
     """
     return np.unwrap(np.angle(z))
-
-
-def dacm_demodulation(z: np.ndarray) -> np.ndarray:
-    """Extended differentiate-and-cross-multiply (DACM) demodulation (rad).
-
-    ``φ[n] = Σ_{k≤n} (I[k]·ΔQ[k] − Q[k]·ΔI[k]) / (I[k]² + Q[k]²)``
-
-    DACM computes the phase increments directly and needs no unwrapping; it
-    assumes small increments between samples (dense slow-time sampling).
-    """
-    z = np.asarray(z, dtype=np.complex128)
-    if z.size == 0:
-        return np.zeros(0)
-    i, q = z.real, z.imag
-    delta_i = np.diff(i, prepend=i[0])
-    delta_q = np.diff(q, prepend=q[0])
-    power = np.maximum(i * i + q * q, 1e-30)
-    phase_increments = (i * delta_q - q * delta_i) / power
-    return np.cumsum(phase_increments)
 
 
 def linear_demodulation(z: np.ndarray) -> np.ndarray:
@@ -288,61 +267,36 @@ def linear_demodulation(z: np.ndarray) -> np.ndarray:
 
 def demodulate(
     z: np.ndarray,
-    method: str = "arctan",
-    dc_method: str = "circle",
     min_arc_rad: float = 0.3,
     max_relative_residual: float = 0.3,
 ) -> DemodulationResult:
     """DC-compensate and demodulate a window of slow-time IQ samples.
 
+    The DC offset is the centre of the fitted circle (:func:`fit_circle`);
+    the phase is the unwrapped angle around it.  When the fit is rejected,
+    the linear (small-angle) demodulation is the fallback.
+
     Parameters
     ----------
     z : numpy.ndarray
         Complex slow-time samples of the analysis window, 1-D.
-    method : str, optional
-        ``"arctan"`` (default), ``"dacm"`` or ``"linear"``.
-    dc_method : str, optional
-        ``"circle"`` (circle fitting, recommended), ``"mean"`` (subtract the
-        window mean — correct only if the samples cover a full circle) or
-        ``"none"`` (samples already centred).
     min_arc_rad, max_relative_residual : float, optional
         Validity limits of the circle fit (see :func:`fit_circle`).
 
     Returns
     -------
     DemodulationResult
-        When the circle fit is rejected, falls back to
-        :func:`linear_demodulation` and says so (``method == "linear"``).
+        ``method`` is ``"arctan"``, or ``"linear"`` after the fallback.
     """
-    if method not in VALID_DEMODULATIONS:
-        raise ValueError(f"Unknown demodulation '{method}', use {VALID_DEMODULATIONS}.")
-    if dc_method not in VALID_DC_METHODS:
-        raise ValueError(f"Unknown DC method '{dc_method}', use {VALID_DC_METHODS}.")
     z = np.asarray(z, dtype=np.complex128)
-
-    if method == "linear":
-        return DemodulationResult(linear_demodulation(z), "linear", False, None)
-
-    circle: CircleFit | None = None
-    if dc_method == "circle":
-        circle = fit_circle(z, min_arc_rad=min_arc_rad, max_relative_residual=max_relative_residual)
-        if not circle.valid:
-            logger.debug(
-                "Circle fit rejected (arc=%.2f rad, residual=%.2f) — linear demodulation",
-                circle.arc_span_rad, circle.rms_residual,
-            )
-            return DemodulationResult(linear_demodulation(z), "linear", False, circle)
-        centred = z - circle.center
-    elif dc_method == "mean":
-        centred = z - z.mean()
-    else:
-        centred = z
-
-    if method == "arctan":
-        phase_rad = arctangent_demodulation(centred)
-    else:
-        phase_rad = dacm_demodulation(centred)
-    return DemodulationResult(phase_rad, method, True, circle)
+    circle = fit_circle(z, min_arc_rad=min_arc_rad, max_relative_residual=max_relative_residual)
+    if not circle.valid:
+        logger.debug(
+            "Circle fit rejected (arc=%.2f rad, residual=%.2f) — linear demodulation",
+            circle.arc_span_rad, circle.rms_residual,
+        )
+        return DemodulationResult(linear_demodulation(z), "linear", False, circle)
+    return DemodulationResult(arctangent_demodulation(z - circle.center), "arctan", True, circle)
 
 
 def phase_to_displacement_m(phase_rad: np.ndarray, wavelength_m: float) -> np.ndarray:

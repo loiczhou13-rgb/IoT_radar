@@ -94,7 +94,7 @@ tx:
 slow_time:
   # Rate of the slow-time signal after mixing the echo to 0 Hz and decimating
   # (Hz).  sample_rate_hz / rate_hz must be an integer made of primes <= 13
-  # (1 MS/s / 20 Hz = 50000) and rate_hz > 2.5 x max(reference band, heart band).
+  # (1 MS/s / 20 Hz = 50000) and rate_hz > 2.5 x the top of the reference band.
   rate_hz: 20.0
 
   # Slow time dropped after a (re)start while the decimation filters settle (s).
@@ -112,15 +112,11 @@ vital_signs:
   update_period_s: 0.5
 
   breathing_band_hz: [0.1, 0.5]   # 6–30 breaths/min (adult at rest)
-  heart_band_hz: [0.8, 2.0]       # 48–120 beats/min (indicative only)
-  reference_band_hz: [2.5, 5.0]   # noise-only band, above the heart band
+  reference_band_hz: [2.5, 5.0]   # noise-only band (without the Doppler filter M1)
 
-  # DC-offset compensation before the angle: "circle" (circle fitting,
-  # recommended), "mean" or "none".  Never a high-pass filter (bug B3).
-  dc_compensation: "circle"
-
-  # Phase demodulation: "arctan" (unwrapped angle), "dacm" or "linear".
-  demodulation: "arctan"
+  # The DC offset is the centre of the circle fitted to the IQ (never a
+  # high-pass filter: bug B3); the phase is the arctangent around it.  When
+  # the fit is rejected, the linear (small-angle) demodulation is used.
 
   # Validity of the circle fit: below this arc span (rad) or above this
   # relative residual (a noise cloud gives ~0.4) the fit is rejected and the
@@ -131,7 +127,7 @@ vital_signs:
   # Remove a common phase ramp (residual TX/RX LO offset) before the circle fit.
   lo_drift_compensation: true
 
-  # Butterworth order of the breathing / heartbeat band-pass filters.
+  # Butterworth order of the breathing band-pass filter.
   bandpass_order: 4
 
   detection:

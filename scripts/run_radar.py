@@ -117,7 +117,7 @@ def dashboard_context(
     range_min_m, range_max_m = range_interval_m(cfg)
     settings = pipeline.settings
     detection = settings.detection
-    breathing_band_hz, heart_band_hz = settings.breathing_band_hz, settings.heart_band_hz
+    breathing_band_hz = settings.breathing_band_hz
     display = cfg.get("display", {})
     radar_rows = [
         ("Source", source_name),
@@ -133,10 +133,8 @@ def dashboard_context(
         ("Analysis window", f"{settings.window_s:.0f} s, every {settings.update_period_s} s"),
         ("Breathing band", f"{breathing_band_hz[0]}–{breathing_band_hz[1]} Hz"),
         ("", f"{60 * breathing_band_hz[0]:.0f}–{60 * breathing_band_hz[1]:.0f} /min"),
-        ("Heart band", f"{heart_band_hz[0]}–{heart_band_hz[1]} Hz"),
         ("Noise ref. band", f"{settings.reference_band_hz[0]}–{settings.reference_band_hz[1]} Hz"),
-        ("DC compensation", settings.dc_compensation),
-        ("Demodulation", settings.demodulation),
+        ("Demodulation", "circle fit + arctangent"),
         ("Circle fit", f"arc ≥ {settings.min_arc_rad} rad"),
         ("", f"residual ≤ {settings.max_circle_residual}"),
     ]
@@ -167,7 +165,6 @@ def dashboard_context(
         "waterfall_columns": int(display.get("waterfall_columns", 240)),
         "history_s": float(display.get("history_s", 120.0)),
         "breathing_band_hz": breathing_band_hz,
-        "heart_band_hz": heart_band_hz,
         "reference_band_hz": settings.reference_band_hz,
         "threshold_on": detection.threshold_on,
         "threshold_off": detection.threshold_off,
