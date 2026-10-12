@@ -18,7 +18,7 @@ the origin, hence the order of operations:
    Removing ``C`` with a **high-pass filter** is *not* equivalent: the
    high-pass also removes the mean of the useful term ``A·exp(jφ)``, so the
    remaining vector no longer rotates around the origin and its angle is
-   wrong (bug B3 of the former chain).  High-pass clutter removal is only
+   wrong (the former chain did so).  High-pass clutter removal is only
    acceptable for magnitude products such as a spectrogram.
 
 Reference: G. Paterniani *et al.*, "Radar-based monitoring of vital signs: a

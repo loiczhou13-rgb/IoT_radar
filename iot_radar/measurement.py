@@ -6,8 +6,7 @@ field, the rescuers stand still and leave the beam, then the operator starts
 a measurement: the slow-time samples of the next ``duration_s`` seconds (30 s
 by default) and their M3 weights are accumulated, then analysed once, with
 the same M1 to M3 processing as the continuous mode.  The result is a
-decision, a breathing rate, a confidence and a quality summary
-(MOTION_ROBUSTNESS_PLAN.md §3.5).
+decision, a breathing rate, a confidence and a quality summary.
 
 This module holds the settings, the result structures and the decision rule;
 the pipeline does the accumulation.

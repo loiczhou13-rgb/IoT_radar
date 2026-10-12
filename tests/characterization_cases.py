@@ -7,15 +7,13 @@ produced by the original code (commit 8189bbd) are stored in
 ``tests/test_characterization.py`` checks that the current code still
 produces **bit-identical** values.
 
-These references must never be regenerated, except in the commits that fix
-bugs B2 and B5 of ``REFACTOR_PLAN.md`` (they change the simulation on
-purpose).  The cases of the removed micro-Doppler chain (clutter filter,
+These references must never be regenerated without a reason given in the
+commit that does it (an intended change of the numerical results).  The cases of the removed micro-Doppler chain (clutter filter,
 Fisher x ACF detection, streaming pipeline, its dashboard context) were
 dropped together with that chain.
 
 The ``cw_simulation`` and ``vital_signs_pipeline`` cases were added before
-the motion-robustness work (``MOTION_ROBUSTNESS_PLAN.md``): with M1 to M3
-disabled, the simulation without disturbers and the phase pipeline must
+the motion-robustness work: with M1 and M3 disabled, the simulation without disturbers and the phase pipeline must
 stay unchanged bit for bit.
 """
 
@@ -36,8 +34,7 @@ from iot_radar.pipeline import VitalSignsPipeline
 
 # Reduced configuration (fast) of the radar, used by several tests.  The TX
 # offset 244.140625 Hz is exactly 10 periods of a 4096-sample buffer at
-# 100 kHz, so the cyclic TX buffer is continuous (see bug B1 in
-# REFACTOR_PLAN.md).
+# 100 kHz, so the cyclic TX buffer is continuous (see cw_tx_buffer).
 PIPELINE_CONFIG: dict[str, Any] = {
     "logging": {"level": "WARNING", "to_file": False},
     "sdr": {

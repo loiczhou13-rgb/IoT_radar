@@ -88,7 +88,7 @@ def cw_tx_buffer(
     * The Pluto replays the buffer back-to-back (cyclic mode).  With a
       non-integer number of periods per buffer, the phase would jump at
       every repetition and the emitted spectrum would become a set of lines
-      at multiples of ``f_s_hz / buffer_size`` (bug B1: 500 Hz requested,
+      at multiples of ``f_s_hz / buffer_size`` (former code: 500 Hz requested,
       dominant line at 488.28 Hz).
     """
     if waveform not in ("cw", "cw_offset"):
@@ -167,7 +167,7 @@ def effective_tx_offset_hz(cfg: dict[str, Any]) -> float:
 
     The configured ``tx.offset_hz`` is snapped with :func:`snap_tx_offset_hz`;
     the snapped value is the one transmitted, so it is also the one the
-    receiver must use (bug B1).
+    receiver must use.
     """
     tx_cfg = cfg.get("tx", {})
     if tx_cfg.get("waveform") != "cw_offset":

@@ -7,7 +7,7 @@ Run from the repository root::
 
 Each button runs ``scripts/run_radar.py`` in its **own process**: matplotlib's
 Tk back-end must own the main thread of its process, and the radar parses its
-own command line (bug B4: it used to run in a thread of the launcher).
+own command line (it used to run in a thread of the launcher, with the launcher's command line).
 """
 
 from __future__ import annotations

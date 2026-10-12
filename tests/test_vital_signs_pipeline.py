@@ -3,7 +3,7 @@
 A reduced configuration keeps the tests fast: 100 kS/s instead of 2 MS/s
 (decimation 5000 instead of 100000 down to the 20 Hz slow time), with the
 default processing and detection settings of configs/radar.yaml, including
-the motion robustness (M1 to M3, MOTION_ROBUSTNESS_PLAN.md).  The noise
+the motion robustness (M1 and M3).  The noise
 (-10 dB per ADC sample) gives a slow-time SNR of about 27 dB.
 """
 

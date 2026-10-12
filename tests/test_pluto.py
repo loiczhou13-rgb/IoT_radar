@@ -1,4 +1,4 @@
-"""PlutoSDR helpers: TX waveform (bug B1) and effective TX offset."""
+"""PlutoSDR helpers: TX waveform (whole number of periods per buffer) and effective TX offset."""
 
 from __future__ import annotations
 

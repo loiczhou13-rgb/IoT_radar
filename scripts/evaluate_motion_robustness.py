@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Evaluate the robustness to residual motion: former chain against every combination of M1 and M3.
 
-Protocol of MOTION_ROBUSTNESS_PLAN.md §6.  Each configuration processes:
+Each configuration processes:
 
 * simulated scenes S1–S8 (target, walkers, sway, gestures, empty room,
   target moving), several seeds, at a reduced input rate (20 kS/s, same
@@ -314,7 +314,7 @@ def summarize_sweep(results: list[dict[str, Any]]) -> dict[str, dict[str, float]
 
 
 def markdown_tables(summary: dict[str, Any]) -> str:
-    """Markdown tables of the summary (pasted into MOTION_ROBUSTNESS_EVAL.md)."""
+    """Markdown tables of the summary (results/motion_robustness/summary.md)."""
     scenes = list(next(iter(summary["pause"].values())).keys())
     lines = ["### Part du temps en pause (%)", "",
              "| Config. | " + " | ".join(scenes) + " |", "|---|" + "---|" * len(scenes)]

@@ -2,7 +2,7 @@
 
 Each module is parsed (not imported) and its imports of ``iot_radar.*`` are
 collected; imports under ``if TYPE_CHECKING:`` are ignored because they are
-only used by type checkers.  The rules are those of REFACTOR_PLAN.md:
+only used by type checkers.  The rules:
 
 * ``dsp`` is pure signal processing: it does not know where samples come
   from nor how they are displayed;

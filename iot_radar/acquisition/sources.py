@@ -218,7 +218,7 @@ class CWSimulationSource:
     where the echoes are multiplied by ``exp(j·2π·δf·t)`` for a residual
     TX/RX local-oscillator offset ``δf``.  Every echo — leakage and walls
     included — is a delayed copy of the TX tone, hence sits at ``+f_offset``
-    (bug B2: the former model put the static clutter at 0 Hz, where the
+    (the former model put the static clutter at 0 Hz, where the
     clutter high-pass removed it perfectly, which never happens on the
     hardware).
 
@@ -274,7 +274,7 @@ class CWSimulationSource:
         Seed of the noise generator (``None``: different noise at each run).
     realtime : bool, optional
         If ``True``, :meth:`read_block` waits so that blocks are delivered at
-        the real sampling rate, like the hardware (bug B5: an unpaced
+        the real sampling rate, like the hardware (an unpaced
         simulation produced far more than 1 s of signal per second of wall
         clock, so recordings and live displays ran too fast).  ``False``
         (default) generates as fast as possible, for tests and offline use.
@@ -434,7 +434,7 @@ class CWSimulationSource:
         """Echoes of the person (masked), static reflectors (masked) and disturbers.
 
         Each disturber masks the paths of the person and of the static
-        reflectors, but not its own (MOTION_ROBUSTNESS_PLAN.md §5).
+        reflectors, but not its own.
         """
         echoes = target_echo * path_masking(self._target_position_m, self._disturbers, t_s)
         for position_m, amplitude in self._static_scatterers:

@@ -52,7 +52,7 @@ def test_arctan_after_circle_fit_gives_displacement() -> None:
 
 
 def test_highpass_before_arctan_destroys_phase() -> None:
-    """Bug B3 of the former chain: a clutter high-pass before angle() ruins the phase."""
+    """The former chain applied a clutter high-pass before angle(): it ruins the phase."""
     z, displacement_m = breathing_iq(noise=0.0, n=4000)
     sos = butter(2, 0.05, btype="high", fs=F_S_HZ, output="sos")
     filtered = sosfilt(sos, z.real) + 1j * sosfilt(sos, z.imag)

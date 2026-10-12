@@ -187,7 +187,8 @@ def breathing_metrics(
         of its harmonics 2 and 3.  The exclusion matters only when the
         reference band overlaps the breathing harmonics: with the Doppler
         filter M1 the spectrum is empty above ~2 Hz, so the noise is measured
-        inside the pass band (MOTION_ROBUSTNESS_PLAN.md §3.2); with the
+        inside the pass band (without the exclusion, an empty room got an SNR
+        of 80 dB there and was detected 22 to 40 % of the time); with the
         former reference band (2.5–5 Hz) nothing is excluded.
     settings : DetectionSettings
         Detector parameters.

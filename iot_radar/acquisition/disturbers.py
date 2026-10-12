@@ -3,7 +3,7 @@
 Place in the chain: simulation only.  :class:`iot_radar.acquisition.sources.CWSimulationSource`
 adds the echoes of these disturbers to the reception, attenuates the paths
 they cross, and annotates their activity in the ground truth
-(MOTION_ROBUSTNESS_PLAN.md §5).
+(ground truth).
 
 Frame: the radar is at the origin with its boresight along ``+y``; positions
 are in metres and times in seconds of the stream.  Each disturber is a small

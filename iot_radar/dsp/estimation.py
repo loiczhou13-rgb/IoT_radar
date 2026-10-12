@@ -90,8 +90,7 @@ def weighted_lomb_scargle(
     (J. T. VanderPlas, "Understanding the Lomb-Scargle periodogram", ApJS
     236(1), 2018, §5–6: generalised periodogram with per-point weights).
     Samples of weight 0 do not count at all, so contaminated segments of a
-    window are skipped instead of suspending the measurement (M3,
-    MOTION_ROBUSTNESS_PLAN.md §3.4).
+    window are skipped instead of suspending the measurement (M3).
 
     Parameters
     ----------

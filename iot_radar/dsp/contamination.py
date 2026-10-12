@@ -1,16 +1,20 @@
 """Contamination of the slow-time IQ by people moving around the radar, and sample weights (M3).
 
 Place in the chain: at the intermediate Doppler rate (100 Hz), **before** the
-Doppler filter M1, which would remove the evidence (MOTION_ROBUSTNESS_PLAN.md
-§3.4).  For each block of ``block_s`` seconds, the energy of the IQ above the
+Doppler filter M1, which would remove the evidence.  For each block of ``block_s`` seconds, the energy of the IQ above the
 breathing band (``out_of_band_start_hz`` up to half the rate: gestures,
 walking) is compared with its energy in the breathing band (DC — the static
 part — excluded), both normalised by their bandwidths::
 
     κ = 10·log10( (E_out / B_out) / (E_in / B_in) )      [dB]
 
-so that white noise gives 0 dB whatever the rates and bands.  A breathing
-target alone gives κ ≪ 0 dB, a disturber κ ≫ 0 dB.  The weight of the block
+so that white noise gives 0 dB whatever the rates and bands.  Measured in
+simulation: a breathing target alone gives −30 to −20 dB, a walker at 3.5 m
+raises κ to about −5 dB, gestures at 1.5 m to about 0 dB.  Because κ compares
+densities, an out-of-band line is diluted over the ~96 Hz out-of-band
+bandwidth: the weight only drops for a disturber clearly stronger than the
+breathing echo (about 10 times in amplitude for w = 0.5); a weaker one is
+already removed linearly by M1.  The weight of the block
 is a smooth function of κ — no binary pause::
 
     w = 1 / (1 + exp((κ − κ₀) / s))
@@ -27,11 +31,14 @@ still inside the pass band of the decimation::
 
     activity = 10·log10( (E_act / B_act) / (E_ref / B_ref) )      [dB]
 
-About 0 dB when nobody moves, whatever the strength of the target and
-whatever the past (a disturber present from the start is still seen).  It
-tells that someone moves around the radar, and serves to attribute an
-in-band anomaly to a passer-by rather than to the target
-(MOTION_ROBUSTNESS_PLAN.md §3.4).
+About 0 dB when nobody moves (±3 dB from block to block), whatever the
+strength of the target and whatever the past: a disturber present from the
+start is still seen, which a floor taken on the past of the out-of-band
+density would miss.  Measured in simulation: a walker at 3–6 m gives +8 to
++22 dB, a deep breath (3 rad of excursion) less than 5 dB.  The first block
+after a restart holds the transient of the filters and counts as 0 dB.  The
+activity tells that someone moves around the radar, and serves to attribute
+an in-band anomaly to a passer-by rather than to the target.
 """
 
 from __future__ import annotations
@@ -49,9 +56,13 @@ def contamination_weight(index_db: float | np.ndarray, midpoint_db: float = 9.0,
 
     Logistic: 0.99 at 0 dB (white noise), 0.5 at *midpoint_db*, 0.05 at
     ``midpoint_db + 6 dB`` with the default slope of 2 dB.  The default
-    midpoint of 9 dB comes from the evaluation (MOTION_ROBUSTNESS_EVAL.md):
-    with 6 dB, gestures at 1.5 m made a quarter of the measurements with a
-    breathing target inconclusive, for no fewer false alarms.
+    midpoint of 9 dB comes from a sweep of the evaluation
+    (``scripts/evaluate_motion_robustness.py --midpoints-db 0 3 6 9 12``,
+    M1 + M3, walkers and gestures with and without a target, 30 s
+    measurements): 9 dB gives Pd 85 % (6 dB: 72 %), 8 % of inconclusive
+    measurements with a target (6 dB: 20 %), no false alarm and no pause;
+    12 dB changes nothing more.  With 6 dB, gestures that M1 already removes
+    made a quarter of the measurements inconclusive.
     """
     return 1.0 / (1.0 + np.exp((np.asarray(index_db, dtype=np.float64) - midpoint_db) / slope_db))
 

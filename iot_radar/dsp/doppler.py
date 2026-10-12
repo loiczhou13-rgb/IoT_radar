@@ -1,8 +1,8 @@
 """Doppler filtering of the slow-time IQ (M1) and audit of the anti-aliasing of a decimation chain.
 
 Place in the chain: between the decimation to the intermediate Doppler rate
-(100 Hz) and the slow time (20 Hz), **before** the phase demodulation
-(MOTION_ROBUSTNESS_PLAN.md §3.2).  The received IQ is a linear sum::
+(100 Hz) and the slow time (20 Hz), **before** the phase demodulation.  The
+received IQ is a linear sum::
 
     x(t) = C(t) + a·exp(jφ_target(t)) + Σ_k b_k(t)·exp(jφ_k(t))
 
@@ -13,8 +13,20 @@ the breathing band by the demodulation.  A complex low-pass filter on the IQ
 first; it also serves as the anti-aliasing filter of the last decimation.
 
 The filter is a linear-phase FIR (Kaiser window): causal, with a constant
-delay of ``(N − 1)/2`` samples, i.e. 1.8 s at 100 Hz for the default
-template (pass band to 1 Hz, −6 dB at 1.5 Hz, ≥ 60 dB from 2 Hz).
+delay of ``(N − 1)/2`` samples, i.e. 1.82 s at 100 Hz for the default
+template (365 taps).  Template: pass band to 1 Hz (the breathing harmonics,
+flat to 0.01 dB), −6 dB at 1.5 Hz, ≥ 60 dB from 2 Hz (below the gestures,
+≥ 3 Hz; 2 Hz is also where the out-of-band energy of M3 starts).  The
+intermediate rate of 100 Hz keeps the walking Doppler (up to 24.5 Hz at
+1.5 m/s and 2.45 GHz) below its Nyquist frequency; 1 MS/s / 100 Hz = 10 000
+factors into primes ≤ 13.  The bands that the last ×5 decimation folds into
+±1 Hz (19–21 Hz, 39–41 Hz) lie in the stop band of the FIR, so the 60 dB
+requirement holds by construction: worst case 84 dB, at 19.1 Hz.  Without
+M1, the former Chebyshev cascade already met it (88 dB, at 19 Hz), but its
+last stage passed everything up to 8 Hz almost intact (0.4 dB at 3–8 Hz):
+gestures reached the circle fit and the arctangent, which are not linear.
+Cost: the decision is 1.82 s late, and after a restart the FIR needs 3.6 s
+to fill.
 
 Reference for the multistage decimation and its aliasing bands:
 R. E. Crochiere and L. R. Rabiner, "Interpolation and decimation of digital

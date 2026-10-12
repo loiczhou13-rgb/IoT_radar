@@ -124,7 +124,7 @@ class MotionRobustnessSettings:
     """Suppression of the residual motion of the people around the radar (``motion_robustness`` section).
 
     Every method is disabled by default, which gives the former behaviour
-    exactly (MOTION_ROBUSTNESS_PLAN.md §3).
+    exactly.
 
     Attributes
     ----------
@@ -377,7 +377,7 @@ class VitalSignsProcessor:
         is multiplied by the mean weight.  The in-band anomalies are cut out
         of the estimation, and only those of the target pause the measurement
         (:meth:`_cut_in_band_anomalies`, with *disturber_active*: one boolean
-        per sample, someone moving out of band; MOTION_ROBUSTNESS_PLAN.md §3.4).
+        per sample, someone moving out of band).
         """
         s = self.settings
         weighted = self.motion.contamination_enabled and weights is not None
@@ -476,8 +476,19 @@ class VitalSignsProcessor:
         started: a person can only reach the breathing band by slowing down
         through the out-of-band Doppler frequencies, so it is seen coming,
         whereas the target moving starts in the band.  Only the other
-        anomalies, the target's, count for the motion pause
-        (MOTION_ROBUSTNESS_PLAN.md §3.4).
+        anomalies, the target's, count for the motion pause.  Limits: a
+        target moving while a passer-by is active is not paused (its stretch
+        still gets weight 0); someone starting to walk from standstill next
+        to the target sweeps its Doppler up from 0 Hz through the band and is
+        taken for the target (short pause).
+
+        The thresholds come from the simulation: a chest moves by 5 to 15 mm
+        when breathing, hence ``motion_ptp_mm`` = 30 mm; ``excursion_factor``
+        (2.5) and ``excursion_floor_mm`` (12 mm) cut the transient of a jump of
+        the static echo without cutting a breath next to an apnea; segments
+        shorter than ``min_segment_s`` (5 s, half the slowest breathing
+        period) gave slow false peaks at the band edge in an empty room
+        crossed by walkers.
 
         Returns
         -------
@@ -891,7 +902,7 @@ class VitalSignsPipeline:
             self._finish_measurement()
 
     def _finish_measurement(self, discontinuity: bool = False) -> None:
-        """Analyse the measurement window once and decide (MOTION_ROBUSTNESS_PLAN.md §3.5)."""
+        """Analyse the measurement window once and decide."""
         m, self._measurement = self._measurement, None
         t_end_s = self._slow_samples_total / self.slow_time_rate_hz
         t_start_s = m["t_start_s"] if m["t_start_s"] is not None else t_end_s
