@@ -15,9 +15,11 @@ exactement la même chaîne de traitement.
 
 > **État.** La chaîne de phase est validée sur le radar simulé (fréquence à
 > ±1 respiration/min près, amplitude du déplacement, apnée, scène vide,
-> discontinuités du flux — voir `tests/test_vital_signs_pipeline.py`).  Elle
-> reste à valider sur le PlutoSDR : sur les anciens enregistrements, elle ne
-> détecte pas la respiration, pour une raison encore inconnue (voir
+> discontinuités du flux — voir `tests/test_vital_signs_pipeline.py`), y
+> compris avec des personnes qui bougent autour du radar ([Robustesse aux
+> mouvements parasites](#robustesse-aux-mouvements-parasites)).  Elle reste à
+> valider sur le PlutoSDR : sur les anciens enregistrements, elle ne détecte
+> pas la respiration, pour une raison encore inconnue (voir
 > [Limites connues](#limites-connues)).
 
 ---
@@ -25,15 +27,17 @@ exactement la même chaîne de traitement.
 ## Sommaire
 
 1. [Principe](#principe)
-2. [Organisation du dépôt](#organisation-du-dépôt)
-3. [Installation](#installation)
-4. [Démarrage rapide](#démarrage-rapide)
-5. [Configuration](#configuration)
-6. [Fichiers de session (HDF5)](#fichiers-de-session-hdf5)
-7. [Tableau de bord](#tableau-de-bord)
-8. [Tests](#tests)
-9. [Règles d'organisation du code](#règles-dorganisation-du-code)
-10. [Limites connues](#limites-connues)
+2. [Robustesse aux mouvements parasites](#robustesse-aux-mouvements-parasites)
+3. [Sur le terrain : mesure pendant un silence](#sur-le-terrain--mesure-pendant-un-silence)
+4. [Organisation du dépôt](#organisation-du-dépôt)
+5. [Installation](#installation)
+6. [Démarrage rapide](#démarrage-rapide)
+7. [Configuration](#configuration)
+8. [Fichiers de session (HDF5)](#fichiers-de-session-hdf5)
+9. [Tableau de bord](#tableau-de-bord)
+10. [Tests](#tests)
+11. [Règles d'organisation du code](#règles-dorganisation-du-code)
+12. [Limites connues](#limites-connues)
 
 ---
 
@@ -41,16 +45,16 @@ exactement la même chaîne de traitement.
 
 ### Physique
 
-Le Pluto émet une onde continue à `f_c = 3,5 GHz` (longueur d'onde
-`λ = c / f_c = 8,57 cm`).  Un thorax qui se déplace de `d(t)` vers le radar
+Le Pluto émet une onde continue à `f_c = 2,45 GHz`, dans la bande ISM
+(longueur d'onde `λ = c / f_c = 12,24 cm`).  Un thorax qui se déplace de `d(t)` vers le radar
 décale la phase de son écho de
 
 ```
 φ(t) = −4π · d(t) / λ
 ```
 
-Une respiration de 10 mm donne 1,47 rad ; un battement cardiaque de 0,1 mm
-donne 0,015 rad.  Dans le plan IQ, les échantillons en temps lent sont sur un
+Une respiration de 10 mm donne 1,03 rad ; un battement cardiaque de 0,1 mm
+donne 0,010 rad.  Dans le plan IQ, les échantillons en temps lent sont sur un
 **arc de cercle** centré sur la composante continue statique (fuite TX→RX,
 murs, DC du récepteur).  Le déplacement se lit dans l'angle **autour de ce
 centre** : c'est pourquoi la chaîne ajuste le cercle au lieu de filtrer l'IQ
@@ -70,19 +74,27 @@ PlutoSDR │ simulation │ relecture HDF5      iot_radar/acquisition/sources.py
         ▼
 Mixer (NCO à −tx_offset_hz)                dsp/mixer.py       écho → 0 Hz
         ▼
-Decimator (cascade de Tchebychev)          dsp/decimation.py  1 MS/s → 20 Hz (temps lent)
+Decimator (cascade de Tchebychev)          dsp/decimation.py  1 MS/s → 100 Hz (débit Doppler)
+        ├──► M3 contamination par bloc de 1 s   dsp/contamination.py  poids, activité
+        ▼
+M1 passe-bas Doppler (RIF), ×5             dsp/doppler.py     100 Hz → 20 Hz (temps lent)
         ▼
 fenêtre glissante : 20 s, analysée toutes les 0,5 s   pipeline.py
         ▼
 VitalSignsProcessor                        pipeline.py
-   dérotation de la dérive de LO → ajustement du cercle (DC)   dsp/phase.py
+   dérotation de la dérive de LO → ajustement du cercle (DC),   dsp/phase.py
+     (M2, optionnel : centre glissant s'il dérive)
    → arctangente / DACM → déplacement
+   → M3 anomalies dans la bande coupées (poids 0)
    → passe-bande 0,1–0,5 Hz → spectre      dsp/filters.py, dsp/estimation.py
+     (M3 : Lomb-Scargle pondéré)
    → métriques de respiration (SNR,        dsp/detection.py
      concentration du pic, mouvement)
         ▼
 BreathingDetector                          dsp/detection.py
-   lissage, hystérésis ON/OFF, maintien MOTION, fréquence médiane, alerte d'apnée
+   lissage, hystérésis ON/OFF, maintien de la pause, fréquence médiane, alerte d'apnée
+        ▼
+M4 mode mesure (30 s, à la demande)        measurement.py
         ▼
 PipelineOutput (dataclasses) ──► tableau de bord (ui/dashboard.py) ou journal
 ```
@@ -94,10 +106,112 @@ l'oscillateur, les filtres, la fenêtre et le détecteur, marque sa sortie
 suivante avec `discontinuity=True` et repart ; il ne recolle jamais deux
 morceaux de signal.
 
-États du détecteur : `WARMUP`, `NO_BREATHING`, `BREATHING`, `MOTION`.
-L'alerte d'apnée est levée quand aucune inspiration n'a été vue depuis 10 s
-alors qu'une respiration était détectée peu avant (un radar ne distingue pas
-une apnée d'une personne qui sort du faisceau).
+États du détecteur : `WARMUP`, `NO_BREATHING`, `BREATHING`, `MOTION`
+(mesure en pause ; `pause_reason` en donne la cause : `motion`, mouvement
+de la cible, ou `saturation` de l'ADC).  L'alerte d'apnée est levée quand
+aucune inspiration n'a été vue depuis 10 s alors qu'une respiration était
+détectée peu avant (un radar ne distingue pas une apnée d'une personne qui
+sort du faisceau).
+
+---
+
+## Robustesse aux mouvements parasites
+
+En SISO, toute activité dans le faisceau mettait la mesure en pause : en
+milieu ouvert, le radar était presque toujours en pause.  Sur le terrain, la
+recherche se fait pendant des silences, mais il reste des mouvements
+résiduels (personnes plus loin, balancement, gestes).  Ils sont désormais
+**supprimés par traitement au lieu de mettre en pause** (conception et
+choix : [`MOTION_ROBUSTNESS_PLAN.md`](MOTION_ROBUSTNESS_PLAN.md)).
+
+Une vitesse radiale `v` donne le Doppler `f_D = 2·v/λ ≈ 16·v Hz` à 2,45 GHz :
+
+| Source | Doppler à 2,45 GHz |
+|---|---|
+| respiration | ~0,15 Hz (harmoniques jusqu'à ~1 Hz) |
+| balancement d'une personne debout | ~0,8 Hz |
+| gestes | 3–16 Hz |
+| marche | 16–25 Hz |
+
+Les échos s'additionnent **linéairement** dans l'IQ, alors que l'arctangente
+n'est pas linéaire : tout est supprimé sur l'IQ complexe, **avant** la
+démodulation de phase.
+
+- **M1 — filtrage Doppler** (`dsp/doppler.py`).  Passe-bas RIF à phase
+  linéaire sur l'IQ à 100 Hz : plat jusqu'à 1 Hz, −6 dB à 1,5 Hz, ≥ 60 dB dès
+  2 Hz, causal, retard constant de 1,82 s.  C'est aussi le filtre
+  anti-repliement de la dernière décimation.  Le repliement de toute la
+  chaîne dans ±1 Hz est audité au démarrage (≥ 84 dB, exigence 60 dB) : un
+  marcheur à 19 Hz n'apparaît jamais comme une respiration.
+- **M2 — centre glissant de l'arc** (`dsp/phase.py`).  Quand des personnes
+  bougent, les réflexions statiques, donc le centre de l'arc IQ, dérivent.
+  Ajustements de Pratt sur des sous-fenêtres de 10 s toutes les 1 s,
+  interpolés linéairement (la phase reste continue).  Le centre suivi n'est
+  utilisé que s'il s'ajuste nettement mieux qu'un centre fixe.
+  **Désactivé par défaut** : il n'a apporté aucun gain mesurable à
+  l'évaluation, où un passant ne masque un mur que brièvement (M3 coupe ce
+  passage) ; l'activer là où le fouillis statique dérive lentement.
+- **M3 — pondération et estimation tolérante aux trous**
+  (`dsp/contamination.py`, `pipeline.py`).  Par bloc de 1 s, avant M1,
+  l'indice de contamination (densité d'énergie au-dessus de 2 Hz sur densité
+  dans la bande respiratoire) donne un poids lisse dans [0, 1].  Le spectre
+  est un périodogramme de Lomb-Scargle pondéré : les passages contaminés sont
+  sautés, et la confiance affichée est multipliée par le poids moyen.  La
+  mesure ne se met en pause **que** pour une saturation de l'ADC ou un
+  mouvement de la cible elle-même.
+  - Un marcheur qui traverse le faisceau passe par une vitesse radiale
+    nulle : pendant environ 1 s, son écho est dans la bande respiratoire.
+    Cette anomalie dans la bande est coupée (poids 0).  Elle est imputée à
+    un passant si quelqu'un bougeait hors bande (3–28 Hz au-dessus du bruit
+    du récepteur) dans les 10 s précédentes : une personne n'atteint la
+    bande qu'en ralentissant, on la voit donc venir.  Sinon, c'est la cible
+    qui bouge, et la mesure se met en pause.
+- **M4 — mode mesure** (`measurement.py`) : voir la section suivante.
+
+M1 et M3 sont activés par défaut, M2 est désactivé.  Chacune peut être
+activée ou désactivée dans la section `motion_robustness` ; les trois
+désactivées, on retrouve exactement l'ancien comportement.
+
+**Évaluation** ([`MOTION_ROBUSTNESS_EVAL.md`](MOTION_ROBUSTNESS_EVAL.md) ;
+scènes simulées et 69 anciennes sessions).  Avec M1 + M3, par rapport à
+l'ancienne chaîne :
+- le temps en pause avec des personnes qui bougent autour passe de 34–100 %
+  à 0–1 % ;
+- mesures de 30 s : Pd de 58 % à 74 % (marcheurs qui coupent le faisceau à
+  3 m : de 5 % à 70 %), Pfa de 5 % à 0 % ;
+- un mouvement de la cible met toujours en pause, et ses mesures restent non
+  concluantes.
+
+---
+
+## Sur le terrain : mesure pendant un silence
+
+1. **Les sauveteurs sortent du faisceau et restent immobiles** : derrière le
+   radar ou à plus de 60° sur le côté, personne à moins de ~3 m devant lui.
+   Une personne proche du faisceau dont les mouvements restent dans la bande
+   respiratoire (balancement, report du poids d'une jambe sur l'autre) ne
+   peut pas être distinguée de la victime avec une seule antenne.
+2. **Lancer la mesure quand le silence commence** : touche `m` du tableau de
+   bord, ou `python scripts/run_radar.py --measure` sans écran.  La carte
+   d'état affiche `MEASURING x / 30 s`.  La fenêtre commence avec l'IQ reçu
+   après l'appui (le retard de M1 est sauté).
+3. **Lire la décision** :
+   - `BREATHING` avec la fréquence ;
+   - `NO BREATHING` ;
+   - `INCONCLUSIVE`, avec la cause :
+     - `target_motion` : la cible a bougé ;
+     - `saturation` : baisser `sdr.rx_gain_db` ou déplacer le radar ;
+     - `too_contaminated` : moins de la moitié de la fenêtre est
+       exploitable, quelqu'un a bougé dans le faisceau ;
+     - `discontinuity` : des échantillons ont été perdus ;
+     - `uncertain` : confiance entre les deux seuils.
+
+     Recommencer la mesure.
+
+   Le résumé de qualité donne la part contaminée, la part saturée et la
+   part du temps où quelqu'un bougeait autour du radar.
+
+Le mode continu tourne en parallèle, avec les mêmes traitements.
 
 ---
 
@@ -111,16 +225,20 @@ IoT_radar/
 │   ├── acquisition/
 │   │   ├── pluto.py           configuration du PlutoSDR, buffer TX, contrôles de débordement / saturation
 │   │   ├── sources.py         Block, PlutoSource, CWSimulationSource, ReplaySource
+│   │   ├── disturbers.py      marcheurs, balancement, gestes simulés, masquage des trajets
 │   │   └── recording.py       écriture et lecture des sessions HDF5 (schéma v1)
 │   ├── dsp/                   traitement du signal (ni E/S, ni affichage)
 │   │   ├── mixer.py           translation de fréquence (NCO)
 │   │   ├── decimation.py      décimateur à état
-│   │   ├── phase.py           ajustement du cercle, arctangente / DACM, phase → déplacement
+│   │   ├── doppler.py         M1 passe-bas Doppler, audit du repliement
+│   │   ├── contamination.py   M3 indice de contamination, poids, activité
+│   │   ├── phase.py           ajustements du cercle, M2 centre glissant, arctangente / DACM, phase → déplacement
 │   │   ├── filters.py         passe-bande, suppression de tendance
-│   │   ├── estimation.py      périodogramme, estimateurs de fréquence, cycles respiratoires
+│   │   ├── estimation.py      périodogramme, Lomb-Scargle pondéré, estimateurs de fréquence, cycles
 │   │   ├── detection.py       métriques de respiration et BreathingDetector
 │   │   └── spectral.py        fenêtres et TFCT (vue micro-Doppler uniquement)
 │   ├── pipeline.py            VitalSignsPipeline : blocs en entrée, PipelineOutput en sortie
+│   ├── measurement.py         M4 mode mesure : réglages, résultat, règle de décision
 │   ├── ui/
 │   │   ├── dashboard.py       tableau de bord de phase temps réel (matplotlib)
 │   │   └── launcher.py        écran d'accueil pygame
@@ -129,10 +247,13 @@ IoT_radar/
 ├── configs/                   radar.yaml, training.yaml
 ├── notebooks/                 inference.ipynb (ml/)
 ├── tests/                     tests pytest, tests/data/references.npz
+├── docs/figures/              figures des rapports d'évaluation
 ├── data/sessions/             sessions HDF5 (ignorées par Git)
 ├── logs/                      journaux d'exécution (ignorés par Git)
 ├── pyproject.toml, requirements.txt
-└── REFACTOR_PLAN.md           décisions de conception du refactor de 2026
+├── REFACTOR_PLAN.md           décisions de conception du refactor de 2026
+├── MOTION_ROBUSTNESS_PLAN.md  conception de la robustesse aux mouvements parasites
+└── MOTION_ROBUSTNESS_EVAL.md  son évaluation
 ```
 
 ---
@@ -207,8 +328,10 @@ python scripts/run_radar.py
 ```
 
 Options : `--config FICHIER`, `--headless` (pas de fenêtre, chaque résultat
-va dans le journal), `--log-file FICHIER`.  Les journaux vont par défaut dans
-`logs/radar_<horodatage>.log`.
+va dans le journal), `--measure` (une mesure pendant un silence, puis
+sortie), `--log-file FICHIER`.  Les journaux vont par défaut dans
+`logs/radar_<horodatage>.log`.  Sur le tableau de bord, la touche `m` lance
+une mesure.
 
 **Écran d'accueil**, avec un bouton par mode (chacun lance `run_radar.py`
 dans son propre processus) :
@@ -243,6 +366,14 @@ python scripts/replay.py data/sessions/session_0001_20261005_143012.h5
 python scripts/convert_legacy_iq.py chemin/vers/anciennes/donnees
 ```
 
+**Évaluer la robustesse aux mouvements parasites** (scènes simulées et
+sessions enregistrées, toutes les combinaisons de M1 à M3 ; résultats dans
+`results/motion_robustness/`, figures dans `docs/figures/motion_robustness/`) :
+
+```bash
+python scripts/evaluate_motion_robustness.py
+```
+
 **Entraîner l'ancien autoencodeur** (voir [`iot_radar/ml/README.fr.md`](iot_radar/ml/README.fr.md)) :
 
 ```bash
@@ -264,11 +395,13 @@ unité (`_hz`, `_s`, `_m`, `_mm`, `_db`, …).
 | `tx` | forme d'onde (`cw` / `cw_offset`) et décalage |
 | `slow_time` | fréquence du temps lent après décimation (20 Hz), préchauffage |
 | `vital_signs` | fenêtre d'analyse, bandes, compensation du DC, démodulation, validité de l'ajustement du cercle, seuils de `detection` |
+| `motion_robustness` | M1 filtrage Doppler, contrôle du repliement, M2 suivi du centre, M3 pondération (chacun avec `enabled`) |
+| `measurement` | M4 : durée (30 s), part valide minimale |
 | `micro_doppler_view` | waterfall du tableau de bord (affichage uniquement) |
 | `display` | durée d'historique du tableau de bord, plein écran |
 | `link_budget` | scénarios optimiste / pessimiste → portée affichée |
 | `recording` | dossier des sessions, intervalle d'écriture sur disque |
-| `simulation` | scène simulée : présence, chronologie, respiration, cœur, mouvement, fouillis, SNR, graine |
+| `simulation` | scène simulée : présence, chronologie, respiration, cœur, mouvement, fouillis, réflecteurs statiques, perturbateurs, SNR, graine |
 
 Une scène simulée peut évoluer dans le temps, par exemple :
 
@@ -276,7 +409,23 @@ Une scène simulée peut évoluer dans le temps, par exemple :
 simulation:
   enabled: true
   timeline: [[0, breathing], [45, apnea], [60, breathing], [95, motion], [110, empty]]
+  disturbers:   # personnes autour du radar (immobiles hors de leur intervalle)
+    - {kind: walker, start_m: [-8.0, 3.5], velocity_m_s: [1.0, 0.0], start_s: 30.0, stop_s: 46.0}
+    - {kind: gesture, position_m: [0.8, 1.5], start_s: 60.0, stop_s: 90.0}
 ```
+
+**Principaux paramètres de la robustesse aux mouvements** (`motion_robustness`) :
+
+| Clé | Défaut | Rôle |
+|---|---|---|
+| `doppler_filter.cutoff_hz` | 1,5 | fréquence à −6 dB de M1 |
+| `doppler_filter.stopband_attenuation_db` | 60 | atténuation dès `cutoff + transition/2` = 2 Hz |
+| `center_tracking.enabled` | false | M2 (voir plus haut) |
+| `center_tracking.window_s`, `step_s` | 10, 1 | sous-fenêtres de M2 (2 à 3 cycles respiratoires) |
+| `contamination_weighting.weight_midpoint_db` | 9 | indice de contamination pour lequel le poids vaut 0,5 |
+| `contamination_weighting.activity_threshold_db` | 6 | au-dessus, quelqu'un bouge autour du radar |
+| `contamination_weighting.activity_lead_s` | 10 | anomalie imputée à un passant vu dans ce délai |
+| `contamination_weighting.pause_on_saturation` | true | pause sur saturation de l'ADC |
 
 **Fréquence d'échantillonnage.**  Le Pluto échantillonne à 1 MS/s, avec des
 buffers de 65536 échantillons et 16 buffers RX mis en file dans le Pluto
@@ -341,16 +490,19 @@ with SessionReader("data/sessions/session_0001_20261005_143012.h5") as reader:
 `scripts/run_radar.py` et `scripts/replay.py` ouvrent le tableau de bord de
 phase ([`ui/dashboard.py`](iot_radar/ui/dashboard.py)) :
 
-- **carte d'état** : état, fréquence respiratoire, jauge de confiance,
+- **carte d'état** : état (et cause d'une pause), fréquence respiratoire,
+  jauge de confiance, mode mesure (touche `m` : progression, puis décision),
   bandeau d'apnée, discontinuités du flux ;
 - **forme d'onde du déplacement** (brute et filtrée, inspiration vers le
   haut) avec les respirations détectées ;
 - **constellation IQ** de la fenêtre analysée avec le cercle ajusté et son
   centre — montre si la phase peut être extraite ;
-- **chronologie de la confiance**, colorée par état ;
+- **chronologie de la confiance**, colorée par état, avec le poids de M3 ;
 - **grandeurs mesurées** : fréquences de quatre estimateurs, intervalle et
   variabilité des respirations, profondeur, rapport I:E, SNR, amplitudes de
-  l'écho et du DC, dérive de LO, fréquence cardiaque indicative ;
+  l'écho et du DC, dérive de LO, fréquence cardiaque indicative ; poids
+  courant, part contaminée de la fenêtre, saturation ; résumé de la
+  dernière mesure ;
 - **historique de la fréquence**, **spectre du déplacement** et **waterfall
   micro-Doppler** du temps lent ;
 - **paramètres** du radar, du traitement et de la détection.
@@ -366,12 +518,14 @@ Le pipeline ne connaît pas le tableau de bord : il renvoie des dataclasses
 pytest
 ```
 
-La suite (moins d'une minute, sans matériel) couvre :
+La suite (environ deux minutes, sans matériel) couvre :
 
 - les briques DSP ;
 - les sources, y compris un faux Pluto ;
 - les sessions HDF5 et l'équivalence bit à bit entre direct et relecture ;
 - la validation de toute la chaîne sur le radar simulé ;
+- la robustesse aux mouvements (repliement ≥ 60 dB, suivi du centre,
+  marcheurs, gestes, mouvement de la cible, saturation, mode mesure) ;
 - les scripts ;
 - des tests de fumée sans écran du tableau de bord et de l'écran d'accueil ;
 - les règles de dépendance ci-dessous.
@@ -427,6 +581,27 @@ DSP.
   dans la pièce donnerait la même signature.  Il faut de nouveaux
   enregistrements bruts d'une scène contrôlée (`scripts/record.py`).  Détails
   au §19.3 de `REFACTOR_PLAN.md`.
+- **Robustesse aux mouvements : limites d'une seule antenne** (détails dans
+  `MOTION_ROBUSTNESS_PLAN.md` §3.4 et §7, figures dans
+  `MOTION_ROBUSTNESS_EVAL.md`) :
+  - une personne proche du faisceau dont les mouvements restent **dans la
+    bande respiratoire** (balancement, report du poids), avec un écho
+    comparable à celui de la victime, ne peut pas être supprimée : la mesure
+    n'est alors pas concluante.  Seul un filtrage spatial (plusieurs
+    antennes, MVDR) pourrait les séparer ;
+  - un perturbateur qui **se met à bouger directement dans la bande**, sans
+    phase hors bande avant (quelqu'un qui se met à marcher à côté de la
+    cible), est pris pour la cible : courte pause ;
+  - si la cible bouge **pendant** qu'un passant est actif, l'anomalie est
+    imputée au passant : pas de pause, mais le passage reçoit un poids nul ;
+  - M1 retarde chaque résultat de 1,82 s et allonge le préchauffage après un
+    redémarrage (3,6 s) ;
+  - M3 sans M1 laisse les perturbateurs atteindre la démodulation et donne
+    de fausses détections dans une pièce vide : garder M1 activé avec M3 ;
+  - les seuils (milieu de l'indice, seuil d'activité) sont réglés sur la
+    simulation ; ils doivent être vérifiés sur de nouveaux enregistrements
+    avec perturbateurs annotés (`/ground_truth/disturbances` n'est écrit que
+    pour les sessions simulées).
 - **`ml/`** apprend encore sur les anciens spectrogrammes `.npz` de la chaîne
   micro-Doppler supprimée ; il sera repensé sur le signal de phase des
   sessions HDF5.

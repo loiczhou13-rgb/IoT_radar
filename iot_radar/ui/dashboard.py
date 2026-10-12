@@ -17,22 +17,30 @@ Layout (GridSpec 3 × 5)::
     │ history  │ spectrum      │ waterfall     │            │            │
     └──────────┴───────────────┴───────────────┴────────────┴────────────┘
 
-* **Status card** — detector state, breathing rate, confidence gauge with the
-  ON/OFF thresholds, duration of the breathing episode, apnea banner, stream
-  discontinuities.
+* **Status card** — detector state (and cause of a pause: target motion or
+  ADC saturation), breathing rate, confidence gauge with the ON/OFF
+  thresholds, duration of the breathing episode, measurement mode (progress,
+  then decision), apnea banner, stream discontinuities.
 * **Displacement waveform** — chest expansion towards the radar (inhalation
   up), raw and band-passed, with end-of-inhalation ▲ / end-of-exhalation ▼.
 * **IQ constellation** — the analysed window in the IQ plane with the fitted
   circle and its centre (DC offset): shows whether the phase can be
   extracted (arc length, noise, clutter).
 * **Confidence timeline** — smoothed and instantaneous confidence, SNR and
-  concentration scores; background coloured by state.
+  concentration scores, M3 weight of the latest block; background coloured
+  by state.
 * **Measured quantities** — rates of four estimators, breath interval and
   variability, depth, I:E ratio, time since the last breath, SNR,
-  concentration, echo / DC amplitudes, LO drift, indicative heart rate.
+  concentration, echo / DC amplitudes, LO drift, indicative heart rate;
+  motion robustness (current weight, contaminated share, saturation) and the
+  last measurement (decision, rate, confidence, quality summary).
 * **Rate history**, **displacement spectrum** (bands, peak window, noise
   floor) and **micro-Doppler waterfall** of the slow time.
 * **Parameters** — static radar, processing and detection parameters.
+
+Key ``m`` asks for a measurement (M4): the dashboard only calls the
+``on_measure`` callback; the caller starts the measurement in the producer
+thread, the pipeline is never touched from the GUI.
 
 Threading model: the outputs are produced in a daemon thread (blocking SDR
 reads never freeze the window); a matplotlib timer moves them to the
@@ -47,7 +55,7 @@ import logging
 import threading
 import time
 from collections import deque
-from typing import TYPE_CHECKING, Any, Iterable
+from typing import TYPE_CHECKING, Any, Callable, Iterable
 
 import matplotlib
 import matplotlib.pyplot as plt
@@ -65,13 +73,16 @@ from iot_radar.dsp.detection import (
 
 if TYPE_CHECKING:  # type hints only: the dashboard does not depend on the pipeline
     from iot_radar.dsp.detection import BreathingState
-    from iot_radar.pipeline import PipelineOutput, WindowAnalysis
+    from iot_radar.measurement import MeasurementStatus
+    from iot_radar.pipeline import ContaminationStatus, PipelineOutput, WindowAnalysis
 
 logger = logging.getLogger(__name__)
 
 _POLL_MS = 100
 _APNEA_COLOR = "#de2d26"
 _DISCONTINUITY_COLOR = "#756bb1"
+_MEASUREMENT_COLOR = "#3182bd"
+_WEIGHT_COLOR = "#8c6d31"
 
 STATE_STYLE = {
     STATE_WARMUP: ("#9ecae1", "WARMING UP"),
@@ -80,6 +91,14 @@ STATE_STYLE = {
     STATE_MOTION: ("#fd8d3c", "MOTION — MEASUREMENT PAUSED"),
 }
 """Colour and label of each detector state."""
+
+PAUSE_TEXT = {
+    "motion": ("MOTION — MEASUREMENT PAUSED", "Target moving — rate paused until the window is clean"),
+    "saturation": ("ADC SATURATION — PAUSED", "Lower sdr.rx_gain_db or move the radar"),
+}
+"""Label and explanation of a pause, by cause (``BreathingState.pause_reason``)."""
+
+DECISION_TEXT = {"breathing": "BREATHING", "no_breathing": "NO BREATHING", "inconclusive": "INCONCLUSIVE"}
 
 _TEXT_BOX = dict(boxstyle="round,pad=0.5", facecolor="#f7f7f7", edgecolor="#bbbbbb")
 
@@ -120,10 +139,16 @@ class PhaseDashboard:
         * ``parameters`` — ``[(section title, [(name, value), ...]), ...]``.
     full_screen : bool, optional
         Toggle the full-screen mode at start-up.
+    on_measure : callable or None, optional
+        Called (GUI thread, no argument) when the key ``m`` is pressed: the
+        caller starts a measurement (M4).  ``None`` disables the key.
     """
 
-    def __init__(self, context: dict[str, Any], full_screen: bool = False) -> None:
+    def __init__(self, context: dict[str, Any], full_screen: bool = False,
+                 on_measure: Callable[[], None] | None = None) -> None:
         self._context = context
+        self._on_measure = on_measure
+        self._measure_requested = False
         f_hz = np.asarray(context["micro_doppler_f_hz"], dtype=np.float64)
         self._waterfall_rows = np.abs(f_hz) <= float(context.get("display_max_hz", 3.0))
         self._waterfall_f_hz = f_hz[self._waterfall_rows]
@@ -215,6 +240,8 @@ class PhaseDashboard:
                                                     linestyle="--", label="concentration score")
         (self._line_instant,) = ax.plot([], [], color="0.55", linewidth=0.9, label="instantaneous")
         (self._line_confidence,) = ax.plot([], [], color="black", linewidth=2.2, label="smoothed (decision)")
+        (self._line_weight,) = ax.plot([], [], color=_WEIGHT_COLOR, linewidth=1.0, drawstyle="steps-post",
+                                       label="M3 weight")
         ax.axhline(self._threshold_on, color="tab:green", linestyle="--", linewidth=1.0,
                    label=f"ON ({self._threshold_on:.2f})")
         ax.axhline(self._threshold_off, color="tab:red", linestyle=":", linewidth=1.0,
@@ -225,7 +252,7 @@ class PhaseDashboard:
         ax.set_ylabel("Confidence / score")
         ax.set_title("Detection confidence — background: green breathing · orange motion · "
                      "red apnea alert · purple line: stream discontinuity")
-        ax.legend(loc="lower left", fontsize=8, ncol=6)
+        ax.legend(loc="lower left", fontsize=8, ncol=7)
         ax.grid(alpha=0.3)
 
         # --- Text panels ------------------------------------------------------
@@ -308,8 +335,11 @@ class PhaseDashboard:
             x = 0.08 + 0.84 * threshold
             ax.plot([x, x], [0.34, 0.47], color="black", linewidth=1.0)
             ax.text(x, 0.31, label, ha="center", va="top", fontsize=7)
-        self._episode_text = ax.text(0.5, 0.20, "", ha="center", va="center", fontsize=10)
-        self._alert_text = ax.text(0.5, 0.08, "", ha="center", va="center", fontsize=10,
+        self._episode_text = ax.text(0.5, 0.23, "", ha="center", va="center", fontsize=9)
+        hint = "press m to measure" if self._on_measure is not None else ""
+        self._measurement_text = ax.text(0.5, 0.14, hint, ha="center", va="center", fontsize=9,
+                                         fontweight="bold", color=_MEASUREMENT_COLOR)
+        self._alert_text = ax.text(0.5, 0.05, "", ha="center", va="center", fontsize=10,
                                    fontweight="bold", color="white",
                                    bbox=dict(boxstyle="round,pad=0.3", facecolor=_APNEA_COLOR))
         self._alert_text.set_visible(False)
@@ -324,12 +354,14 @@ class PhaseDashboard:
             self._discontinuity_times_s.append(output.t_s)
         self._update_waterfall(output.micro_doppler_column_db)
         self._update_status(output.breathing, output.t_s)
-        self._update_timelines(output.breathing, output.analysis)
+        self._update_measurement(output.measurement)
+        self._update_timelines(output.breathing, output.analysis, output.contamination)
         if output.analysis is not None:
             self._update_waveform(output.analysis)
             self._update_constellation(output.analysis)
             self._update_spectrum(output.analysis)
-            self._live_text.set_text(self._measured_quantities(output.breathing, output.analysis))
+            self._live_text.set_text(self._measured_quantities(output.breathing, output.analysis,
+                                                               output.contamination, output.measurement))
 
     def _update_waterfall(self, column_db: np.ndarray | None) -> None:
         if column_db is None:
@@ -345,6 +377,9 @@ class PhaseDashboard:
 
     def _update_status(self, breathing: BreathingState, t_s: float) -> None:
         color, label = STATE_STYLE.get(breathing.state, ("#bdbdbd", breathing.state))
+        pause_label, pause_text = PAUSE_TEXT.get(breathing.pause_reason or "motion", PAUSE_TEXT["motion"])
+        if breathing.state == STATE_MOTION:
+            label = pause_label
         self._card.set_facecolor(_APNEA_COLOR if breathing.apnea else color)
         self._state_text.set_text(label)
         self._state_text.set_color(color if breathing.state != STATE_NO_BREATHING else "0.35")
@@ -356,7 +391,7 @@ class PhaseDashboard:
             minutes, seconds = divmod(int(breathing.breathing_for_s), 60)
             self._episode_text.set_text(f"Breathing for {minutes:02d}:{seconds:02d}")
         elif breathing.state == STATE_MOTION:
-            self._episode_text.set_text("Rate paused until the window is clean")
+            self._episode_text.set_text(pause_text)
         else:
             self._episode_text.set_text("")
 
@@ -370,7 +405,25 @@ class PhaseDashboard:
             self._alert_text.get_bbox_patch().set_facecolor(_DISCONTINUITY_COLOR)
         self._alert_text.set_visible(bool(breathing.apnea or recent_restart))
 
-    def _update_timelines(self, breathing: BreathingState, analysis: WindowAnalysis | None) -> None:
+    def _update_measurement(self, measurement: MeasurementStatus | None) -> None:
+        """Measurement line of the status card: progress, then the decision of the last measurement."""
+        if measurement is None:
+            return
+        if measurement.state == "running":
+            self._measure_requested = False
+            self._measurement_text.set_text(
+                f"MEASURING {measurement.elapsed_s:.0f} / {measurement.duration_s:.0f} s — stay still")
+        elif self._measure_requested:
+            self._measurement_text.set_text("Measurement requested…")
+        elif measurement.result is not None:
+            result = measurement.result
+            rate = f" {result.rate_bpm:.1f} /min" if result.rate_bpm else ""
+            reasons = f" ({', '.join(result.reasons)})" if result.reasons else ""
+            self._measurement_text.set_text(
+                f"Measurement: {DECISION_TEXT.get(result.decision, result.decision)}{rate}{reasons}")
+
+    def _update_timelines(self, breathing: BreathingState, analysis: WindowAnalysis | None,
+                          contamination: ContaminationStatus | None = None) -> None:
         metrics = breathing.metrics
         reliable = metrics is not None and metrics.confidence >= self._threshold_off
         rate_fft_bpm = 60 * metrics.rate_hz if reliable and metrics.rate_hz else np.nan
@@ -387,6 +440,7 @@ class PhaseDashboard:
             float(breathing.apnea),
             rate_fft_bpm,
             rate_cycles_bpm,
+            contamination.weight if contamination is not None else np.nan,
         ))
         while self._history and self._history[0][0] < breathing.t_s - self._history_s:
             self._history.popleft()
@@ -399,6 +453,7 @@ class PhaseDashboard:
         self._line_rate.set_data(t_s, history[:, 4])
         self._line_rate_fft.set_data(t_s, history[:, 8])
         self._line_rate_cycles.set_data(t_s, history[:, 9])
+        self._line_weight.set_data(t_s, history[:, 10])
 
         for artist in self._state_fills + self._discontinuity_lines:
             artist.remove()
@@ -482,7 +537,9 @@ class PhaseDashboard:
         self.ax_spectrum.set_title(f"Displacement spectrum — SNR {metrics.snr_db:.1f} dB · "
                                    f"conc. {metrics.concentration:.2f}")
 
-    def _measured_quantities(self, breathing: BreathingState, analysis: WindowAnalysis) -> str:
+    def _measured_quantities(self, breathing: BreathingState, analysis: WindowAnalysis,
+                             contamination: ContaminationStatus | None = None,
+                             measurement: MeasurementStatus | None = None) -> str:
         """Text of the measured-quantities panel."""
         metrics, cycles, demodulation = analysis.metrics, analysis.cycles, analysis.demodulation
         unit = "mm" if demodulation.calibrated else "a.u."
@@ -521,11 +578,38 @@ class PhaseDashboard:
             ("LO drift", f"{analysis.lo_drift_hz * 1e3:+.1f} mHz"),
             ("Heart rate (ind.)", bpm(analysis.heart_rate_hz) + " /min"),
         ]
-        return _table([("Breathing", breathing_rows), ("Detection", detection_rows), ("Signal", signal_rows)])
+        sections = [("Breathing", breathing_rows), ("Detection", detection_rows), ("Signal", signal_rows)]
+        if contamination is not None:
+            sections.append(("Motion robustness", [
+                ("Current weight", f"{contamination.weight:.2f} (κ {_fmt(contamination.index_db, '.0f', ' dB')})"),
+                ("Mean weight", _fmt(contamination.mean_weight, ".2f")),
+                ("Contaminated", _fmt(100 * contamination.contaminated_fraction, ".0f", " % of window")),
+                ("ADC saturation", "YES" if contamination.saturated else "no"),
+            ]))
+        if measurement is not None and measurement.result is not None:
+            result = measurement.result
+            sections.append(("Last measurement", [
+                ("Decision", DECISION_TEXT.get(result.decision, result.decision)
+                 + (f" ({', '.join(result.reasons)})" if result.reasons else "")),
+                ("Rate", _fmt(result.rate_bpm, ".1f", " /min")),
+                ("Confidence", f"{100 * result.confidence:.0f} %"),
+                ("Contaminated", f"{100 * result.contaminated_fraction:.0f} %"),
+                ("Saturated", f"{100 * result.saturated_fraction:.0f} %"),
+                ("Activity around", f"{100 * result.activity_fraction:.0f} %"),
+            ]))
+        return _table(sections)
 
     # ------------------------------------------------------------------
     # Event loop
     # ------------------------------------------------------------------
+
+    def _on_key(self, event) -> None:
+        """Key ``m``: ask the caller for a measurement (GUI thread)."""
+        if event.key == "m" and self._on_measure is not None:
+            self._on_measure()
+            self._measure_requested = True
+            self._measurement_text.set_text("Measurement requested…")
+            self.fig.canvas.draw_idle()
 
     def run(self, outputs: Iterable[PipelineOutput]) -> None:
         """Consume *outputs* in a producer thread and display them until the window is closed."""
@@ -563,6 +647,7 @@ class PhaseDashboard:
 
         self.fig.canvas.mpl_connect("draw_event", _start)
         self.fig.canvas.mpl_connect("close_event", lambda _event: self._stop.set())
+        self.fig.canvas.mpl_connect("key_press_event", self._on_key)
         timer = self.fig.canvas.new_timer(interval=_POLL_MS)
         timer.add_callback(_poll)
         timer.start()

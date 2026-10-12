@@ -180,7 +180,13 @@ def breathing_metrics(
         Peak-to-peak displacement (mm), or NaN when the demodulation is not
         calibrated (linear fallback): motion is then not assessed.
     breathing_band_hz, reference_band_hz : tuple[float, float]
-        Bands (Hz).
+        Bands (Hz).  The noise floor is the median power of the reference
+        band, without the bins within ±``peak_halfwidth_hz`` of the peak and
+        of its harmonics 2 and 3.  The exclusion matters only when the
+        reference band overlaps the breathing harmonics: with the Doppler
+        filter M1 the spectrum is empty above ~2 Hz, so the noise is measured
+        inside the pass band (MOTION_ROBUSTNESS_PLAN.md §3.2); with the
+        former reference band (2.5–5 Hz) nothing is excluded.
     settings : DetectionSettings
         Detector parameters.
     """
@@ -196,8 +202,13 @@ def breathing_metrics(
     rises_to_the_right = k < psd.size - 1 and psd[k + 1] > psd[k]
     genuine = not (rises_to_the_left or rises_to_the_right)
     rate_hz = _parabolic_peak_hz(f_hz, psd, k)
-    noise_floor = float(max(np.median(psd[in_reference]), 1e-300))
-    snr_db = float(10.0 * np.log10(psd[k] / noise_floor))
+    near_harmonic = np.zeros_like(in_reference)
+    for order in (1, 2, 3):
+        near_harmonic |= np.abs(f_hz - order * f_hz[k]) <= settings.peak_halfwidth_hz
+    noise_bins = in_reference & ~near_harmonic
+    noise_floor = float(max(np.median(psd[noise_bins] if noise_bins.any() else psd[in_reference]), 1e-300))
+    # An empty spectrum (every sample of weight 0 with M3) has no SNR at all.
+    snr_db = float(10.0 * np.log10(psd[k] / noise_floor)) if psd[k] > 0 else float("-inf")
 
     around_peak = in_band & (np.abs(f_hz - f_hz[k]) <= settings.peak_halfwidth_hz)
     band_energy = float(psd[in_band].sum())
@@ -254,6 +265,11 @@ class BreathingState:
         Time since the last detected inhalation (s, NaN if unknown).
     apnea : bool
         Apnea (or target lost) suspected.
+    pause_reason : str or None
+        In the ``MOTION`` state (measurement paused): ``"motion"`` (large
+        displacement; with the M3 weighting, an anomaly inside the breathing
+        band, i.e. the target itself moved) or ``"saturation"`` (ADC); ``None``
+        otherwise.
     """
 
     t_s: float
@@ -266,6 +282,7 @@ class BreathingState:
     breathing_for_s: float = 0.0
     since_last_breath_s: float = float("nan")
     apnea: bool = False
+    pause_reason: str | None = None
 
 
 class BreathingDetector:
@@ -295,6 +312,7 @@ class BreathingDetector:
         self._breathing = False
         self._t_last_s: float | None = None
         self._t_motion_s: float | None = None
+        self._pause_reason: str | None = None
         self._t_breathing_start_s: float | None = None
         self._t_last_breathing_s: float | None = None
         self._rates_bpm: deque[float] = deque(maxlen=max(1, int(settings.rate_median_len)))
@@ -308,11 +326,13 @@ class BreathingDetector:
         metrics: BreathMetrics,
         t_s: float,
         since_last_breath_s: float = float("nan"),
+        pause_reason: str | None = None,
     ) -> BreathingState:
         """Fold the metrics of one window into the decision; return the new state.
 
         *since_last_breath_s* (from :func:`iot_radar.dsp.estimation.breath_cycles`)
-        drives the apnea alert.
+        drives the apnea alert.  *pause_reason* (e.g. ``"saturation"``) pauses
+        the measurement like a motion, for ``motion_hold_s``.
         """
         s = self.settings
         if self._t_last_s is None:
@@ -321,8 +341,9 @@ class BreathingDetector:
             dt_s = max(0.0, t_s - self._t_last_s)
         self._t_last_s = t_s
 
-        if metrics.motion:
+        if metrics.motion or pause_reason is not None:
             self._t_motion_s = t_s
+            self._pause_reason = "motion" if metrics.motion else pause_reason
         in_motion = self._t_motion_s is not None and t_s - self._t_motion_s <= s.motion_hold_s
         target = 0.0 if in_motion else metrics.confidence
         alpha = 1.0 - math.exp(-dt_s / s.smoothing_tau_s) if s.smoothing_tau_s > 0 else 1.0
@@ -334,7 +355,7 @@ class BreathingDetector:
             self._t_breathing_start_s = None
             self._rates_bpm.clear()
             return BreathingState(t_s, STATE_MOTION, self._confidence, target, None, False, metrics,
-                                  since_last_breath_s=since_last_breath_s)
+                                  since_last_breath_s=since_last_breath_s, pause_reason=self._pause_reason)
 
         if metrics.confidence >= s.threshold_off and metrics.rate_hz is not None:
             self._rates_bpm.append(60.0 * metrics.rate_hz)
