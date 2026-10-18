@@ -1,25 +1,17 @@
-"""DC-offset compensation and phase demodulation of a slow-time IQ sequence.
+"""DC compensation and phase demodulation of a slow-time IQ window.
 
-Place in the chain: after the down-conversion to slow time (≈ 20 Hz), before
-the displacement analysis.  The slow-time signal of a CW radar is::
+Place in the chain: after the decimation to slow time, before the
+displacement analysis.  The slow-time signal is::
 
     x[n] = C + A · exp(j(θ0 − 4π d[n] / λ)) + w[n]
 
-In the IQ plane the samples lie on an **arc of circle** of radius ``A``
-centred on the DC offset ``C`` (TX→RX leakage + static clutter + receiver DC).
-The chest displacement ``d`` is carried by the angle *around C*, not around
-the origin, hence the order of operations:
-
-1. estimate ``C`` (circle fitting, :func:`fit_circle`) and subtract it;
-2. extract the angle (arctangent + unwrapping);
-3. convert to displacement ``d = −λ/(4π) · φ`` (:func:`phase_to_displacement_m`).
+so the samples lie on an arc of radius ``A`` centred on the DC offset ``C``
+(leakage, static clutter, receiver DC).  Hence: fit the circle and subtract
+``C``, take the unwrapped angle, convert with ``d = −λ/(4π) · φ``.
 
 .. warning::
-   Removing ``C`` with a **high-pass filter** is *not* equivalent: the
-   high-pass also removes the mean of the useful term ``A·exp(jφ)``, so the
-   remaining vector no longer rotates around the origin and its angle is
-   wrong (the former chain did so).  High-pass clutter removal is only
-   acceptable for magnitude products such as a spectrogram.
+   A high-pass filter is not a substitute for subtracting ``C``: it also
+   removes the mean of ``A·exp(jφ)``, and the angle is then wrong.
 
 Reference: G. Paterniani *et al.*, "Radar-based monitoring of vital signs: a
 tutorial overview", Proc. IEEE 111(3), 2023.
@@ -42,22 +34,8 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class CircleFit:
-    """Circle fitted to IQ samples.
-
-    Attributes
-    ----------
-    center : complex
-        Estimated DC offset ``C`` (centre of the arc), in IQ units.
-    radius : float
-        Estimated echo amplitude ``A``, in IQ units.
-    rms_residual : float
-        RMS distance of the samples to the circle, divided by the radius
-        (dimensionless; small is good).
-    arc_span_rad : float
-        Angle covered by the samples around ``center`` (rad).
-    valid : bool
-        ``True`` if the fit is considered reliable (see :func:`fit_circle`).
-    """
+    """Fitted circle: centre ``C`` and radius ``A`` (IQ units), RMS residual / radius,
+    arc span around the centre (rad), and whether the fit is reliable."""
 
     center: complex
     radius: float
@@ -82,34 +60,15 @@ def fit_circle(
     min_arc_rad: float = 0.3,
     max_relative_residual: float = 0.3,
 ) -> CircleFit:
-    """Fit a circle to complex samples (algebraic start + geometric refinement).
+    """Fit a circle to complex samples: algebraic start, then Gauss–Newton.
 
-    The algebraic fit of I. Kåsa ("A circle fitting procedure and its error
-    analysis", IEEE Trans. Instrum. Meas. IM-25(1), 8–14, 1976: linear least
-    squares on ``x² + y² + D·x + E·y + F = 0``) gives the starting point, refined by
-    Gauss–Newton iterations on the geometric distance ``|z − c| − r``.  The
-    data are centred and scaled first, for numerical conditioning.
+    Start: I. Kåsa, "A circle fitting procedure and its error analysis", IEEE
+    Trans. Instrum. Meas. IM-25(1), 1976 (linear least squares on
+    ``x² + y² + D·x + E·y + F = 0``); refinement on the distance ``|z − c| − r``.
 
-    Parameters
-    ----------
-    z : numpy.ndarray
-        Complex IQ samples, 1-D (any unit).
-    n_iterations : int, optional
-        Maximum number of Gauss–Newton iterations.
-    min_arc_rad : float, optional
-        Minimum arc span for a valid fit.  A short arc (chest excursion small
-        compared with λ, or noise only) leaves the centre ill-determined.
-    max_relative_residual : float, optional
-        Maximum RMS residual (relative to the radius) for a valid fit.  A
-        circle fitted on a pure noise cloud has a relative residual of ≈ 0.4;
-        accepting it would turn noise into a random-walk phase whose red
-        spectrum looks like breathing.  0.3 ≈ an arc SNR of 10 dB.
-
-    Returns
-    -------
-    CircleFit
-        ``valid`` is ``False`` when the fit is unreliable; the caller should
-        then use :func:`linear_demodulation`.
+    The fit is invalid below *min_arc_rad* (short arc: centre ill-determined)
+    or above *max_relative_residual* (a noise cloud gives ≈ 0.4; 0.3 ≈ an arc
+    SNR of 10 dB).  The caller then uses :func:`linear_demodulation`.
     """
     z = np.asarray(z, dtype=np.complex128)
     if z.size < 3:
@@ -176,31 +135,11 @@ def _circle_fit_result(
 # ---------------------------------------------------------------------------
 
 def remove_common_rotation(z: np.ndarray, f_s_hz: float) -> tuple[np.ndarray, float]:
-    """Remove a constant-frequency rotation shared by all the echoes.
+    """Remove a rotation ``exp(j2π·δf·t)`` shared by all echoes; return ``(z, δf in Hz)``.
 
-    A residual frequency offset ``δf`` between the TX and RX local
-    oscillators multiplies the *whole* received signal, static clutter
-    included, by ``exp(j2π·δf·t)``.  The DC offset ``C`` then rotates around
-    the origin and no fixed circle exists.  The rotation is estimated as the
-    least-squares slope of the unwrapped angle of *z* over the window and
-    removed.
-
-    Parameters
-    ----------
-    z : numpy.ndarray
-        Complex slow-time samples, 1-D.
-    f_s_hz : float
-        Sampling rate of *z* (Hz).
-
-    Returns
-    -------
-    tuple[numpy.ndarray, float]
-        ``(derotated samples, estimated δf in Hz)``.
-
-    Notes
-    -----
-    Assumes that the window holds several breathing periods, so that the
-    breathing phase averages out of the linear fit.
+    A TX/RX local-oscillator offset makes the whole signal, ``C`` included,
+    rotate, so no fixed circle exists.  ``δf`` is the slope of the unwrapped
+    angle over the window (assumes several breaths per window).
     """
     z = np.asarray(z, dtype=np.complex128)
     if z.size < 3:
@@ -219,18 +158,8 @@ def remove_common_rotation(z: np.ndarray, f_s_hz: float) -> tuple[np.ndarray, fl
 class DemodulationResult:
     """Output of :func:`demodulate`.
 
-    Attributes
-    ----------
-    phase_rad : numpy.ndarray
-        Demodulated phase (rad), up to a constant.  Arbitrary units (and
-        sign) when ``calibrated`` is ``False``.
-    method : str
-        Demodulation actually used (``"linear"`` after a fallback).
-    calibrated : bool
-        ``True`` if ``phase_rad`` is a true phase in radians (arctangent on
-        a valid circle fit).
-    circle : CircleFit or None
-        Circle used for the DC compensation, if any.
+    ``phase_rad`` is in radians (up to a constant) only when ``calibrated``
+    (arctangent on a valid circle); ``method`` is ``"arctan"`` or ``"linear"``.
     """
 
     phase_rad: np.ndarray
@@ -240,21 +169,15 @@ class DemodulationResult:
 
 
 def arctangent_demodulation(z: np.ndarray) -> np.ndarray:
-    """Unwrapped angle (rad) of DC-compensated IQ samples.
-
-    Assumes the DC offset has been removed and that the phase moves by less
-    than π between two samples (true for breathing at ≥ 10 Hz slow time).
-    """
+    """Unwrapped angle (rad) of DC-compensated samples (phase step < π per sample)."""
     return np.unwrap(np.angle(z))
 
 
 def linear_demodulation(z: np.ndarray) -> np.ndarray:
-    """Small-angle (linear) demodulation by projection on the principal axis.
+    """Small-angle demodulation: projection on the principal axis (PCA), unit std.
 
-    For a small phase excursion the arc degenerates into a segment; the
-    projection of the mean-removed samples on their principal axis (PCA) is
-    proportional to ``φ``.  Scale and sign are unknown, so the output is
-    normalised to a unit standard deviation.  Valid only if ``4π·Δd/λ ≪ 1``.
+    For a small excursion the arc is almost a segment; the projection is
+    proportional to ``φ``, with unknown scale and sign.
     """
     z = np.asarray(z, dtype=np.complex128)
     centred = z - z.mean()
@@ -271,24 +194,7 @@ def demodulate(
     min_arc_rad: float = 0.3,
     max_relative_residual: float = 0.3,
 ) -> DemodulationResult:
-    """DC-compensate and demodulate a window of slow-time IQ samples.
-
-    The DC offset is the centre of the fitted circle (:func:`fit_circle`);
-    the phase is the unwrapped angle around it.  When the fit is rejected,
-    the linear (small-angle) demodulation is the fallback.
-
-    Parameters
-    ----------
-    z : numpy.ndarray
-        Complex slow-time samples of the analysis window, 1-D.
-    min_arc_rad, max_relative_residual : float, optional
-        Validity limits of the circle fit (see :func:`fit_circle`).
-
-    Returns
-    -------
-    DemodulationResult
-        ``method`` is ``"arctan"``, or ``"linear"`` after the fallback.
-    """
+    """Circle fit + arctangent around its centre; linear demodulation if the fit is rejected."""
     z = np.asarray(z, dtype=np.complex128)
     circle = fit_circle(z, min_arc_rad=min_arc_rad, max_relative_residual=max_relative_residual)
     if not circle.valid:
@@ -301,9 +207,5 @@ def demodulate(
 
 
 def phase_to_displacement_m(phase_rad: np.ndarray, wavelength_m: float) -> np.ndarray:
-    """Convert a two-way phase (rad) into a radial displacement (m).
-
-    ``d = −λ / (4π) · φ``: the minus sign follows the convention
-    ``x ∝ exp(−j·4π·R/λ)`` — an increase of the range decreases the phase.
-    """
+    """Two-way phase (rad) → radial displacement (m): ``d = −λ / (4π) · φ``."""
     return -float(wavelength_m) / (4.0 * np.pi) * np.asarray(phase_rad, dtype=np.float64)

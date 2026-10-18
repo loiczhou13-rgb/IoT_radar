@@ -1,33 +1,18 @@
-"""Radar sessions recorded in HDF5 files (schema v1), and their reader.
+"""Radar sessions in HDF5 files (schema v1): writer and reader.
 
-Place in the chain: next to the acquisition.  A session stores the **raw IQ
-blocks** delivered by a source (PlutoSDR or simulation), so that a replay
-(:class:`iot_radar.acquisition.sources.ReplaySource`) feeds the pipeline with
-exactly the same samples as the live run.
+A session stores the raw IQ blocks of a source, so that a replay feeds the
+pipeline with the same samples as the live run.  Layout::
 
-File layout (one file per session, never modified after the acquisition)::
+    /                 attributes: radar (RADAR_ATTRIBUTES), scene (SCENE_DEFAULTS),
+                      schema_version, start_time_utc, software_version, config_yaml
+    /iq               int16 (n_channels, n_samples, 2): I and Q, ADC units / scale
+    /blocks           (sample_start, host_time_s, overflow), one row per block
+    /annotations      (sample_start, sample_count, label)
+    /ground_truth/    optional: time_s, chest_displacement_m, disturbances
 
-    /                 attributes: schema_version, sample_rate_hz,
-                      center_frequency_hz, tx_waveform, tx_offset_hz,
-                      tx_gain_db, rx_gain_db, rx_gain_mode, n_rx_channels,
-                      channel_layout, firmware_version, source_kind, iq_stage,
-                      start_time_utc, software_version, config_yaml and the
-                      scene (subject_id, distance_m, orientation, obstacle,
-                      obstacle_thickness_cm, room, notes)
-    /iq               int16, (n_channels, n_samples, 2): I and Q, ADC units x scale
-    /blocks           table (sample_start, host_time_s, overflow), one row per block
-    /annotations      table (sample_start, sample_count, label)
-    /ground_truth/    optional: time_s and chest_displacement_m, and the
-                      table disturbances (sample_start, sample_count, kind) of
-                      the simulated people moving around the radar
-
-Robustness: the file is created in SWMR mode (single writer, multiple
-readers) and flushed every ``flush_interval_s`` seconds, so it stays readable
-up to the last flush if the program is killed.  It is opened with mode
-``"w-"`` (an existing file is never overwritten) and made read-only when
-closed.
-
-Missing metadata are stored as ``""`` (text) or ``NaN`` (numbers).
+SWMR mode, flushed every ``flush_interval_s``: readable up to the last flush
+if the program is killed.  Never overwritten (mode ``"w-"``), read-only once
+closed.  Unknown metadata: ``""`` or ``NaN``.
 """
 
 from __future__ import annotations
@@ -51,17 +36,11 @@ from iot_radar.acquisition.pluto import effective_tx_offset_hz
 logger = logging.getLogger(__name__)
 
 SCHEMA_VERSION: int = 1
-"""Version of the session file layout described in this module."""
+"""Version of the layout above."""
 
 LABELS: tuple[str, ...] = ("empty", "breathing", "apnea", "motion", "unknown")
-"""Annotation vocabulary.
-
-* ``empty`` — nobody in the field of the radar;
-* ``breathing`` — one person present, still, breathing;
-* ``apnea`` — one person present, still, without breathing movement;
-* ``motion`` — one person present whose body movements dominate breathing;
-* ``unknown`` — not annotated or uncertain segment.
-"""
+"""Annotation labels: nobody; one person still and breathing; still without breathing;
+body movements dominate; not annotated or uncertain."""
 
 RADAR_ATTRIBUTES: tuple[str, ...] = (
     "sample_rate_hz",
@@ -77,7 +56,7 @@ RADAR_ATTRIBUTES: tuple[str, ...] = (
     "source_kind",
     "iq_stage",
 )
-"""Attributes describing the radar, required by :class:`SessionWriter`."""
+"""Radar attributes required by :class:`SessionWriter`."""
 
 SCENE_DEFAULTS: dict[str, Any] = {
     "subject_id": "",
@@ -88,10 +67,10 @@ SCENE_DEFAULTS: dict[str, Any] = {
     "room": "",
     "notes": "",
 }
-"""Scene attributes and the values stored when they are unknown."""
+"""Scene attributes and their value when unknown."""
 
 IQ_CHUNK_SAMPLES: int = 65536
-"""Length of the HDF5 chunks of ``/iq`` along time (256 kB per channel)."""
+"""HDF5 chunk length of ``/iq`` along time (256 kB per channel)."""
 
 BLOCKS_DTYPE = np.dtype([("sample_start", "<i8"), ("host_time_s", "<f8"), ("overflow", "u1")])
 ANNOTATIONS_DTYPE = np.dtype([("sample_start", "<i8"), ("sample_count", "<i8"), ("label", "S16")])
@@ -122,15 +101,7 @@ def session_file_name(session_id: int, start_time_utc: dt.datetime) -> str:
 
 
 def radar_attributes(cfg: dict[str, Any], source: Any) -> dict[str, Any]:
-    """Radar attributes of a session (:data:`RADAR_ATTRIBUTES`).
-
-    Parameters
-    ----------
-    cfg : dict
-        Configuration used for the acquisition (``sdr`` and ``tx`` sections).
-    source : Source
-        The IQ source being recorded (rate, channels, kind, firmware).
-    """
+    """Radar attributes (:data:`RADAR_ATTRIBUTES`) from the configuration and the source."""
     sdr = cfg["sdr"]
     return {
         "sample_rate_hz": float(source.sample_rate_hz),
@@ -153,37 +124,12 @@ def radar_attributes(cfg: dict[str, Any], source: Any) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 class SessionWriter:
-    """Write one radar session, block by block.
+    """Write one session, block by block, to a new file *path*.
 
-    Parameters
-    ----------
-    path : pathlib.Path
-        File to create (it must not exist).
-    radar : dict
-        Radar attributes, with every key of :data:`RADAR_ATTRIBUTES`.
-    scene : dict, optional
-        Scene attributes (keys of :data:`SCENE_DEFAULTS`); missing ones are
-        stored as unknown.
-    config_yaml : str, optional
-        Text of the YAML configuration used during the acquisition.
-    start_time_utc : datetime, optional
-        Start of the session (default: now).
-    iq_scale : float, optional
-        ADC units per stored unit: ``1.0`` for raw ADC samples, which are
-        integers.  Other data are rounded to the nearest multiple of
-        *iq_scale*.
-    with_ground_truth : bool, optional
-        Create the ``/ground_truth`` group (filled by :meth:`set_ground_truth`).
-    flush_interval_s : float, optional
-        Maximum time between two flushes to disk (s).
-    extra_attributes : dict, optional
-        Other root attributes (e.g. ``legacy_source_file``).
-
-    Notes
-    -----
-    In SWMR mode no object or attribute can be created once writing has
-    started: all the datasets are created here, the annotations and the
-    ground truth are kept in memory and written by :meth:`close`.
+    *iq_scale*: ADC units per stored unit (1.0 for the integer ADC samples).
+    In SWMR mode nothing can be created once writing has started: the
+    datasets are created here; annotations and ground truth are kept in
+    memory and written by :meth:`close`.
     """
 
     def __init__(
@@ -264,18 +210,8 @@ class SessionWriter:
         self.close()
 
     def write_block(self, samples: np.ndarray, host_time_s: float, overflow: bool) -> None:
-        """Append one block of samples.
-
-        Parameters
-        ----------
-        samples : numpy.ndarray
-            Complex samples, shape ``(n_channels, n_samples)``, in ADC units.
-        host_time_s : float
-            Host clock when the block was received (s); stored relative to
-            the first block.
-        overflow : bool
-            ``True`` if samples were lost just before this block.
-        """
+        """Append one block ``(n_channels, n)`` (ADC units); *host_time_s* is stored
+        relative to the first block."""
         samples = np.asarray(samples)
         if samples.ndim != 2 or samples.shape[0] != self.n_channels:
             raise ValueError(f"Expected samples of shape ({self.n_channels}, n), got {samples.shape}.")
@@ -323,7 +259,7 @@ class SessionWriter:
         self._last_flush_s = time.monotonic()
 
     def close(self) -> None:
-        """Write the annotations and the ground truth, close and protect the file."""
+        """Write the annotations and the ground truth, close, make read-only."""
         if not self._file:
             return
         annotations = self._file["annotations"]
@@ -348,7 +284,7 @@ class SessionWriter:
 
 
 def _to_int16(values: np.ndarray) -> np.ndarray:
-    """Round to the nearest integer, refusing values outside the int16 range."""
+    """Round to int16 (``ValueError`` out of range)."""
     rounded = np.rint(values)
     if rounded.size and (rounded.min() < -32768 or rounded.max() > 32767):
         raise ValueError("Sample outside the int16 range: increase iq_scale.")
@@ -360,21 +296,12 @@ def _to_int16(values: np.ndarray) -> np.ndarray:
 # ---------------------------------------------------------------------------
 
 class SessionReader:
-    """Read a session file written by :class:`SessionWriter`.
-
-    A session whose writer was killed can be read too: it holds the samples
-    flushed before the interruption, but no annotation nor ground truth.
-
-    Parameters
-    ----------
-    path : pathlib.Path
-        Session file.
-    """
+    """Read a session file; one whose writer was killed holds the samples flushed
+    before, without annotations nor ground truth."""
 
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
-        # swmr=True also opens a session whose writer was killed (the file
-        # then still carries the "open for writing" flag).
+        # swmr=True also opens a file left "open for writing" by a killed writer.
         self._file = h5py.File(self.path, "r", swmr=True)
         version = int(self._file.attrs.get("schema_version", -1))
         if version != SCHEMA_VERSION:
@@ -393,12 +320,12 @@ class SessionReader:
         self.close()
 
     def read_iq(self, start: int, stop: int) -> np.ndarray:
-        """Samples ``[start, stop)`` as complex64, shape ``(n_channels, stop - start)``, ADC units."""
+        """Samples ``[start, stop)``, complex64 ``(n_channels, n)``, ADC units."""
         stored = self._iq[:, start:stop, :].astype(np.float32)
         return ((stored[:, :, 0] + 1j * stored[:, :, 1]) * self.iq_scale).astype(np.complex64)
 
     def blocks(self) -> np.ndarray:
-        """Table of the received blocks (structured array, see :data:`BLOCKS_DTYPE`)."""
+        """Table of the blocks (:data:`BLOCKS_DTYPE`)."""
         return self._file["blocks"][:]
 
     def annotations(self) -> list[tuple[int, int, str]]:

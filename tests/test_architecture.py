@@ -1,14 +1,8 @@
-"""Dependency rules between the parts of the iot_radar package.
+"""Dependency rules of the package (imports parsed, ``if TYPE_CHECKING:`` ignored).
 
-Each module is parsed (not imported) and its imports of ``iot_radar.*`` are
-collected; imports under ``if TYPE_CHECKING:`` are ignored because they are
-only used by type checkers.  The rules:
-
-* ``dsp`` is pure signal processing: it does not know where samples come
-  from nor how they are displayed;
-* ``ui`` never touches the acquisition hardware, even indirectly;
-* ``pipeline`` neither knows the display nor where the blocks come from;
-* ``config`` and ``physics`` are leaves.
+``dsp`` knows neither the acquisition nor the display; ``ui`` never reaches
+the hardware, even indirectly; ``pipeline`` knows neither the display nor
+the sources; ``config`` and ``physics`` are leaves.
 """
 
 from __future__ import annotations

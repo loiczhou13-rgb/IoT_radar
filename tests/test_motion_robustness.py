@@ -63,11 +63,9 @@ def test_the_former_chain_lets_gestures_through() -> None:
 
 
 def test_breathing_components_pass_the_m1_chain() -> None:
-    """The M1 filter is flat (0 dB) over the breathing band and its harmonics; the whole chain too.
+    """M1 and the whole chain are flat over the breathing band and its harmonics.
 
-    The Chebyshev stages before M1 have a constant gain of about −0.3 dB
-    (0.05 dB of ripple each), as in the former chain: it does not change the
-    phase, hence not the displacement.
+    The Chebyshev stages before M1 only add a constant −0.3 dB (no phase change).
     """
     from scipy.signal import freqz
 
@@ -249,12 +247,10 @@ def test_the_former_chain_pauses_for_the_crossing_walker() -> None:
 
 
 def test_a_walker_in_an_empty_room_is_neither_a_pause_nor_a_detection() -> None:
-    """A walker already walking crosses the beam of an empty room at 3.5 m (at 25 s, as in the other tests).
+    """A walker crosses the beam of an empty room at 3.5 m (at 25 s), already walking from 25 m away.
 
-    It starts walking 25 m away, before the analysis begins: a person who
-    starts moving from standstill near the radar sweeps its Doppler up from
-    0 Hz through the breathing band, with no out-of-band activity before,
-    and is taken for the target (known limitation, short pause).
+    Known limitation: someone starting to walk from standstill near the radar
+    sweeps its Doppler up through the breathing band and is taken for the target.
     """
     walker = {"kind": "walker", "start_m": [-25.0, 3.5], "velocity_m_s": [1.0, 0.0], "start_s": 0.0}
     outputs, _ = _run(_scene(M1_M3, presence=False, disturbers=[walker]), 80.0)
@@ -271,11 +267,10 @@ def test_a_motion_of_the_target_still_pauses() -> None:
 
 
 class _SaturatingSource:
-    """Simulated stream whose ADC reaches its full scale between two times.
+    """Simulated stream with two samples at ±full scale per block between two times.
 
-    Two consecutive samples at ±full scale per block: the doublet has almost
-    no energy near the echo frequency, so the pause comes from the saturation
-    flag alone, not from an in-band anomaly.
+    The doublet has almost no energy near the echo: the pause comes from the
+    saturation flag alone.
     """
 
     def __init__(self, source, start_s: float, stop_s: float, full_scale: float) -> None:

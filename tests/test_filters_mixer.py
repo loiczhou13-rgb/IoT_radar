@@ -15,9 +15,7 @@ def test_bandpass_keeps_breathing_and_removes_drift() -> None:
     disturbed = breathing + 0.5 * t_s + 0.1 * np.sin(2 * np.pi * 4.0 * t_s)
     filtered = bandpass(disturbed, 20.0, widened_band((0.1, 0.5), 20.0))
     assert np.std(filtered[50:-50] - breathing[50:-50]) < 0.05
-    # Note: the odd extension over the whole window makes a strong
-    # out-of-band component leak near the edges (its end values create a
-    # low-frequency step); breathing dominates the real displacement.
+    # Edges excluded: a strong out-of-band component leaks there through the padding.
     with pytest.raises(ValueError):
         bandpass(breathing, 20.0, (0.5, 0.1))
 

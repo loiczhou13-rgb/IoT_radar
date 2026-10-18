@@ -11,11 +11,8 @@ SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "scripts"
 
 
 def load_script(name: str) -> ModuleType:
-    """Load ``scripts/<name>.py`` without running its ``__main__`` block.
-
-    The scripts folder is put on ``sys.path``, as when a script is run, so
-    that one script can import another (e.g. replay imports run_radar).
-    """
+    """Load ``scripts/<name>.py`` without its ``__main__`` block (scripts folder on
+    ``sys.path``, so that one script can import another)."""
     if str(SCRIPTS_DIR) not in sys.path:
         sys.path.insert(0, str(SCRIPTS_DIR))
     path = SCRIPTS_DIR / f"{name}.py"

@@ -1,10 +1,7 @@
-"""Pygame home screen of the radar ("Modular Radar").
+"""Pygame home screen ("Modular Radar"): one button per launch action, theme, quit.
 
-Place in the project: entry point for the end users.  The screen shows one
-button per launch action (e.g. radar on the PlutoSDR, radar in simulation),
-then "Dark / light theme" and "Quit".  The launcher does not know the radar
-code: the actions are given by the caller (``scripts/launcher.py``, which runs
-the radar in a separate process).
+The actions come from the caller (``scripts/launcher.py``); the launcher does
+not know the radar code.
 """
 
 from __future__ import annotations
@@ -75,13 +72,9 @@ def _load_fonts() -> dict[str, pygame.freetype.Font]:
 
 
 class HomeScreen:
-    """Home screen window and its event loop.
+    """Home screen and its event loop; *actions* = ``(label, callable)``, one button each.
 
-    Parameters
-    ----------
-    actions : sequence of (label, callable)
-        One button per action, in this order.  Each function must return
-        quickly (e.g. start a separate process): the event loop waits for it.
+    Each callable must return quickly (e.g. start a process): the loop waits for it.
     """
 
     def __init__(self, actions: Sequence[tuple[str, Callable[[], object]]]) -> None:

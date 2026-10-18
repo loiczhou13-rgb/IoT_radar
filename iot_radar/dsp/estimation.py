@@ -1,17 +1,9 @@
-"""Breathing-rate estimators for a band-limited displacement waveform.
+"""Spectra of the displacement and breath-by-breath analysis.
 
-Place in the chain: after the phase demodulation and the band-pass filter.
-All functions take a **real** waveform ``x`` (typically the band-passed chest
-displacement) sampled at ``f_s_hz`` and a search band ``(low, high)`` in Hz.
-They return a rate in **Hz** (× 60 for breaths per minute) or ``None`` when
-no estimate is possible.
-
-The breathing rate used by the detector is the peak of the displacement
-spectrum (:func:`periodogram`, or :func:`weighted_lomb_scargle` with the
-contamination weights); the peak itself is located by
-:func:`iot_radar.dsp.detection.breathing_metrics`.  :func:`breath_cycles`
-analyses the individual breaths (intervals, depth, time since the last
-breath, which drives the apnea alert).
+Place in the chain: after the demodulation.  The rate is the peak of
+:func:`periodogram` (or of :func:`weighted_lomb_scargle` with the M3
+weights), located by :func:`iot_radar.dsp.detection.breathing_metrics`;
+:func:`breath_cycles` finds the individual breaths (apnea alert).
 """
 
 from __future__ import annotations
@@ -24,17 +16,7 @@ from scipy.signal import find_peaks, get_window
 
 @dataclass
 class Spectrum:
-    """One-sided power spectrum of a real window.
-
-    Attributes
-    ----------
-    f_hz : numpy.ndarray
-        Frequency axis (Hz), from 0 to ``f_s / 2``.
-    psd : numpy.ndarray
-        Periodogram (linear power, arbitrary units), same shape as ``f_hz``.
-    native_resolution_hz : float
-        Resolution ``f_s / N`` of the window before zero-padding (Hz).
-    """
+    """One-sided power spectrum: frequencies (Hz), power, resolution before zero-padding (Hz)."""
 
     f_hz: np.ndarray
     psd: np.ndarray
@@ -47,24 +29,7 @@ def periodogram(
     window_name: str = "hann",
     n_fft: int | None = None,
 ) -> Spectrum:
-    """Windowed one-sided periodogram, optionally zero-padded.
-
-    Parameters
-    ----------
-    x : numpy.ndarray
-        Real signal, 1-D (its mean is removed).
-    f_s_hz : float
-        Sampling rate (Hz).
-    window_name : str, optional
-        ``scipy.signal.get_window`` name, or ``"none"``.
-    n_fft : int or None, optional
-        FFT size (≥ ``len(x)``); default ``len(x)``.
-
-    Returns
-    -------
-    Spectrum
-        ``|FFT|² / Σ window²`` on ``n_fft // 2 + 1`` frequencies.
-    """
+    """Windowed one-sided periodogram ``|FFT|² / Σ window²`` of a real signal (mean removed)."""
     x = np.asarray(x, dtype=np.float64)
     n = x.size
     window = get_window(window_name, n) if window_name != "none" else np.ones(n)
@@ -82,37 +47,14 @@ def weighted_lomb_scargle(
     f_hz: np.ndarray,
     window_name: str = "hann",
 ) -> Spectrum:
-    """Weighted Lomb-Scargle periodogram with a floating mean (tolerant to gaps).
+    """Weighted Lomb-Scargle periodogram with a floating mean (tolerates gaps), power in [0, 1].
 
-    For every frequency ``f``, the model ``A·cos(2πft) + B·sin(2πft) + c`` is
-    fitted to *x* by weighted least squares; the power is the reduction of
-    the weighted χ² it brings, divided by the weighted variance of *x*.
-    This is the generalised Lomb-Scargle periodogram, with a floating mean
-    and per-point weights, of M. Zechmeister and M. Kürster, "The generalised
-    Lomb-Scargle periodogram: a new formalism for the floating-mean and
-    Keplerian periodograms", A&A 496, 577–584, 2009.  Samples of weight 0 do not count at all, so contaminated segments of a
-    window are skipped instead of suspending the measurement (M3).
-
-    Parameters
-    ----------
-    t_s : numpy.ndarray
-        Sample times (s), shape ``(N,)``; need not be uniform.
-    x : numpy.ndarray
-        Real signal (e.g. the detrended chest displacement), shape ``(N,)``.
-    weights : numpy.ndarray
-        Non-negative weight of each sample, shape ``(N,)``.
-    f_hz : numpy.ndarray
-        Frequencies to evaluate (Hz, > 0).
-    window_name : str, optional
-        Taper multiplied into the weights (``"hann"`` like
-        :func:`periodogram`, or ``"none"``), to keep the same spectral leakage
-        as the unweighted chain.
-
-    Returns
-    -------
-    Spectrum
-        Normalised power in [0, 1] on *f_hz*; ``native_resolution_hz`` is
-        ``1 / duration``.
+    For each frequency, ``A·cos + B·sin + c`` is fitted by weighted least
+    squares; the power is the χ² reduction over the weighted variance.
+    Samples of weight 0 do not count, so contaminated stretches are skipped
+    (M3).  The taper *window_name* is multiplied into the weights, for the
+    same leakage as :func:`periodogram`.  M. Zechmeister and M. Kürster,
+    "The generalised Lomb-Scargle periodogram", A&A 496, 577–584, 2009.
     """
     t_s = np.asarray(t_s, dtype=np.float64)
     x = np.asarray(x, dtype=np.float64)
@@ -144,27 +86,10 @@ def weighted_lomb_scargle(
 
 
 def remove_segment_offsets(x: np.ndarray, weights: np.ndarray) -> np.ndarray:
-    """Remove the weighted mean of every run of positive weights separately.
+    """Remove the weighted mean of each run of positive weights separately.
 
-    A gap (weight 0) cut around an in-band anomaly may hide a step: when a
-    passer-by's echo crosses the breathing band, the phasor around the arc
-    centre can turn once around it and the unwrapped phase slips by 2π, i.e.
-    λ/2 of displacement.  Each segment between gaps then gets its own offset,
-    as the floating mean of the generalised Lomb-Scargle periodogram
-    (Zechmeister & Kürster, A&A 496, 2009) does for a single segment.
-
-    Parameters
-    ----------
-    x : numpy.ndarray
-        Real signal, shape ``(N,)``.
-    weights : numpy.ndarray
-        Non-negative weights, shape ``(N,)``; samples of weight 0 are left
-        unchanged.
-
-    Returns
-    -------
-    numpy.ndarray
-        Copy of *x* with a zero weighted mean on every segment.
+    A gap cut around an anomaly may hide a 2π phase slip (λ/2 step): each
+    segment gets its own offset.
     """
     x = np.array(x, dtype=np.float64)
     w = np.asarray(weights, dtype=np.float64)
@@ -176,31 +101,13 @@ def remove_segment_offsets(x: np.ndarray, weights: np.ndarray) -> np.ndarray:
 
 @dataclass
 class BreathCycles:
-    """Breath-by-breath analysis of the band-passed displacement.
+    """Breaths of the band-passed displacement, seen as chest expansion (``−d``).
 
-    The waveform is analysed as *chest expansion towards the radar*
-    (``chest = −d``: an inhalation brings the chest closer and decreases the
-    range), so the peaks are ends of inhalation and the troughs ends of
-    exhalation.
-
-    Attributes
-    ----------
-    peak_indices, trough_indices : numpy.ndarray
-        Sample indices of the end-of-inhalation peaks / end-of-exhalation troughs.
-    intervals_s : numpy.ndarray
-        Intervals between successive peaks (s).
-    rate_hz : float or None
-        Rate from the mean interval (``None`` with fewer than two breaths or
-        out of band).
-    variability : float
-        Coefficient of variation of the intervals (std / mean); NaN with
-        fewer than 3 breaths.
-    depth : float
-        Median peak-to-trough excursion (unit of the waveform).
-    ie_ratio : float
-        Median inhalation / exhalation duration ratio (typically 0.5–0.8 at rest).
-    since_last_s : float
-        Time from the last inhalation peak to the end of the window (s).
+    Peaks = ends of inhalation, troughs = ends of exhalation.  ``rate_hz``
+    from the mean interval (``None`` below 2 breaths or out of band);
+    ``variability`` = std / mean of the intervals; ``depth`` = median
+    peak-to-trough; ``ie_ratio`` = inhalation / exhalation duration;
+    ``since_last_s`` = time from the last peak to the end of the window.
     """
 
     peak_indices: np.ndarray
@@ -219,11 +126,7 @@ def breath_cycles(
     band_hz: tuple[float, float],
     prominence_std: float = 0.5,
 ) -> BreathCycles:
-    """Detect the individual breaths of a band-passed displacement waveform *x*.
-
-    Peaks closer than ``1 / high`` are merged and must have a prominence of at
-    least ``prominence_std`` standard deviations.
-    """
+    """Breaths of *x*: peaks at least ``1 / high`` apart, prominence ≥ *prominence_std* std."""
     chest = -np.asarray(x, dtype=np.float64)
     nan = float("nan")
     empty = np.zeros(0, dtype=int)

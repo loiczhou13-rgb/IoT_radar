@@ -1,20 +1,10 @@
-"""Characterization cases: deterministic inputs fed to the radar DSP code.
+"""Characterization cases: fixed inputs run through parts of the chain.
 
-Each ``case_*`` function runs one part of the processing chain on a fixed,
-reproducible input and returns a dictionary of NumPy arrays.  The arrays
-produced by the original code (commit 8189bbd) are stored in
-``tests/data/references.npz`` by ``tests/make_references.py``;
-``tests/test_characterization.py`` checks that the current code still
-produces **bit-identical** values.
-
-These references must never be regenerated without a reason given in the
-commit that does it (an intended change of the numerical results).  The cases of the removed micro-Doppler chain (clutter filter,
-Fisher x ACF detection, streaming pipeline, its dashboard context) were
-dropped together with that chain.
-
-The ``cw_simulation`` and ``vital_signs_pipeline`` cases were added before
-the motion-robustness work: with M1 and M3 disabled, the simulation without disturbers and the phase pipeline must
-stay unchanged bit for bit.
+Each ``case_*`` returns a dict of arrays; ``tests/test_characterization.py``
+checks them bit for bit against ``tests/data/references.npz`` (written by
+``tests/make_references.py``).  Never regenerate the references without a
+reason given in the commit.  ``cw_simulation`` and ``vital_signs_pipeline``
+pin the simulation without disturbers and the pipeline with M1 and M3 off.
 """
 
 from __future__ import annotations
@@ -32,9 +22,7 @@ from iot_radar.dsp.spectral import compute_single_column, get_window
 from iot_radar.physics import range_interval_m
 from iot_radar.pipeline import VitalSignsPipeline
 
-# Reduced configuration (fast) of the radar, used by several tests.  The TX
-# offset 244.140625 Hz is exactly 10 periods of a 4096-sample buffer at
-# 100 kHz, so the cyclic TX buffer is continuous (see cw_tx_buffer).
+# Fast configuration of several tests: 244.140625 Hz = 10 periods per 4096-sample buffer at 100 kHz.
 PIPELINE_CONFIG: dict[str, Any] = {
     "logging": {"level": "WARNING", "to_file": False},
     "sdr": {

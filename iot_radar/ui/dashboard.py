@@ -1,10 +1,6 @@
-"""Real-time dashboard of the phase-demodulation radar (matplotlib).
+"""Real-time dashboard (matplotlib) of the :class:`iot_radar.pipeline.PipelineOutput` objects.
 
-Place in the chain: last step.  The dashboard displays the
-:class:`iot_radar.pipeline.PipelineOutput` objects it receives; it does not
-know where the samples come from (live radar, simulation or replay).
-
-Layout (GridSpec 3 × 5)::
+It does not know where the samples come from.  Layout (GridSpec 3 × 5)::
 
     ┌──────────┬──────────────────────────────┬────────────┬────────────┐
     │ status   │ displacement waveform +       │ IQ         │            │
@@ -17,36 +13,13 @@ Layout (GridSpec 3 × 5)::
     │ history  │ spectrum      │ waterfall     │            │            │
     └──────────┴───────────────┴───────────────┴────────────┴────────────┘
 
-* **Status card** — detector state (and cause of a pause: target motion or
-  ADC saturation), breathing rate, confidence gauge with the ON/OFF
-  thresholds, duration of the breathing episode, measurement mode (progress,
-  then decision), apnea banner, stream discontinuities.
-* **Displacement waveform** — chest expansion towards the radar (inhalation
-  up), raw and band-passed, with end-of-inhalation ▲ / end-of-exhalation ▼.
-* **IQ constellation** — the analysed window in the IQ plane with the fitted
-  circle and its centre (DC offset): shows whether the phase can be
-  extracted (arc length, noise, clutter).
-* **Confidence timeline** — smoothed and instantaneous confidence, SNR and
-  concentration scores, M3 weight of the latest block; background coloured
-  by state.
-* **Measured quantities** — rates of four estimators, breath interval and
-  variability, depth, I:E ratio, time since the last breath, SNR,
-  concentration, echo / DC amplitudes, LO drift;
-  motion robustness (current weight, contaminated share, saturation) and the
-  last measurement (decision, rate, confidence, quality summary).
-* **Rate history**, **displacement spectrum** (bands, peak window, noise
-  floor) and **micro-Doppler waterfall** of the slow time.
-* **Parameters** — static radar, processing and detection parameters.
+Key ``m`` calls ``on_measure``: the caller starts the measurement (M4) in
+the producer thread; the GUI never touches the pipeline.
 
-Key ``m`` asks for a measurement (M4): the dashboard only calls the
-``on_measure`` callback; the caller starts the measurement in the producer
-thread, the pipeline is never touched from the GUI.
-
-Threading model: the outputs are produced in a daemon thread (blocking SDR
-reads never freeze the window); a matplotlib timer moves them to the
-display every 100 ms, so none is lost.  Two WSLg + TkAgg pitfalls are
-avoided: the producer starts only after the first ``draw_event`` (window
-painted), and the output iterator is only closed by the producer thread.
+Threads: the outputs are produced in a daemon thread (blocking SDR reads do
+not freeze the window) and a 100 ms timer displays them.  WSLg + TkAgg: the
+producer starts after the first ``draw_event``, and only it closes the
+output iterator.
 """
 
 from __future__ import annotations
@@ -90,13 +63,13 @@ STATE_STYLE = {
     STATE_BREATHING: ("#31a354", "BREATHING DETECTED"),
     STATE_MOTION: ("#fd8d3c", "MOTION — MEASUREMENT PAUSED"),
 }
-"""Colour and label of each detector state."""
+"""Colour and label of each state."""
 
 PAUSE_TEXT = {
     "motion": ("MOTION — MEASUREMENT PAUSED", "Target moving — rate paused until the window is clean"),
     "saturation": ("ADC SATURATION — PAUSED", "Lower sdr.rx_gain_db or move the radar"),
 }
-"""Label and explanation of a pause, by cause (``BreathingState.pause_reason``)."""
+"""Label and explanation of a pause, by ``BreathingState.pause_reason``."""
 
 DECISION_TEXT = {"breathing": "BREATHING", "no_breathing": "NO BREATHING", "inconclusive": "INCONCLUSIVE"}
 
@@ -122,26 +95,13 @@ def _fmt(value: float | None, fmt: str, unit: str = "", default: str = "—") ->
 
 
 class PhaseDashboard:
-    """Matplotlib dashboard of the breathing detection.
+    """Dashboard of the breathing detection.
 
-    Parameters
-    ----------
-    context : dict
-        Static description of the run:
-
-        * ``title`` and ``subtitle`` (str);
-        * ``micro_doppler_f_hz`` (axis of the micro-Doppler columns, Hz) and
-          ``display_max_hz`` (half-span shown);
-        * ``waterfall_columns`` (int) and ``history_s`` (length of the
-          timelines, s);
-        * ``breathing_band_hz``, ``reference_band_hz``,
-          ``threshold_on``, ``threshold_off``, ``peak_halfwidth_hz``;
-        * ``parameters`` — ``[(section title, [(name, value), ...]), ...]``.
-    full_screen : bool, optional
-        Toggle the full-screen mode at start-up.
-    on_measure : callable or None, optional
-        Called (GUI thread, no argument) when the key ``m`` is pressed: the
-        caller starts a measurement (M4).  ``None`` disables the key.
+    *context*: static description of the run (``title``, ``subtitle``,
+    ``micro_doppler_f_hz``, ``display_max_hz``, ``waterfall_columns``,
+    ``history_s``, bands, thresholds, ``peak_halfwidth_hz``, and
+    ``parameters`` = ``[(section, [(name, value), ...]), ...]``).
+    *on_measure*: called on the key ``m`` (``None`` disables it).
     """
 
     def __init__(self, context: dict[str, Any], full_screen: bool = False,

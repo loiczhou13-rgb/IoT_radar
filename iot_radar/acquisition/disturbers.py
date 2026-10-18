@@ -1,34 +1,16 @@
-"""Simulated people moving around a SISO radar, and the masking of the propagation paths.
+"""Simulated people moving around the radar, and the masking of the paths they cross.
 
-Place in the chain: simulation only.  :class:`iot_radar.acquisition.sources.CWSimulationSource`
-adds the echoes of these disturbers to the reception, attenuates the paths
-they cross, and annotates their activity in the ground truth
-(ground truth).
+Simulation only (used by :class:`iot_radar.acquisition.sources.CWSimulationSource`).
+Radar at the origin, boresight ``+y``, metres and seconds.  A disturber is a
+few point scatterers; one at range ``R`` returns ``A_1m · sqrt(σ_rel) / R²``
+with phase ``−4π·R/λ`` (Doppler ``2·v/λ`` ≈ 16·v Hz at 2.45 GHz).  It moves
+only within ``[start_s, stop_s)`` (the annotated disturbance) and stands
+still before and after: switching an echo on would itself be a step.
+Default torso 12.7 at 1 m (1 m², next to the 0.5 m² chest of amplitude 1 at 3 m).
 
-Frame: the radar is at the origin with its boresight along ``+y``; positions
-are in metres and times in seconds of the stream.  Each disturber is a small
-set of point scatterers.  A scatterer at range ``R`` returns an echo of
-amplitude ``A_1m · sqrt(σ_rel) / R²`` (radar equation: received power
-∝ 1/R⁴) and phase ``−4π·R/λ`` (two-way path), so a radial speed ``v`` gives
-the Doppler ``f_D = 2·v/λ`` (≈ 16·v Hz at 2.45 GHz).
-
-A disturber moves only within its time interval ``[start_s, stop_s)``; it
-stands still before (where it starts) and after (where it stopped), its echo
-then being part of the static clutter.  A person does not appear out of
-nowhere, and the step of an echo switched on would itself reach the
-breathing band.  The interval is the annotated disturbance.
-
-Default amplitudes are consistent with the simulated person of
-:class:`iot_radar.acquisition.sources.CWSimulationSource` (echo amplitude 1 at
-3 m, i.e. 9 at 1 m, for a chest of 0.5 m²): a torso of 1 m² returns
-``√2 × 9 ≈ 12.7`` at 1 m.
-
-The walking person is a simplified version of the model of V. C. Chen,
-F. Li, S.-S. Ho and H. Wechsler, "Micro-Doppler effect in radar:
-phenomenon, model, and simulation study", IEEE Trans. Aerospace and
-Electronic Systems 42(1), 2006: a torso moving at constant velocity, two
-legs and two arms swinging along the walking direction at the gait
-frequency, legs in anti-phase and each arm opposite to the leg of its side.
+Walker: simplified from V. C. Chen *et al.*, "Micro-Doppler effect in radar:
+phenomenon, model, and simulation study", IEEE Trans. AES 42(1), 2006 (torso
+at constant velocity, legs and arms swinging at the gait frequency).
 """
 
 from __future__ import annotations
@@ -46,23 +28,16 @@ MASK_DEPTH_DB: float = 20.0
 
 FIELD_OF_VIEW_DEG: float = 60.0
 MAX_RANGE_M: float = 15.0
-"""A walker is annotated as a disturbance while within ±60° of the boresight and 15 m."""
+"""A walker counts as a disturbance within ±60° of the boresight and 15 m."""
 
 STRIDE_M: float = 1.4
-"""Length of one gait cycle: the gait frequency is speed / 1.4 m (0.36–1.07 Hz for 0.5–1.5 m/s)."""
+"""Gait cycle: gait frequency = speed / 1.4 m (0.36–1.07 Hz for 0.5–1.5 m/s)."""
 
 
 @dataclass
 class Scatterers:
-    """Point scatterers of one disturber over a block of samples.
-
-    Attributes
-    ----------
-    positions_m : numpy.ndarray
-        Shape ``(n_scatterers, n_samples, 2)`` (m).
-    relative_amplitudes : numpy.ndarray
-        ``sqrt`` of the relative radar cross-section of each scatterer, shape ``(n_scatterers,)``.
-    """
+    """Scatterers of one disturber: positions ``(n_scatterers, n_samples, 2)`` (m) and
+    ``sqrt`` of their relative radar cross-sections."""
 
     positions_m: np.ndarray
     relative_amplitudes: np.ndarray
@@ -83,18 +58,9 @@ def _radial_unit(position_m: np.ndarray) -> np.ndarray:
 
 
 class Walker:
-    """Person walking in a straight line (torso, two legs, two arms).
+    """Person walking in a straight line from *start_m* at *velocity_m_s* (torso, two legs, two arms).
 
-    Parameters
-    ----------
-    start_m : sequence of float
-        Position of the torso at *start_s* (m).
-    velocity_m_s : sequence of float
-        Walking velocity (m/s); the speed is typically 0.5 to 1.5 m/s.
-    start_s, stop_s : float, optional
-        Time interval of the walk (s); the person stands still before and after.
-    amplitude_at_1m : float, optional
-        Echo amplitude of the torso at 1 m (ADC units).
+    *amplitude_at_1m*: echo of the torso at 1 m (ADC units), as for every disturber.
     """
 
     kind = "walker"
@@ -140,19 +106,7 @@ class Walker:
 
 
 class Sway:
-    """Person standing and swaying slowly towards and away from the radar (≈ 0.8 Hz).
-
-    Parameters
-    ----------
-    position_m : sequence of float
-        Mean position of the torso (m).
-    amplitude_m, frequency_hz : float, optional
-        Radial amplitude (m) and frequency (Hz) of the sway.
-    start_s, stop_s : float, optional
-        Time interval of the sway (s); the person stands still before and after.
-    amplitude_at_1m : float, optional
-        Echo amplitude of the torso at 1 m (ADC units).
-    """
+    """Person standing at *position_m* and swaying radially (≈ 0.8 Hz)."""
 
     kind = "sway"
 
@@ -184,22 +138,9 @@ class Sway:
 
 
 class Gesture:
-    """Person standing still and moving a hand quickly (Doppler of 3 to 16 Hz at 2.45 GHz).
+    """Person standing still (static torso, masking) and moving a hand 30 cm in front of it.
 
-    The torso is a static scatterer (it masks the paths behind it); the hand,
-    30 cm in front of it, oscillates radially.  An amplitude of 8 cm at 2 Hz
-    gives a hand speed up to 1 m/s, i.e. a Doppler up to 16 Hz at 2.45 GHz.
-
-    Parameters
-    ----------
-    position_m : sequence of float
-        Position of the torso (m).
-    amplitude_m, frequency_hz : float, optional
-        Radial amplitude (m) and frequency (Hz) of the hand motion.
-    start_s, stop_s : float, optional
-        Time interval of the gestures (s); the hand is still before and after.
-    amplitude_at_1m : float, optional
-        Echo amplitude of the torso at 1 m (ADC units); the hand returns 0.3 of it.
+    8 cm at 2 Hz: hand up to 1 m/s, Doppler up to 16 Hz.  The hand returns 0.3 of the torso.
     """
 
     kind = "gesture"
@@ -239,10 +180,7 @@ Disturber = Walker | Sway | Gesture
 
 
 def disturber_echo(disturber: Disturber, t_s: np.ndarray, wavelength_m: float) -> np.ndarray:
-    """Complex echo of one disturber at times *t_s* (ADC units, before the TX tone).
-
-    ``Σ_i A_1m · a_i / R_i² · exp(−j·4π·R_i/λ)`` over its scatterers.
-    """
+    """Echo of one disturber (ADC units, before the TX tone): ``Σ A_1m·a_i/R_i² · exp(−j4πR_i/λ)``."""
     scatterers = disturber.scatterers(t_s)
     range_m = np.maximum(np.linalg.norm(scatterers.positions_m, axis=-1), 0.3)     # (n_scatterers, n)
     amplitudes = disturber.amplitude_at_1m * scatterers.relative_amplitudes[:, np.newaxis] / range_m ** 2
@@ -251,17 +189,11 @@ def disturber_echo(disturber: Disturber, t_s: np.ndarray, wavelength_m: float) -
 
 
 def path_masking(point_m: np.ndarray, disturbers: list[Disturber], t_s: np.ndarray) -> np.ndarray:
-    """Attenuation factor of the path radar → *point_m* masked by the torsos of *disturbers*.
+    """Factor in ``[10^(−depth/20), 1]`` of the path radar → *point_m*, per time.
 
-    A torso masks the path when it stands between the radar and the point,
-    within :data:`BODY_RADIUS_M` of the line of sight; the attenuation then
-    reaches :data:`MASK_DEPTH_DB`, with a raised-cosine transition over one
-    more body radius.  Several torsos multiply their factors.
-
-    Returns
-    -------
-    numpy.ndarray
-        Factor in ``[10^(−depth/20), 1]`` at each time, shape ``(n,)``.
+    A torso between them within :data:`BODY_RADIUS_M` of the line of sight
+    attenuates by :data:`MASK_DEPTH_DB` (raised-cosine edge over one more
+    radius); several torsos multiply.
     """
     point_m = np.asarray(point_m, dtype=np.float64)
     floor = 10.0 ** (-MASK_DEPTH_DB / 20.0)
@@ -280,11 +212,7 @@ def path_masking(point_m: np.ndarray, disturbers: list[Disturber], t_s: np.ndarr
 
 def activity_intervals(disturbers: list[Disturber], n_samples: int, sample_rate_hz: float,
                        grid_hz: float = 10.0) -> list[tuple[int, int, str]]:
-    """``(sample_start, sample_count, kind)`` of the disturbances over the first *n_samples*.
-
-    The activity of each disturber (:meth:`disturbance_mask`) is evaluated
-    on a *grid_hz* time grid and turned into intervals of samples.
-    """
+    """``(sample_start, sample_count, kind)`` of the disturbances (masks evaluated at *grid_hz*)."""
     duration_s = n_samples / sample_rate_hz
     t_s = np.arange(0.0, duration_s, 1.0 / grid_hz)
     intervals = []
@@ -299,11 +227,7 @@ def activity_intervals(disturbers: list[Disturber], n_samples: int, sample_rate_
 
 
 def disturbers_from_config(entries: list[dict[str, Any]] | None) -> list[Disturber]:
-    """Disturbers of the ``simulation.disturbers`` list of the configuration.
-
-    Each entry has a ``kind`` (``walker``, ``sway`` or ``gesture``) and the
-    parameters of the corresponding class.
-    """
+    """Disturbers of ``simulation.disturbers``: ``kind`` (walker, sway, gesture) + class parameters."""
     classes = {"walker": Walker, "sway": Sway, "gesture": Gesture}
     disturbers = []
     for entry in entries or []:

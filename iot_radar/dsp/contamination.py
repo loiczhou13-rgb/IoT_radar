@@ -1,43 +1,21 @@
-"""Contamination of the slow-time IQ by people moving around the radar, and sample weights (M3).
+"""Contamination of the IQ by people moving around the radar, and sample weights (M3).
 
-Place in the chain: at the intermediate Doppler rate (100 Hz), **before** the
-Doppler filter M1, which would remove the evidence.  For each block of ``block_s`` seconds, the energy of the IQ above the
-breathing band (``out_of_band_start_hz`` up to half the rate: gestures,
-walking) is compared with its energy in the breathing band (DC — the static
-part — excluded), both normalised by their bandwidths::
+Place in the chain: at the Doppler rate (100 Hz), before M1, which would
+remove the evidence.  Per block of ``block_s``:
 
-    κ = 10·log10( (E_out / B_out) / (E_in / B_in) )      [dB]
+* contamination index (densities per Hz, so white noise gives 0 dB)::
 
-so that white noise gives 0 dB whatever the rates and bands.  Measured in
-simulation: a breathing target alone gives −30 to −20 dB, a walker at 3.5 m
-raises κ to about −5 dB, gestures at 1.5 m to about 0 dB.  Because κ compares
-densities, an out-of-band line is diluted over the ~96 Hz out-of-band
-bandwidth: the weight only drops for a disturber clearly stronger than the
-breathing echo (about 10 times in amplitude for w = 0.5); a weaker one is
-already removed linearly by M1.  The weight of the block
-is a smooth function of κ — no binary pause::
+      κ = 10·log10( (E_out / B_out) / (E_in / B_in) )      [dB]
 
-    w = 1 / (1 + exp((κ − κ₀) / s))
-
-The weights feed the weighted, gap-tolerant estimation of the breathing
-rate (:func:`iot_radar.dsp.estimation.weighted_lomb_scargle`).
-
-Each block also gets an *activity*: the density in the band of the human
-Doppler (3–28 Hz: gestures up to 16 Hz, walking up to 25 Hz at 2.45 GHz;
-from 3 Hz so that the sidebands of a deep breath stay out) over the density
-in a band above it (30–38 Hz), which only holds the receiver noise and is
-still inside the pass band of the decimation::
-
-    activity = 10·log10( (E_act / B_act) / (E_ref / B_ref) )      [dB]
-
-About 0 dB when nobody moves (±3 dB from block to block), whatever the
-strength of the target and whatever the past: a disturber present from the
-start is still seen, which a floor taken on the past of the out-of-band
-density would miss.  Measured in simulation: a walker at 3–6 m gives +8 to
-+22 dB, a deep breath (3 rad of excursion) less than 5 dB.  The first block
-after a restart holds the transient of the filters and counts as 0 dB.  The
-activity tells that someone moves around the radar, and serves to attribute
-an in-band anomaly to a passer-by rather than to the target.
+  out = above ``out_of_band_start_hz`` (gestures, walking), in = breathing
+  band without DC.  Simulation: breathing alone −30 to −20 dB, walker at
+  3.5 m ≈ −5 dB, gestures at 1.5 m ≈ 0 dB.
+* weight ``w = 1 / (1 + exp((κ − κ₀) / s))``, used by the weighted
+  Lomb-Scargle estimation (no binary pause);
+* activity: density in the human Doppler band (3–28 Hz) over a noise-only
+  band (30–38 Hz).  ≈ 0 ± 3 dB when nobody moves, whatever the target;
+  walker at 3–6 m +8 to +22 dB.  Tells that someone moves around, to
+  attribute an in-band anomaly to a passer-by rather than to the target.
 """
 
 from __future__ import annotations
@@ -51,38 +29,18 @@ from scipy.signal import butter, sosfilt, sosfilt_zi
 
 def contamination_weight(index_db: float | np.ndarray, midpoint_db: float = 9.0,
                          slope_db: float = 2.0) -> float | np.ndarray:
-    """Weight in [0, 1] of a block of contamination index *index_db*.
+    """Logistic weight of a block: 0.99 at 0 dB, 0.5 at *midpoint_db*, 0.05 at +6 dB.
 
-    Logistic: 0.99 at 0 dB (white noise), 0.5 at *midpoint_db*, 0.05 at
-    ``midpoint_db + 6 dB`` with the default slope of 2 dB.  The default
-    midpoint of 9 dB comes from a sweep of the evaluation
-    (``scripts/evaluate_motion_robustness.py --midpoints-db 0 3 6 9 12``,
-    M1 + M3, walkers and gestures with and without a target, 30 s
-    measurements): 9 dB gives Pd 85 % (6 dB: 72 %), 8 % of inconclusive
-    measurements with a target (6 dB: 20 %), no false alarm and no pause;
-    12 dB changes nothing more.  With 6 dB, gestures that M1 already removes
-    made a quarter of the measurements inconclusive.
+    9 dB from the sweep of ``scripts/evaluate_motion_robustness.py``: Pd 85 %
+    (72 % at 6 dB), 8 % inconclusive with a target (20 % at 6 dB), no false alarm.
     """
     return 1.0 / (1.0 + np.exp((np.asarray(index_db, dtype=np.float64) - midpoint_db) / slope_db))
 
 
 @dataclass
 class ContaminationBlock:
-    """Contamination of one block of samples.
-
-    Attributes
-    ----------
-    sample_start : int
-        Index of its first sample at the Doppler rate (since the last reset).
-    index_db : float
-        Contamination index κ (dB).
-    weight : float
-        Weight of its samples, in [0, 1].
-    activity_db : float
-        Density in the band of the human Doppler over the noise density (dB, ≈ 0 when nobody moves).
-    saturated : bool
-        Some of its samples come from ADC samples at full scale (weight 0).
-    """
+    """One block: first sample (Doppler rate, since the reset), κ (dB), weight,
+    activity (dB) and ADC saturation (weight 0)."""
 
     sample_start: int
     index_db: float
@@ -92,27 +50,10 @@ class ContaminationBlock:
 
 
 class ContaminationMeter:
-    """Streaming contamination index, block by block (M3).
+    """Streaming contamination index of the IQ at the Doppler rate *f_s_hz*, block by block (M3).
 
-    Parameters
-    ----------
-    f_s_hz : float
-        Rate of the IQ (Hz), the intermediate Doppler rate.
-    block_s : float, optional
-        Length of a block (s).
-    out_of_band_start_hz : float, optional
-        Lower edge of the out-of-band energy (Hz); it ends at ``f_s_hz / 2``.
-    in_band_hz : tuple[float, float], optional
-        Band of the in-band energy (Hz); its lower edge removes the static part.
-    midpoint_db, slope_db : float, optional
-        Parameters of :func:`contamination_weight`.
-    order : int, optional
-        Butterworth order of the two streaming filters.
-    history_s : float, optional
-        Length of the block history kept for :meth:`block_at` (s).
-    activity_band_hz, reference_band_hz : tuple[float, float], optional
-        Band of the human Doppler and noise-only band above it (Hz), both
-        inside the pass band of the decimation to ``f_s_hz``.
+    The bands are those of the module docstring; *history_s* is the history
+    kept for :meth:`block_at`.
     """
 
     def __init__(
@@ -159,18 +100,12 @@ class ContaminationMeter:
         self.blocks.clear()
 
     def process(self, x: np.ndarray, saturated: bool = False) -> None:
-        """Take a chunk of complex samples at ``f_s_hz`` into account.
-
-        *saturated*: the chunk comes from ADC samples at full scale; the
-        block that receives its end gets weight 0.
-        """
+        """Add a chunk of samples; *saturated* (ADC full scale) gives its block weight 0."""
         x = np.asarray(x, dtype=np.complex128)
         if x.size == 0:
             return
         if not self._started:
-            # Filters started in steady state on the first sample: the step of
-            # the static echo would otherwise ring in the band-pass for tens
-            # of seconds and pass for in-band energy.
+            # Start in steady state, or the step of the static echo rings for tens of seconds.
             self._state = {name: (sosfilt_zi(sos) * x[0].real, sosfilt_zi(sos) * x[0].imag)
                            for name, sos in self._filters.items()}
             self._started = True
@@ -207,12 +142,7 @@ class ContaminationMeter:
         self._block_saturated = False
 
     def block_at(self, sample_index: int) -> ContaminationBlock | None:
-        """Block of the sample *sample_index* (Doppler rate, since the last reset).
-
-        Its block once the block is complete; until then, the latest complete
-        block; ``None`` before the first block.  The blocks are contiguous, so
-        the block of a sample is found by division.
-        """
+        """Block of *sample_index* (Doppler rate), or the latest complete one; ``None`` before the first."""
         if not self.blocks:
             return None
         k = (sample_index - self.blocks[0].sample_start) // self.block_length

@@ -1,17 +1,12 @@
-"""Assembly of the phase-demodulation chain: IQ blocks in, results out.
+"""The processing chain, from IQ blocks to breathing decisions::
 
-Place in the chain: everything between the acquisition and the display::
+    Block (ADC rate) → Mixer (echo to 0 Hz) → Decimator (100 Hz) → [M3 meter]
+      → M1 Doppler filter (20 Hz) → sliding window → VitalSignsProcessor
+        (circle fit, arctangent, displacement, spectrum, metrics)
+      → BreathingDetector → PipelineOutput (read by the dashboard)
 
-    Block (ADC rate) → Mixer (echo to 0 Hz) → Decimator (slow time, ~20 Hz)
-      → sliding window → VitalSignsProcessor: LO-drift derotation, circle fit
-        (DC compensation), arctangent, displacement, band-pass,
-        spectrum, breathing metrics
-      → BreathingDetector (smoothing, hysteresis, motion, apnea)
-      → PipelineOutput (dataclasses, consumed by the dashboard)
-
-The pipeline knows neither where the blocks come from (any object with the
-fields of :class:`iot_radar.acquisition.sources.Block`) nor how the results
-are displayed.
+The pipeline knows neither where the blocks come from nor how the results
+are shown.
 """
 
 from __future__ import annotations
@@ -63,32 +58,15 @@ logger = logging.getLogger(__name__)
 
 
 _ZERO_PAD = 8
-"""Zero-padding factor of the displacement spectrum (smoother peak location)."""
+"""Zero-padding factor of the displacement spectrum."""
 
 
 @dataclass
 class VitalSignsSettings:
-    """Parameters of the window analysis (``vital_signs`` section of the configuration).
+    """``vital_signs`` section (see the comments of ``configs/radar.yaml``).
 
-    Attributes
-    ----------
-    window_s : float
-        Length of the analysis window (s); ≥ 2 periods of the slowest breath.
-    update_period_s : float
-        Time between two analyses (s).
-    breathing_band_hz, reference_band_hz : tuple[float, float]
-        Breathing and noise-only bands (Hz).
-    min_arc_rad, max_circle_residual : float
-        Validity limits of the circle fit.
-    lo_drift_compensation : bool
-        Remove a common phase ramp (residual TX/RX LO offset) first.  Off by
-        default: on a Pluto the TX and RX share one local oscillator, so there
-        is no offset to remove, and the ramp fitted on a window also takes a
-        part of a slow chest movement.
-    bandpass_order : int
-        Butterworth order of the band-pass filters.
-    detection : DetectionSettings
-        Parameters of the breathing detector.
+    ``lo_drift_compensation`` is off: the Pluto TX and RX share one LO, and
+    the ramp fitted on a window would also take a slow chest movement.
     """
 
     window_s: float = 20.0
@@ -103,7 +81,7 @@ class VitalSignsSettings:
 
     @classmethod
     def from_config(cls, section: dict[str, Any]) -> "VitalSignsSettings":
-        """Build the settings from the ``vital_signs`` section (defaults for missing keys)."""
+        """From the YAML section (defaults for missing keys, unknown keys refused)."""
         check_keys("vital_signs", section, [f.name for f in fields(cls)])
         defaults = cls()
         return cls(
@@ -121,55 +99,10 @@ class VitalSignsSettings:
 
 @dataclass
 class MotionRobustnessSettings:
-    """Suppression of the residual motion of the people around the radar (``motion_robustness`` section).
+    """``motion_robustness`` section: M1 (Doppler filter) and M3 (contamination weights).
 
-    Every method is disabled by default, which gives the former behaviour
-    exactly.
-
-    Attributes
-    ----------
-    doppler_rate_hz : float
-        Intermediate rate where M1 and M3 work (Hz), between the ADC and the slow time.
-    doppler_filter_enabled : bool
-        M1: linear-phase low-pass on the IQ before the demodulation.
-    cutoff_hz, transition_hz, stopband_attenuation_db : float
-        Template of the M1 filter (−6 dB frequency, transition width, stop-band attenuation).
-    noise_band_hz : tuple[float, float]
-        With M1, band of the noise floor of the detector (inside the pass
-        band, peak and harmonics excluded), instead of the reference band
-        that M1 empties.
-    alias_band_hz, min_alias_attenuation_db : float
-        Aliasing audit: half-width of the protected band and required attenuation.
-    contamination_enabled : bool
-        M3: contamination weights, weighted estimation and the new pause rule.
-    contamination_block_s : float
-        Length of the blocks of the contamination index (s).
-    out_of_band_start_hz : float
-        Lower edge of the out-of-band energy (Hz); it ends at half the Doppler rate.
-    in_band_hz : tuple[float, float]
-        Band of the in-band energy (Hz).
-    weight_midpoint_db, weight_slope_db : float
-        Logistic weight: 0.5 at the midpoint, slope in dB.
-    contaminated_below : float
-        A block with a lower weight counts as contaminated.
-    activity_band_hz, activity_reference_hz : tuple[float, float]
-        Band of the human Doppler and noise-only band above it (Hz), inside
-        the pass band of the decimation to ``doppler_rate_hz``.
-    activity_threshold_db : float
-        Density of the human-Doppler band over the noise density (dB) from
-        which someone is considered moving around the radar.
-    activity_lead_s : float
-        An in-band anomaly preceded by such activity within this time (s) is
-        attributed to a passer-by, not to the target (no pause).
-    min_segment_s : float
-        Segments left between two cuts shorter than this (s) get weight 0.
-    excursion_factor, excursion_floor_mm : float
-        In-band excursions larger than this many times the median local
-        peak-to-peak displacement of the window are cut out of the estimation
-        (weight 0), even below ``motion_ptp_mm``; away from any out-of-band
-        activity, only above the floor (mm).
-    pause_on_saturation : bool
-        Pause the measurement while the ADC saturates.
+    Both off by default (former behaviour).  See the comments of
+    ``configs/radar.yaml`` for each parameter.
     """
 
     doppler_rate_hz: float = 100.0
@@ -198,7 +131,7 @@ class MotionRobustnessSettings:
 
     @classmethod
     def from_config(cls, section: dict[str, Any]) -> "MotionRobustnessSettings":
-        """Build the settings from the ``motion_robustness`` section (defaults for missing keys)."""
+        """From the YAML section (defaults for missing keys, unknown keys refused)."""
         d = cls()
         check_keys("motion_robustness", section,
                    ["doppler_rate_hz", "doppler_filter", "alias_check", "contamination_weighting"])
@@ -244,39 +177,11 @@ class MotionRobustnessSettings:
 class WindowAnalysis:
     """Everything computed on one analysis window.
 
-    Displacements are in millimetres (arbitrary units when
-    ``demodulation.calibrated`` is ``False``), positive away from the radar.
-
-    Attributes
-    ----------
-    t_s : numpy.ndarray
-        Time axis of the window (s, from its start).
-    displacement_mm : numpy.ndarray
-        Displacement, mean removed.
-    breath_mm : numpy.ndarray
-        Displacement band-passed in the breathing band.
-    spectrum_f_hz, spectrum_psd : numpy.ndarray
-        One-sided periodogram of the detrended displacement.
-    metrics : BreathMetrics
-        Breathing metrics and instantaneous confidence of the window.
-    cycles : estimation.BreathCycles
-        Breath-by-breath analysis of ``breath_mm``.
-    iq : numpy.ndarray
-        Complex window actually demodulated (after the LO-drift derotation),
-        for the IQ-constellation display.
-    lo_drift_hz : float
-        Common rotation removed before the demodulation (Hz).
-    demodulation : DemodulationResult
-        Demodulation details (method used, circle fit).
-    weights : numpy.ndarray or None
-        M3: weight of each sample of the window (``None`` without M3).
-    mean_weight : float
-        M3: mean weight of the window; the confidence is multiplied by it.
-    contaminated_fraction : float
-        M3: share of the samples of the window whose weight is below
-        ``contaminated_below``.
-    target_motion_fraction : float
-        M3: share of the window in in-band anomalies attributed to the target.
+    Displacements in mm (arbitrary units if not ``demodulation.calibrated``),
+    positive away from the radar; ``iq`` is the window demodulated (for the
+    constellation).  M3 only: ``weights`` per sample, ``mean_weight`` (it
+    multiplies the confidence), ``contaminated_fraction`` (weight below
+    ``contaminated_below``), ``target_motion_fraction`` (anomalies of the target).
     """
 
     t_s: np.ndarray
@@ -305,22 +210,10 @@ class _InBandAnomalies:
 
 
 class VitalSignsProcessor:
-    """Analyse windows of complex slow-time samples.
+    """Analysis of one window of slow-time IQ.
 
-    Stateless between calls: each call re-analyses the latest window, which
-    keeps the DC-offset estimate adapted to slow scene changes and allows
-    zero-phase filters.
-
-    Parameters
-    ----------
-    f_s_hz : float
-        Slow-time sampling rate (Hz); must exceed ``2 × reference_band_hz[1]``.
-    wavelength_m : float
-        Carrier wavelength λ (m), for the phase → displacement conversion.
-    settings : VitalSignsSettings
-        Processing parameters.
-    motion : MotionRobustnessSettings or None, optional
-        Robustness to residual motion (M1 noise band, M3 weights).
+    Stateless: each call re-analyses the latest window, which follows slow
+    scene changes and allows zero-phase filters.
     """
 
     def __init__(self, f_s_hz: float, wavelength_m: float, settings: VitalSignsSettings,
@@ -354,12 +247,8 @@ class VitalSignsProcessor:
         )
 
     def _recent_peak_to_peak_mm(self, z: np.ndarray) -> float:
-        """Peak-to-peak displacement (mm) over the last ``motion_window_s`` seconds.
-
-        The short segment gets its own circle fit, so a large movement is
-        measured in millimetres even when the full window cannot be (NaN if
-        the short segment cannot be demodulated either).
-        """
+        """Peak-to-peak displacement (mm) of the last ``motion_window_s``, with its own
+        circle fit (NaN if it cannot be demodulated)."""
         n = int(round(self.settings.detection.motion_window_s * self.f_s_hz))
         if n < 4 or n >= z.size:
             return float("nan")
@@ -370,14 +259,12 @@ class VitalSignsProcessor:
 
     def analyse(self, z: np.ndarray, weights: np.ndarray | None = None,
                 disturber_active: np.ndarray | None = None) -> WindowAnalysis:
-        """Run the vital-sign analysis on one window of complex slow-time samples.
+        """Analyse one window.
 
-        With the M3 weighting and *weights* (one per sample, in [0, 1]), the
-        spectrum is the weighted Lomb-Scargle periodogram and the confidence
-        is multiplied by the mean weight.  The in-band anomalies are cut out
-        of the estimation, and only those of the target pause the measurement
-        (:meth:`_cut_in_band_anomalies`, with *disturber_active*: one boolean
-        per sample, someone moving out of band).
+        With M3, *weights* (one per sample) give the weighted Lomb-Scargle
+        spectrum and scale the confidence; the in-band anomalies are cut and
+        only the target's pause the measurement (*disturber_active*: someone
+        moving out of band, per sample).
         """
         s = self.settings
         weighted = self.motion.contamination_enabled and weights is not None
@@ -390,9 +277,7 @@ class VitalSignsProcessor:
         result, displacement_mm = self._demodulate(z)
         if weighted:
             anomalies = self._cut_in_band_anomalies(displacement_mm, result.calibrated, weights, disturber_active)
-        # The band-pass filters remove the drift themselves; the linear
-        # detrend is only used for the spectrum and the motion check, because
-        # on a short window it also biases the breathing amplitude.
+        # Detrend for the spectrum and the motion check only: it biases the breathing amplitude.
         detrended_mm = detrend(displacement_mm)
 
         breath_mm = bandpass(displacement_mm, self.f_s_hz,
@@ -404,8 +289,7 @@ class VitalSignsProcessor:
                                                         w, self._ls_frequencies_hz)
         else:
             spectrum = estimation.periodogram(detrended_mm, self.f_s_hz, n_fft=self._n_fft)
-            # Largest peak-to-peak displacement of the whole window and of its
-            # recent part (NaN when neither can be measured in millimetres).
+            # Largest peak-to-peak of the window and of its recent part (NaN if not in mm).
             whole_window_ptp_mm = float(np.ptp(detrended_mm)) if result.calibrated else float("nan")
             measurable = [v for v in (whole_window_ptp_mm, self._recent_peak_to_peak_mm(z)) if np.isfinite(v)]
             displacement_ptp_mm = max(measurable) if measurable else float("nan")
@@ -457,46 +341,22 @@ class VitalSignsProcessor:
                                disturber_active: np.ndarray | None) -> "_InBandAnomalies":
         """M3: cut the in-band anomalies out of the weights; measure the target's own motion.
 
-        An anomaly is a run of samples whose local peak-to-peak displacement
-        (3 s centred, not detrended: a global trend fitted across a step
-        would tilt every segment) exceeds ``motion_ptp_mm``: the target moving, or a
-        passer-by whose Doppler crosses the breathing band (a walker crossing
-        the beam, at zero radial speed; its echo may make the phase slip by
-        2π).  Every anomaly gets weight 0, and so does any smaller excursion
-        above ``excursion_factor`` times the median local peak-to-peak of the
-        window (e.g. the transient of the centre when a static echo jumps, as
-        a hand starting to move, or the edges of a passage).  Away from any
-        out-of-band activity, the excursion must also exceed
-        ``excursion_floor_mm``: this floor keeps the breathing when an apnea
-        fills most of the window.  The segments left between cuts shorter
-        than ``min_segment_s`` get weight 0 too.
+        Anomaly: local peak-to-peak (3 s, not detrended) above
+        ``motion_ptp_mm`` (30 mm; breathing moves the chest by 5–15 mm).
+        Also cut: excursions above ``excursion_factor`` × the median local
+        peak-to-peak, and away from any activity above ``excursion_floor_mm``
+        too (keeps the breathing next to an apnea); segments left shorter than
+        ``min_segment_s`` (they gave slow false peaks with walkers).
 
-        An anomaly is attributed to a passer-by when someone was moving out
-        of band (*disturber_active*) within ``activity_lead_s`` before it
-        started: a person can only reach the breathing band by slowing down
-        through the out-of-band Doppler frequencies, so it is seen coming,
-        whereas the target moving starts in the band.  Only the other
-        anomalies, the target's, count for the motion pause.  Limits: a
-        target moving while a passer-by is active is not paused (its stretch
-        still gets weight 0); someone starting to walk from standstill next
-        to the target sweeps its Doppler up from 0 Hz through the band and is
-        taken for the target (short pause).
+        An anomaly preceded by out-of-band activity within ``activity_lead_s``
+        is a passer-by's (a person reaches the breathing band by slowing down
+        through higher Doppler); the others are the target's and pause the
+        measurement.  Limits: a target moving while a passer-by is active is
+        not paused; someone starting to walk next to the target is taken for it.
 
-        The thresholds come from the simulation: a chest moves by 5 to 15 mm
-        when breathing, hence ``motion_ptp_mm`` = 30 mm; ``excursion_factor``
-        (2.5) and ``excursion_floor_mm`` (12 mm) cut the transient of a jump of
-        the static echo without cutting a breath next to an apnea; segments
-        shorter than ``min_segment_s`` (5 s, half the slowest breathing
-        period) gave slow false peaks at the band edge in an empty room
-        crossed by walkers.
-
-        Returns
-        -------
-        _InBandAnomalies
-            The weights with the cuts, the target mask, and the
-            largest local peak-to-peak displacement (mm) of the last
-            ``motion_window_s`` outside the passers-by's anomalies (NaN when
-            the window is not calibrated: no anomaly assessed).
+        Returns the weights with the cuts, the target mask and the largest
+        local peak-to-peak (mm) of the recent part outside the passers-by
+        (NaN when the window is not calibrated).
         """
         w = np.asarray(weights, dtype=np.float64).copy()
         if not calibrated:
@@ -505,8 +365,7 @@ class VitalSignsProcessor:
         span = max(3, int(round(3.0 * self.f_s_hz)))
         local_ptp_mm = (maximum_filter1d(displacement_mm, span, mode="nearest")
                         - minimum_filter1d(displacement_mm, span, mode="nearest"))
-        # The floor only applies where nobody moves around: next to a passer-by,
-        # any excursion above excursion_factor × the median is suspect.
+        # No floor next to a passer-by: any excursion above factor × median is suspect.
         relative_mm = self.motion.excursion_factor * float(np.median(local_ptp_mm))
         excursion_mm = np.full(local_ptp_mm.size, max(relative_mm, self.motion.excursion_floor_mm))
         if disturber_active is not None:
@@ -521,9 +380,7 @@ class VitalSignsProcessor:
             for start, stop in zip(edges[::2], edges[1::2]):
                 attributed[start:stop] = bool(np.any(disturber_active[max(0, start - lead):start + 1]))
         w[cut] = 0.0
-        # A segment left between two cuts gets its own offset (one floating
-        # mean per segment): shorter than min_segment_s, it cannot hold a
-        # breath and its offset would turn its drift into a slow false peak.
+        # A short segment cannot hold a breath; its own offset would make a slow false peak.
         min_length = int(round(self.motion.min_segment_s * self.f_s_hz))
         edges = np.flatnonzero(np.diff(np.r_[0, (w > 0).astype(np.int8), 0]))
         for start, stop in zip(edges[::2], edges[1::2]):
@@ -536,21 +393,8 @@ class VitalSignsProcessor:
 
 @dataclass
 class ContaminationStatus:
-    """M3 indicators of one output (for the dashboard).
-
-    Attributes
-    ----------
-    index_db : float
-        Contamination index of the latest complete block (dB, NaN before the first).
-    weight : float
-        Weight of the latest complete block.
-    mean_weight : float
-        Mean weight of the analysis window.
-    contaminated_fraction : float
-        Share of the analysis window below ``contaminated_below``.
-    saturated : bool
-        The ADC saturated within the last ``motion_hold_s``.
-    """
+    """M3 indicators of one output: κ and weight of the latest block, mean weight and
+    contaminated share of the window, ADC saturation within ``motion_hold_s``."""
 
     index_db: float
     weight: float
@@ -561,28 +405,11 @@ class ContaminationStatus:
 
 @dataclass
 class PipelineOutput:
-    """One result of :class:`VitalSignsPipeline` (one every ``update_period_s``).
+    """One output of :class:`VitalSignsPipeline` (every ``update_period_s``).
 
-    Attributes
-    ----------
-    update_index : int
-        Number of the output since the start (1, 2, ...).
-    t_s : float
-        Slow time of the output (s since the start of the stream).
-    discontinuity : bool
-        ``True`` if the stream had a discontinuity since the previous output
-        (the processing was then restarted).
-    analysis : WindowAnalysis or None
-        Analysis of the latest window, ``None`` while the window fills.
-    breathing : BreathingState
-        Decision of the detector (state ``WARMUP`` while the window fills).
-    micro_doppler_column_db : numpy.ndarray or None
-        Micro-Doppler spectrum of the latest slow-time segment (dB, centred,
-        see :attr:`VitalSignsPipeline.micro_doppler_f_hz`), for display.
-    contamination : ContaminationStatus or None
-        M3 indicators (``None`` without M3).
-    measurement : MeasurementStatus or None
-        M4: state of the measurement mode and last result.
+    ``discontinuity``: samples were lost since the previous output (processing
+    restarted); ``analysis`` is ``None`` and the state ``WARMUP`` while the
+    window fills; ``contamination`` is ``None`` without M3.
     """
 
     update_index: int
@@ -596,46 +423,16 @@ class PipelineOutput:
 
 
 class VitalSignsPipeline:
-    """Phase-demodulation pipeline from IQ blocks to breathing decisions.
+    """Pipeline from IQ blocks to breathing decisions.
 
-    Parameters
-    ----------
-    settings : VitalSignsSettings
-        Window-analysis and detection parameters.
-    input_rate_hz : float
-        Sampling rate of the blocks (1 MS/s for the PlutoSDR, 2 kHz for the
-        converted legacy recordings...).  ``input_rate_hz / slow_time_rate_hz``
-        must be an integer made of prime factors ≤ 13.
-    tx_offset_hz : float
-        Frequency of the echo in the blocks (effective TX offset, 0 in pure CW).
-    wavelength_m : float
-        Carrier wavelength (m).
-    slow_time_rate_hz : float, optional
-        Rate of the slow-time signal after decimation (Hz).
-    warmup_s : float, optional
-        Slow time dropped after a (re)start, while the decimation filters settle (s).
-    micro_doppler_window_s : float, optional
-        Length of the slow-time segment of each micro-Doppler column (s).
-    micro_doppler_n_fft : int, optional
-        FFT size of the micro-Doppler columns (zero-padded).
-    micro_doppler_window : str, optional
-        Analysis window of the micro-Doppler columns.
-    motion : MotionRobustnessSettings or None, optional
-        Suppression of the residual motion (M1 and M3); disabled by default.
-    adc_full_scale : float or None, optional
-        Full scale of the raw samples (2048 for the Pluto ADC); with M3, a
-        block reaching it pauses the measurement (saturation).  ``None`` for
-        samples that are not raw ADC values (converted legacy sessions).
-    measurement : MeasurementSettings or None, optional
-        Measurement mode (M4), started by :meth:`start_measurement`.
+    *input_rate_hz* / *slow_time_rate_hz* must be an integer of primes ≤ 13;
+    *tx_offset_hz* is the frequency of the echo in the blocks (0 in pure CW);
+    *warmup_s* is dropped after a restart; *adc_full_scale* (2048 on the
+    Pluto, ``None`` for converted recordings) detects the saturation with M3.
 
-    Notes
-    -----
-    **Discontinuities.**  A block with ``overflow`` set, or whose
-    ``sample_start`` is not the end of the previous block, means that samples
-    are missing: the phase of the echo is then unknown.  The pipeline resets
-    its oscillator, filters, slow-time history and detector, marks the next
-    output with ``discontinuity=True`` and starts filling the window again.
+    A block with ``overflow`` set, or whose ``sample_start`` does not follow
+    the previous block, means lost samples (phase unknown): everything is
+    reset, the next output has ``discontinuity=True`` and the window refills.
     """
 
     def __init__(
@@ -706,11 +503,7 @@ class VitalSignsPipeline:
     @classmethod
     def from_config(cls, cfg: dict[str, Any], input_rate_hz: float, tx_offset_hz: float,
                     adc_full_scale: float | None = None) -> "VitalSignsPipeline":
-        """Build the pipeline from the configuration (``sdr``, ``slow_time``,
-        ``vital_signs``, ``micro_doppler_view``, ``motion_robustness`` and
-        ``measurement`` sections); *adc_full_scale* as in the constructor.
-
-        Raises ``ValueError`` on any unknown key of the configuration."""
+        """From the configuration; ``ValueError`` on any unknown key."""
         check_radar_config(cfg)
         slow_time = cfg.get("slow_time", {})
         view = cfg.get("micro_doppler_view", {})
@@ -730,7 +523,7 @@ class VitalSignsPipeline:
         )
 
     def reset(self) -> None:
-        """Forget the past: restart the oscillator, filters, history and detector."""
+        """Restart the oscillator, filters, history and detector."""
         self._mixer.reset()
         self._decimator.reset()
         if self._doppler_stage is not None:
@@ -747,7 +540,7 @@ class VitalSignsPipeline:
         self._detector = BreathingDetector(self.settings.detection, self.settings.update_period_s)
 
     def process_block(self, block: Block) -> list[PipelineOutput]:
-        """Process one block (``samples``, ``sample_start``, ``overflow``); return the new outputs."""
+        """Process one block; return the new outputs."""
         samples = block.samples[0]
         if self._next_sample_start is not None and (
             block.overflow or block.sample_start != self._next_sample_start
@@ -772,7 +565,7 @@ class VitalSignsPipeline:
         else:
             doppler_iq = self._decimator(self._mixer(samples))
             if self._contamination is not None:
-                # Before M1: the disturbers are still visible.  A saturated block gets weight 0.
+                # Before M1, which removes the disturbers.
                 self._contamination.process(doppler_iq, saturated)
             slow_samples = self._doppler_stage(doppler_iq)
         outputs: list[PipelineOutput] = []
@@ -796,14 +589,10 @@ class VitalSignsPipeline:
         return outputs
 
     def _build_decimation(self, decimation_factor: int, max_frequency_hz: float) -> None:
-        """Decimation to the slow time: one cascade, or cut at the Doppler rate for M1 / M3.
-
-        Without M1 nor M3, the former cascade is used unchanged.  Otherwise it
-        is cut at ``doppler_rate_hz`` (complex128 in between, so that the cut
-        alone changes nothing); the last stage is the Doppler low-pass filter
-        (M1) or the former Chebyshev stage.  The aliasing audit of the chain
-        is checked against ``min_alias_attenuation_db``.
-        """
+        """Decimation: one Chebyshev cascade without M1 / M3; otherwise cut at
+        ``doppler_rate_hz`` (complex128 in between: the cut alone changes
+        nothing), the last stage being M1 or the Chebyshev stage.  The
+        aliasing is checked against ``min_alias_attenuation_db``."""
         m = self.motion
         self._doppler_stage: Decimator | None = None
         self.doppler_delay_s = 0.0
@@ -834,7 +623,7 @@ class VitalSignsPipeline:
             logger.info("Aliasing into ±%.1f Hz attenuated by at least %.1f dB", m.alias_band_hz, worst)
 
     def run(self, source: Source) -> Iterator[PipelineOutput]:
-        """Process every block of *source* (and close it at the end)."""
+        """Process every block of *source*, then close it."""
         try:
             while True:
                 block = source.read_block()
@@ -845,13 +634,10 @@ class VitalSignsPipeline:
             source.close()
 
     def _sample_contamination(self) -> tuple[float, bool, bool]:
-        """M3 weight of the newest slow-time sample, whether someone moves out of band, and saturation.
+        """M3 ``(weight, someone moving out of band, saturated)`` of the newest slow-time sample.
 
-        The sample left the Doppler stage ``doppler_delay_s`` after the
-        Doppler-rate samples it comes from: all three come from the
-        contamination block of those samples (to within one Doppler-rate
-        sample per slow-time sample).  ``(1, False, False)`` without M3 or
-        before the first block.
+        Taken from the contamination block of the samples it comes from,
+        ``doppler_delay_s`` earlier; ``(1, False, False)`` without M3.
         """
         if self._contamination is None:
             return 1.0, False, False
@@ -864,13 +650,10 @@ class VitalSignsPipeline:
     # -- M4: measurement mode ------------------------------------------------
 
     def start_measurement(self, duration_s: float | None = None) -> None:
-        """Start a measurement of *duration_s* seconds (``measurement.duration_s`` by default).
+        """Start (or restart) a measurement of *duration_s* (``measurement.duration_s``).
 
-        Call it when the silence starts (rescuers still and out of the beam).
-        The samples are taken from the slow-time samples that come from the
-        IQ received from now on: those already in the Doppler filter (M1
-        delay) are skipped.  A running measurement is restarted.  The result
-        comes in :attr:`PipelineOutput.measurement`.
+        Call it when the silence starts.  Only the IQ received from now on
+        counts: the samples already in the M1 filter are skipped.
         """
         duration_s = float(duration_s or self.measurement_settings.duration_s)
         self._measurement = {
@@ -902,7 +685,7 @@ class VitalSignsPipeline:
             self._finish_measurement()
 
     def _finish_measurement(self, discontinuity: bool = False) -> None:
-        """Analyse the measurement window once and decide."""
+        """Analyse the measurement once and decide (cut short on a discontinuity)."""
         m, self._measurement = self._measurement, None
         t_end_s = self._slow_samples_total / self.slow_time_rate_hz
         t_start_s = m["t_start_s"] if m["t_start_s"] is not None else t_end_s
@@ -936,8 +719,7 @@ class VitalSignsPipeline:
                     100 * contaminated_fraction)
 
     def _measurement_status(self) -> MeasurementStatus:
-        """``done`` once after a completion (even if another measurement already started), then
-        ``running`` or ``idle``."""
+        """``done`` once after a completion, then ``running`` or ``idle``."""
         last = self._measurement_result
         if self._measurement_completed:
             self._measurement_completed = False
@@ -957,8 +739,7 @@ class VitalSignsPipeline:
         micro_doppler_column_db = None
         if self._samples_in_history >= self._micro_doppler_samples:
             segment = history[-self._micro_doppler_samples:]
-            # The segment mean is the static-clutter line at 0 Hz; removing it
-            # is fine for this magnitude display (never before the phase).
+            # Mean removed: fine for a magnitude display, never before the phase.
             column = compute_single_column(segment - segment.mean(), self.slow_time_rate_hz,
                                            self._micro_doppler_window, self._micro_doppler_n_fft)
             micro_doppler_column_db = column.power_db
@@ -976,7 +757,7 @@ class VitalSignsPipeline:
                 weights = np.array(self._weights, dtype=np.float64)[-window:]
                 active = np.array(self._active, dtype=bool)[-window:]
                 analysis = self._processor.analyse(history[-window:], weights, active)
-                # The detector holds the pause for motion_hold_s after the last saturated block.
+                # Held by the detector for motion_hold_s.
                 pause_reason = ("saturation" if self._saturated_since_output and self.motion.pause_on_saturation
                                 else None)
                 breathing = self._detector.update(analysis.metrics, t_s, analysis.cycles.since_last_s,

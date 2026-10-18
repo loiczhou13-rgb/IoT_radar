@@ -1,11 +1,7 @@
-"""Digital frequency shift (numerically controlled oscillator, NCO).
+"""Digital frequency shift (NCO): brings the echo from ``+tx_offset_hz`` to 0 Hz.
 
-Place in the chain: right after the acquisition, before the decimation.  In
-``cw_offset`` mode the echo is received at ``+tx_offset_hz``; multiplying the
-samples by ``exp(−j·2π·tx_offset_hz·t)`` brings it back to 0 Hz **before**
-the low-pass filter of the decimation (which would otherwise remove it).  The
-receiver DC offset moves to ``−tx_offset_hz`` at the same time and is
-rejected by the decimation filter.
+Place in the chain: before the decimation, whose low-pass would otherwise
+remove the echo.  The receiver DC moves to ``−tx_offset_hz`` and is filtered out.
 """
 
 from __future__ import annotations
@@ -14,20 +10,10 @@ import numpy as np
 
 
 class Mixer:
-    """Shift the spectrum of a complex stream by ``−shift_hz``, block by block.
+    """Shift a complex stream by ``−shift_hz``, block by block.
 
-    Parameters
-    ----------
-    f_s_hz : float
-        Sampling rate of the stream (Hz).
-    shift_hz : float
-        Frequency brought to 0 Hz (Hz); ``0`` leaves the samples unchanged.
-
-    Notes
-    -----
-    The oscillator phase is carried from one block to the next (and kept in
-    [0, 2π) to avoid a loss of precision), so the output does not depend on
-    how the stream is cut into blocks.
+    The phase is carried between blocks (kept in [0, 2π)), so the output does
+    not depend on how the stream is cut.
     """
 
     def __init__(self, f_s_hz: float, shift_hz: float) -> None:

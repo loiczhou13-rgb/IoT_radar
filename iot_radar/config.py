@@ -1,11 +1,6 @@
-"""Repository paths, YAML configuration loading and logging set-up.
+"""Repository paths, loading and checking of the YAML configuration, logging set-up.
 
-Used by every command-line script: they all load their YAML file with
-:func:`load_config` and configure the logs with :func:`setup_logging`.
-
-Paths are resolved from the location of this file, so they do not depend on
-the current working directory (the package is installed in editable mode with
-``pip install -e .``).
+Paths are resolved from this file, not from the current working directory.
 """
 
 from __future__ import annotations
@@ -32,11 +27,7 @@ LOGS_DIR: Path = REPO_ROOT / "logs"
 
 
 def load_config(path: str | Path) -> dict[str, Any]:
-    """Load a YAML configuration file and return it as a dictionary.
-
-    Exits the program with a clear message (exit code 1) when the file does
-    not exist, and raises ``ValueError`` when it does not contain a mapping.
-    """
+    """Load a YAML file as a dict (exit code 1 if missing, ``ValueError`` if not a mapping)."""
     cfg_path = Path(path)
     if not cfg_path.is_file():
         print(f"ERROR: configuration file not found: {path}", file=sys.stderr)
@@ -49,13 +40,9 @@ def load_config(path: str | Path) -> dict[str, Any]:
 
 
 def check_keys(section_name: str, section: Mapping[str, Any] | None, valid_keys: Iterable[str]) -> None:
-    """Refuse the keys of *section* that are not in *valid_keys*.
+    """Raise ``ValueError`` listing the keys of *section* not in *valid_keys*.
 
-    Raises
-    ------
-    ValueError
-        Naming the unknown keys, the section and the valid keys (a typo in a
-        configuration file would otherwise be silently replaced by a default).
+    Otherwise a typo in the configuration would silently fall back to a default.
     """
     valid = sorted(valid_keys)
     unknown = sorted(set(section or {}) - set(valid))
@@ -85,10 +72,8 @@ RADAR_CONFIG_KEYS: dict[str, Any] = {
                    "static_clutter_amplitude", "receiver_dc_amplitude", "lo_offset_hz", "snr_db", "seed",
                    "realtime", "static_scatterers", "disturbers"},
 }
-"""Valid keys of ``configs/radar.yaml``: a set of leaf keys, a mapping for nested
-sections, ``None`` for a leaf, ``"settings"`` for the sections checked by
-their settings class (``VitalSignsSettings``, ``MotionRobustnessSettings``,
-``MeasurementSettings``)."""
+"""Valid keys of ``configs/radar.yaml``: set of leaves, mapping for nested sections,
+``None`` for a leaf, ``"settings"`` when the settings class checks the section."""
 
 
 def check_radar_config(cfg: Mapping[str, Any]) -> None:
@@ -106,11 +91,7 @@ def check_radar_config(cfg: Mapping[str, Any]) -> None:
 
 
 def resolve_repo_path(path: str | Path) -> Path:
-    """Resolve a path written in a configuration file.
-
-    Relative paths are relative to the repository root, so that a command
-    gives the same result whatever the current working directory.
-    """
+    """Resolve a configuration path; a relative one is relative to the repository root."""
     pth = Path(path).expanduser()
     if pth.is_absolute():
         return pth.resolve()
@@ -118,12 +99,8 @@ def resolve_repo_path(path: str | Path) -> Path:
 
 
 def radar_log_file(cfg: dict[str, Any], explicit: str | Path | None = None) -> Path | None:
-    """Log file of a radar run, from the ``logging`` section of the config.
-
-    Returns ``None`` when ``logging.to_file`` is false (default: true), even
-    if *explicit* is given; otherwise *explicit* (the ``--log-file`` option)
-    or a timestamped file ``LOGS_DIR/radar_<YYYYmmdd_HHMMSS>.log``.
-    """
+    """Log file of a run: ``None`` if ``logging.to_file`` is false, else *explicit*
+    (``--log-file``) or ``logs/radar_<YYYYmmdd_HHMMSS>.log``."""
     log_cfg = cfg.get("logging", {})
     if not bool(log_cfg.get("to_file", True)):
         return None
@@ -134,20 +111,7 @@ def radar_log_file(cfg: dict[str, Any], explicit: str | Path | None = None) -> P
 
 
 def setup_logging(level: str = "INFO", log_file: Path | None = None) -> None:
-    """Configure the root logger (the only logging set-up of the project).
-
-    A console handler is always installed; when *log_file* is given, a file
-    handler writes the same records to disk so that runs can be audited
-    offline.  Previously installed root handlers are removed.
-
-    Parameters
-    ----------
-    level : str, optional
-        Level name of the root logger, the console and the file
-        (``"DEBUG"``, ``"INFO"``, ``"WARNING"``…).
-    log_file : pathlib.Path or None, optional
-        File receiving the records (its folder is created if needed).
-    """
+    """Configure the root logger: console, plus *log_file* if given (replaces earlier handlers)."""
     level_value = getattr(logging, str(level).upper(), logging.INFO)
     fmt = "%(asctime)s [%(levelname)s] %(name)s — %(message)s"
 

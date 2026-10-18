@@ -1,36 +1,18 @@
-"""Doppler filtering of the slow-time IQ (M1) and audit of the anti-aliasing of a decimation chain.
+"""Doppler low-pass filter of the slow-time IQ (M1) and aliasing audit of a decimation chain.
 
-Place in the chain: between the decimation to the intermediate Doppler rate
-(100 Hz) and the slow time (20 Hz), **before** the phase demodulation.  The
-received IQ is a linear sum::
+Place in the chain: between the decimation to 100 Hz and the slow time
+(20 Hz), before the demodulation.  The circle fit and the arctangent are not
+linear: a disturber left in the IQ (gestures 3–16 Hz, walking 16–25 Hz) would
+be mixed into the breathing band.  A complex low-pass on the IQ removes it
+first and serves as the anti-aliasing filter of the last ×5 decimation.
 
-    x(t) = C(t) + a·exp(jφ_target(t)) + Σ_k b_k(t)·exp(jφ_k(t))
+Template (Kaiser FIR, 365 taps, delay 1.82 s): flat to 1 Hz (breathing
+harmonics), −6 dB at 1.5 Hz, ≥ 60 dB from 2 Hz.  100 Hz keeps the walking
+Doppler below Nyquist.  Worst aliasing into ±1 Hz: 84 dB (88 dB for the
+former Chebyshev chain, which let gestures through up to 8 Hz).
 
-but the circle fit and the arctangent are not linear: a disturber left in
-the IQ (gestures at 3–16 Hz, walking at 16–25 Hz at 2.45 GHz) is mixed into
-the breathing band by the demodulation.  A complex low-pass filter on the IQ
-(same real taps on I and Q) removes everything above the breathing band
-first; it also serves as the anti-aliasing filter of the last decimation.
-
-The filter is a linear-phase FIR (Kaiser window): causal, with a constant
-delay of ``(N − 1)/2`` samples, i.e. 1.82 s at 100 Hz for the default
-template (365 taps).  Template: pass band to 1 Hz (the breathing harmonics,
-flat to 0.01 dB), −6 dB at 1.5 Hz, ≥ 60 dB from 2 Hz (below the gestures,
-≥ 3 Hz; 2 Hz is also where the out-of-band energy of M3 starts).  The
-intermediate rate of 100 Hz keeps the walking Doppler (up to 24.5 Hz at
-1.5 m/s and 2.45 GHz) below its Nyquist frequency; 1 MS/s / 100 Hz = 10 000
-factors into primes ≤ 13.  The bands that the last ×5 decimation folds into
-±1 Hz (19–21 Hz, 39–41 Hz) lie in the stop band of the FIR, so the 60 dB
-requirement holds by construction: worst case 84 dB, at 19.1 Hz.  Without
-M1, the former Chebyshev cascade already met it (88 dB, at 19 Hz), but its
-last stage passed everything up to 8 Hz almost intact (0.4 dB at 3–8 Hz):
-gestures reached the circle fit and the arctangent, which are not linear.
-Cost: the decision is 1.82 s late, and after a restart the FIR needs 3.6 s
-to fill.
-
-Reference for the multistage decimation and its aliasing bands:
-R. E. Crochiere and L. R. Rabiner, "Interpolation and decimation of digital
-signals — A tutorial review", Proc. IEEE 69(3), 1981.
+Reference: R. E. Crochiere and L. R. Rabiner, "Interpolation and decimation of
+digital signals — A tutorial review", Proc. IEEE 69(3), 1981.
 """
 
 from __future__ import annotations
@@ -49,31 +31,10 @@ def design_doppler_lowpass(
     transition_hz: float = 1.0,
     attenuation_db: float = 60.0,
 ) -> np.ndarray:
-    """Taps of the linear-phase Doppler low-pass filter (Kaiser window).
+    """Symmetric taps (odd length) of the Kaiser low-pass: −6 dB at *cutoff_hz*,
+    transition of *transition_hz* centred on it, *attenuation_db* in the stop band.
 
-    Parameters
-    ----------
-    f_s_hz : float
-        Sampling rate of the filtered IQ (Hz), e.g. 100 Hz.
-    cutoff_hz : float, optional
-        −6 dB frequency (Hz).
-    transition_hz : float, optional
-        Width of the transition band (Hz), centred on *cutoff_hz*: the pass
-        band ends at ``cutoff − transition/2`` and the stop band starts at
-        ``cutoff + transition/2``.
-    attenuation_db : float, optional
-        Minimum stop-band attenuation (dB); also bounds the pass-band ripple.
-
-    Returns
-    -------
-    numpy.ndarray
-        Symmetric taps (odd length: integer delay of ``(N − 1)/2`` samples).
-
-    Notes
-    -----
-    Kaiser's estimate of the length of a Kaiser-window FIR,
-    ``N ≈ (A − 7.95) / (2.285 · 2π · Δf / f_s)`` (``scipy.signal.kaiserord``),
-    gives 365 taps for the default template at 100 Hz.
+    Length from Kaiser's formula (``scipy.signal.kaiserord``): 365 taps at 100 Hz.
     """
     n_taps, beta = kaiserord(attenuation_db, transition_hz / (0.5 * f_s_hz))
     if n_taps % 2 == 0:
@@ -88,14 +49,7 @@ def doppler_lowpass_decimator(
     transition_hz: float = 1.0,
     attenuation_db: float = 60.0,
 ) -> tuple[Decimator, float]:
-    """Streaming decimator whose only stage is the Doppler low-pass filter.
-
-    Returns
-    -------
-    (Decimator, float)
-        The decimator (state kept between blocks, ``reset()`` on a
-        discontinuity) and the delay it introduces (s).
-    """
+    """Streaming decimator made of the Doppler low-pass alone, and its delay (s)."""
     taps = design_doppler_lowpass(f_s_hz, cutoff_hz, transition_hz, attenuation_db)
     decimator = Decimator(f_s_hz, decimation_factor, max_frequency_hz=cutoff_hz,
                           stages=[(taps, np.array([1.0]), decimation_factor)])
@@ -104,22 +58,8 @@ def doppler_lowpass_decimator(
 
 @dataclass
 class AliasStage:
-    """Aliasing into the band of interest at one decimation stage.
-
-    Attributes
-    ----------
-    index : int
-        Rank of the stage in the chain (0 = first).
-    f_in_hz, f_out_hz : float
-        Input and output rates of the stage (Hz).
-    decimation_factor : int
-        Factor ``q`` of the stage.
-    worst_attenuation_db : float
-        Smallest attenuation of the stage filter over the bands
-        ``m·f_out ± band`` (m ≥ 1) that fold into ``[−band, +band]`` (dB).
-    worst_frequency_hz : float
-        Input frequency of that worst case (Hz).
-    """
+    """Aliasing into ``[−band, +band]`` at one stage: rates, factor, and the
+    smallest attenuation (dB) over the folding bands with its input frequency (Hz)."""
 
     index: int
     f_in_hz: float
@@ -136,21 +76,8 @@ def _attenuation_db(b: np.ndarray, a: np.ndarray, frequencies_hz: np.ndarray, f_
 
 def alias_audit(stages: list[tuple[np.ndarray, np.ndarray, int, float]], band_hz: float = 1.0,
                 points_per_band: int = 41) -> list[AliasStage]:
-    """Attenuation of every stage in the frequency bands that fold into the band of interest.
-
-    For a stage of input rate ``F`` and factor ``q``, the frequencies
-    ``m·F/q ± band`` (``m = 1 … ⌊(F/2 + band)/(F/q)⌋``) fold into
-    ``[−band, +band]`` at its output (Crochiere & Rabiner, 1981).
-
-    Parameters
-    ----------
-    stages : list
-        ``(b, a, q, f_in_hz)`` of every stage, in order (``Decimator.stages``).
-    band_hz : float, optional
-        Half-width ``f_b`` of the band of interest (Hz).
-    points_per_band : int, optional
-        Frequencies evaluated in each folding band.
-    """
+    """Attenuation of each stage ``(b, a, q, f_in_hz)`` over the bands ``m·f_out ± band``
+    that fold into ``[−band, +band]`` (Crochiere & Rabiner, 1981)."""
     report = []
     for index, (b, a, q, f_in_hz) in enumerate(stages):
         f_out_hz = f_in_hz / q
@@ -170,18 +97,8 @@ def composite_alias_attenuation(
     max_frequency_hz: float | None = None,
     n_points: int = 200_001,
 ) -> tuple[float, float]:
-    """Worst attenuation of an input tone that ends up in ``[−band, +band]`` after the whole chain.
-
-    Each input frequency is followed through the stages: attenuated by the
-    filter of a stage, then folded by its decimation.  Among the tones
-    outside the band that end inside it, the least attenuated one is the
-    worst case, whatever its folding path.
-
-    Returns
-    -------
-    (float, float)
-        Its attenuation (dB) and its input frequency (Hz).
-    """
+    """Worst ``(attenuation_db, input_frequency_hz)`` of an out-of-band tone that
+    ends in ``[−band, +band]`` after the whole chain (filtered, then folded, stage by stage)."""
     f_in_hz = stages[0][3]
     max_frequency_hz = max_frequency_hz or f_in_hz / 2
     f_hz = np.linspace(-max_frequency_hz, max_frequency_hz, n_points)
@@ -199,7 +116,7 @@ def composite_alias_attenuation(
 
 
 def dc_group_delay_s(stages: list[tuple[np.ndarray, np.ndarray, int, float]]) -> float:
-    """Delay of a decimation chain for the slow components (group delay near 0 Hz, s)."""
+    """Delay (s) of a decimation chain near 0 Hz."""
     delay_s = 0.0
     for b, a, _, f_in_hz in stages:
         _, delay_samples = group_delay((b, a), w=[1e-6 * f_in_hz], fs=f_in_hz)

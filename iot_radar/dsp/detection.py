@@ -1,28 +1,15 @@
-"""Breathing detection: per-window metrics and temporal decision.
+"""Breathing detection: metrics of one window, then a temporal decision.
 
-Place in the chain: last processing step, after the phase demodulation.
-Per analysis window, a few **spectral quality metrics** of the
-chest displacement give an instantaneous confidence; a **temporal decision
-layer** smooths it and applies hysteresis so that the state does not flicker.
+Per window (:func:`breathing_metrics`): rate = highest peak of the spectrum
+in the breathing band; the peak must be a local maximum (not the skirt of an
+out-of-band component); SNR = peak / median power of a noise-only band;
+concentration = share of the band energy near the peak; motion = peak-to-peak
+displacement above ``motion_ptp_mm``.  Confidence = √(SNR score ×
+concentration score), 0 with motion or without a genuine peak.
 
-* Breathing rate — highest peak of the displacement spectrum in the
-  breathing band (zero-padded, parabolic interpolation).
-* Genuine peak — the maximum must be a local maximum of the spectrum; a
-  maximum on a band edge while the spectrum keeps rising outside the band is
-  the skirt of an out-of-band component, not a breathing rate.
-* Band SNR — peak power / noise floor (median power in a reference band
-  free of vital signs, e.g. 2.5–5 Hz).
-* Peak concentration — share of the breathing-band energy within
-  ±``peak_halfwidth_hz`` of the peak.
-* Motion — body movements give displacements far larger than breathing;
-  above ``motion_ptp_mm`` peak to peak the window is declared corrupted.
-
-The instantaneous confidence is the geometric mean of the SNR and
-concentration scores, forced to 0 during motion or without a genuine peak.
-:class:`BreathingDetector` smooths it exponentially, applies the ON / OFF
-thresholds, holds the ``MOTION`` state, reports the median rate and raises
-an apnea alert when no inhalation has been seen for ``apnea_s`` seconds
-although breathing was detected shortly before (a radar cannot tell a
+:class:`BreathingDetector` smooths it, applies ON / OFF thresholds, holds the
+``MOTION`` state, reports the median rate and raises an apnea alert (no
+inhalation for ``apnea_s`` shortly after breathing; a radar cannot tell a
 breath-hold from the person leaving the beam).
 """
 
@@ -43,7 +30,7 @@ STATE_NO_BREATHING = "NO_BREATHING"
 STATE_BREATHING = "BREATHING"
 STATE_MOTION = "MOTION"
 STATE_CODES = {STATE_WARMUP: -1, STATE_NO_BREATHING: 0, STATE_BREATHING: 1, STATE_MOTION: 2}
-"""Integer code of each detector state (for arrays and plots)."""
+"""Integer code of each state (arrays, plots)."""
 
 
 # ----------------------------------------------------------------------
@@ -52,32 +39,12 @@ STATE_CODES = {STATE_WARMUP: -1, STATE_NO_BREATHING: 0, STATE_BREATHING: 1, STAT
 
 @dataclass
 class DetectionSettings:
-    """Parameters of the breathing detector (``vital_signs.detection`` section).
+    """Detector parameters (``vital_signs.detection``; see the comments of ``configs/radar.yaml``).
 
-    Attributes
-    ----------
-    snr_min_db, snr_good_db : float
-        Band SNR mapped to the scores 0 and 1 (dB).
-    peak_halfwidth_hz : float
-        Half-width of the window around the peak for the concentration (Hz).
-    concentration_floor, concentration_good : float
-        Peak concentration mapped to the scores 0 and 1.
-    motion_ptp_mm : float
-        Peak-to-peak displacement above which a window is "motion" (mm).
-    motion_window_s : float
-        Length of the recent segment also checked for motion (s).
-    motion_hold_s : float
-        Time the ``MOTION`` state is held after the last corrupted window (s).
-    smoothing_tau_s : float
-        Time constant of the exponential smoothing of the confidence (s).
-    threshold_on, threshold_off : float
-        Smoothed confidence entering / leaving ``BREATHING`` (hysteresis).
-    rate_median_len : int
-        Reported rate = median of the last *rate_median_len* reliable rates.
-    apnea_s : float
-        Time without inhalation that raises the apnea alert (s).
-    apnea_memory_s : float
-        The alert is raised only if breathing was detected less than this ago (s).
+    ``snr_*`` and ``concentration_*`` map a metric to a score 0 → 1;
+    ``motion_window_s`` is the recent segment also checked for motion;
+    ``threshold_on`` / ``threshold_off`` are the hysteresis on the smoothed
+    confidence; the apnea alert needs breathing within ``apnea_memory_s``.
     """
 
     snr_min_db: float = 8.0
@@ -97,7 +64,7 @@ class DetectionSettings:
 
     @classmethod
     def from_config(cls, section: dict[str, Any]) -> "DetectionSettings":
-        """Build from a YAML mapping; missing keys keep their default, unknown keys are refused."""
+        """From the YAML section: defaults for missing keys, unknown keys refused."""
         check_keys("vital_signs.detection", section, [f.name for f in fields(cls)])
         known = {f.name: section[f.name] for f in fields(cls) if f.name in section}
         settings = cls(**known)
@@ -111,27 +78,10 @@ class DetectionSettings:
 
 @dataclass
 class BreathMetrics:
-    """Spectral quality metrics of one analysis window.
+    """Metrics of one window.
 
-    Attributes
-    ----------
-    rate_hz : float or None
-        Spectral-peak breathing rate (Hz).
-    genuine_peak : bool
-        ``False`` when the in-band maximum is only the skirt of an
-        out-of-band component.
-    snr_db : float
-        Peak power over the reference-band noise floor (dB).
-    noise_floor : float
-        Median power in the reference band (linear, unit of the spectrum).
-    concentration : float
-        Share of the breathing-band energy within ±``peak_halfwidth_hz`` of the peak.
-    motion : bool
-        Large body movement detected (window unusable).
-    displacement_ptp_mm : float
-        Peak-to-peak displacement used for the motion test (mm; NaN if unknown).
-    snr_score, concentration_score, confidence : float
-        Scores in [0, 1]; ``confidence`` is the instantaneous confidence.
+    ``noise_floor`` = median power of the reference band; ``displacement_ptp_mm``
+    is NaN when unknown (linear demodulation); scores and ``confidence`` in [0, 1].
     """
 
     rate_hz: float | None
@@ -147,7 +97,7 @@ class BreathMetrics:
 
 
 def ramp(value: float, floor: float, good: float) -> float:
-    """Linear map: ``value ≤ floor`` → 0, ``value ≥ good`` → 1 (NaN → 0)."""
+    """``value ≤ floor`` → 0, ``value ≥ good`` → 1, linear in between (NaN → 0)."""
     if not np.isfinite(value):
         return 0.0
     return float(np.clip((value - floor) / (good - floor), 0.0, 1.0))
@@ -170,26 +120,13 @@ def breathing_metrics(
     reference_band_hz: tuple[float, float],
     settings: DetectionSettings,
 ) -> BreathMetrics:
-    """Per-window metrics and instantaneous confidence.
+    """Metrics and instantaneous confidence of one window.
 
-    Parameters
-    ----------
-    spectrum : Spectrum
-        Periodogram of the detrended (not band-passed) displacement.
-    displacement_ptp_mm : float
-        Peak-to-peak displacement (mm), or NaN when the demodulation is not
-        calibrated (linear fallback): motion is then not assessed.
-    breathing_band_hz, reference_band_hz : tuple[float, float]
-        Bands (Hz).  The noise floor is the median power of the reference
-        band, without the bins within ±``peak_halfwidth_hz`` of the peak and
-        of its harmonics 2 and 3.  The exclusion matters only when the
-        reference band overlaps the breathing harmonics: with the Doppler
-        filter M1 the spectrum is empty above ~2 Hz, so the noise is measured
-        inside the pass band (without the exclusion, an empty room got an SNR
-        of 80 dB there and was detected 22 to 40 % of the time); with the
-        former reference band (2.5–5 Hz) nothing is excluded.
-    settings : DetectionSettings
-        Detector parameters.
+    *spectrum*: of the detrended displacement; *displacement_ptp_mm*: NaN
+    when not calibrated (motion then not assessed).  The noise floor excludes
+    the bins near the peak and its harmonics 2 and 3: with M1 the noise band
+    lies inside the pass band, and without the exclusion an empty room got
+    80 dB of SNR there (detected 22–40 % of the time).
     """
     f_hz, psd = spectrum.f_hz, spectrum.psd
     in_band = (f_hz >= breathing_band_hz[0]) & (f_hz <= breathing_band_hz[1])
@@ -242,35 +179,11 @@ def breathing_metrics(
 
 @dataclass
 class BreathingState:
-    """Output of :class:`BreathingDetector` for one analysis update.
+    """Output of :class:`BreathingDetector` for one update.
 
-    Attributes
-    ----------
-    t_s : float
-        Time of the update (s, stream time).
-    state : str
-        ``WARMUP``, ``NO_BREATHING``, ``BREATHING`` or ``MOTION``.
-    confidence : float
-        Smoothed confidence in [0, 1] (drives the decision).
-    confidence_instant : float
-        Instantaneous confidence of the current window.
-    rate_bpm : float or None
-        Median breathing rate (breaths / min), ``None`` if not breathing.
-    detected : bool
-        ``True`` in the ``BREATHING`` state.
-    metrics : BreathMetrics or None
-        Metrics of the current window.
-    breathing_for_s : float
-        Duration of the current ``BREATHING`` episode (s, 0 otherwise).
-    since_last_breath_s : float
-        Time since the last detected inhalation (s, NaN if unknown).
-    apnea : bool
-        Apnea (or target lost) suspected.
-    pause_reason : str or None
-        In the ``MOTION`` state (measurement paused): ``"motion"`` (large
-        displacement; with the M3 weighting, an anomaly inside the breathing
-        band, i.e. the target itself moved) or ``"saturation"`` (ADC); ``None``
-        otherwise.
+    ``confidence`` is smoothed, ``confidence_instant`` is the window's;
+    ``rate_bpm`` is the median rate (``None`` unless breathing);
+    ``pause_reason`` in ``MOTION``: ``"motion"`` or ``"saturation"``.
     """
 
     t_s: float
@@ -287,23 +200,10 @@ class BreathingState:
 
 
 class BreathingDetector:
-    """Temporal decision layer: smoothing, hysteresis, motion hold, apnea alert.
+    """Temporal decision: smoothing, hysteresis, motion hold, apnea alert; one per stream.
 
-    One instance per stream; call :meth:`update` once per analysis window.
-
-    Parameters
-    ----------
-    settings : DetectionSettings
-        Detector parameters.
-    period_s : float
-        Nominal time between two updates, used for the very first smoothing
-        step (the next ones use the actual time differences).
-
-    Notes
-    -----
-    The smoothed confidence starts at 0, so a detection needs about
-    ``−τ·ln(1 − threshold_on)`` seconds of consistent evidence (≈ 3.7 s with
-    the defaults) — a protection against isolated false alarms.
+    The smoothed confidence starts at 0: a detection needs ≈ −τ·ln(1 − on)
+    seconds of evidence (3.7 s with the defaults), against isolated false alarms.
     """
 
     def __init__(self, settings: DetectionSettings, period_s: float) -> None:
@@ -319,7 +219,7 @@ class BreathingDetector:
         self._rates_bpm: deque[float] = deque(maxlen=max(1, int(settings.rate_median_len)))
 
     def warmup(self, t_s: float) -> BreathingState:
-        """State reported while the analysis window is still filling."""
+        """State while the analysis window fills."""
         return BreathingState(t_s, STATE_WARMUP, 0.0, 0.0, None, False, None)
 
     def update(
@@ -329,12 +229,8 @@ class BreathingDetector:
         since_last_breath_s: float = float("nan"),
         pause_reason: str | None = None,
     ) -> BreathingState:
-        """Fold the metrics of one window into the decision; return the new state.
-
-        *since_last_breath_s* (from :func:`iot_radar.dsp.estimation.breath_cycles`)
-        drives the apnea alert.  *pause_reason* (e.g. ``"saturation"``) pauses
-        the measurement like a motion, for ``motion_hold_s``.
-        """
+        """Fold one window into the decision.  *since_last_breath_s* drives the
+        apnea alert; *pause_reason* (e.g. ``"saturation"``) pauses like a motion."""
         s = self.settings
         if self._t_last_s is None:
             dt_s = self.period_s

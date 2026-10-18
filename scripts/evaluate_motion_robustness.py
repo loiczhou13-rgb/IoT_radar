@@ -1,24 +1,14 @@
 #!/usr/bin/env python3
-"""Evaluate the robustness to residual motion: former chain against every combination of M1 and M3.
+"""Evaluate the robustness to residual motion: former chain against the combinations of M1 and M3.
 
-Each configuration processes:
+Inputs: simulated scenes S1–S8 (target, walkers, sway, gestures, empty room,
+target moving; several seeds, 20 kS/s) and the annotated sessions of a
+folder (the 69 converted legacy sessions by default).  Measured: share of
+the time paused (``MOTION``), measurement-mode decisions on 30 s windows
+(Pd, Pfa, inconclusive) and rate error.  Results in
+``results/motion_robustness/``, figures in ``docs/figures/motion_robustness/``.
 
-* simulated scenes S1–S8 (target, walkers, sway, gestures, empty room,
-  target moving), several seeds, at a reduced input rate (20 kS/s, same
-  decimation from 100 Hz on) and at 2.45 GHz;
-* the annotated HDF5 sessions of a folder (the 69 converted legacy sessions
-  by default, labelled ``breathing`` or ``empty``).
-
-Measured, per configuration and scene: the share of the time in pause
-(``MOTION`` outputs of the continuous chain), the decisions of the
-measurement mode (M4) on back-to-back 30 s windows — Pd = P(breathing |
-target), Pfa = P(breathing | no target), share inconclusive — and the rate
-error of the windows decided ``breathing`` (simulation).
-
-Results in ``results/motion_robustness/results.json`` and
-``summary.md``; figures in ``docs/figures/motion_robustness/``.
-
-Examples (from the repository root)::
+Examples::
 
     python scripts/evaluate_motion_robustness.py                 # everything (≈ 10 min on 24 cores)
     python scripts/evaluate_motion_robustness.py --quick         # 1 seed, 90 s, 10 sessions
@@ -79,7 +69,7 @@ TX_OFFSET_HZ = 244.140625      # 25 periods per 2048-sample buffer at 20 kS/s
 SNR_PER_SAMPLE_DB = -5.0       # ≈ 25 dB in the 20 Hz slow time
 CROSSING_PERIOD_S = 25.0       # one walker crossing the beam every 25 s
 WALLS = [{"position_m": [1.5, 6.0], "amplitude": 3.0}, {"position_m": [-2.0, 5.0], "amplitude": 2.0}]
-"""Static reflectors of every simulated scene: the passers-by mask them, so the centre of the arc moves."""
+"""Static reflectors of every scene (masked by the passers-by, so the arc centre moves)."""
 
 
 # ---------------------------------------------------------------------------
@@ -87,11 +77,8 @@ WALLS = [{"position_m": [1.5, 6.0], "amplitude": 3.0}, {"position_m": [-2.0, 5.0
 # ---------------------------------------------------------------------------
 
 def _crossings(depths_m: tuple[float, ...], duration_s: float, rng: np.random.Generator) -> list[dict[str, Any]]:
-    """Walkers crossing the beam every CROSSING_PERIOD_S, alternating direction and depth.
-
-    Each one walks from x = ∓9 m to x = ±9 m at 0.5–1.5 m/s, then stays
-    where it stopped (a person does not vanish).
-    """
+    """Walkers crossing the beam every CROSSING_PERIOD_S, from x = ∓9 m to ±9 m at 0.5–1.5 m/s,
+    alternating direction and depth; each stays where it stopped."""
     walkers = []
     for k, start_s in enumerate(np.arange(2.0, duration_s, CROSSING_PERIOD_S)):
         speed = float(rng.uniform(0.5, 1.5))
@@ -202,10 +189,7 @@ def run_stream(cfg: dict[str, Any], source, tx_offset_hz: float, adc_full_scale:
 
 def simulated_job(scene: str, seed: int, config: str, duration_s: float, keep_trace: bool = False,
                   midpoint_db: float | None = None) -> dict[str, Any]:
-    """One simulated scene, seed and configuration (run in a worker process).
-
-    *midpoint_db* overrides the index at which the M3 weight is 0.5 (sweep of κ₀).
-    """
+    """One scene, seed and configuration (worker process); *midpoint_db* overrides κ₀."""
     logging.disable(logging.WARNING)
     cfg = configured(simulation_base(), CONFIGS[config])
     if midpoint_db is not None:

@@ -1,12 +1,6 @@
-"""Regenerate ``tests/data/references.npz`` from the current code.
+"""Regenerate ``tests/data/references.npz``: ``python tests/make_references.py``.
 
-Run from the repository root::
-
-    python tests/make_references.py
-
-Only when a change of the numerical results is intended, in a dedicated
-commit that explains why.  Any other change of these references hides a
-numerical regression.
+Only for an intended change of the numerical results, in a commit that says why.
 """
 
 from __future__ import annotations

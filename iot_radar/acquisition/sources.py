@@ -1,14 +1,7 @@
-"""IQ sources: every place the samples can come from, behind one interface.
+"""IQ sources behind one interface: PlutoSDR, simulation, recorded session.
 
-Place in the chain: first step.  The pipeline reads consecutive
-:class:`Block` objects from a *source* and does not know whether they come
-from the PlutoSDR (:class:`PlutoSource`), from the numerical simulation
-(:class:`CWSimulationSource`) or from a recorded session
-(:class:`ReplaySource`).
-
-A block carries what is needed to detect a discontinuity of the stream: the
-index of its first sample, the host clock when it was received and an
-``overflow`` flag set when samples were lost just before it.
+Each delivers consecutive :class:`Block` objects; the first sample index and
+the ``overflow`` flag let the pipeline detect a discontinuity.
 """
 
 from __future__ import annotations
@@ -45,20 +38,12 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class Block:
-    """One block of consecutive IQ samples delivered by a source.
+    """Consecutive IQ samples of a source.
 
-    Attributes
-    ----------
-    samples : numpy.ndarray
-        Complex64 samples, shape ``(n_channels, n_samples)``, in ADC units.
-    sample_start : int
-        Index of ``samples[:, 0]`` in the stream of samples delivered by the
-        source (the next block normally starts at
-        ``sample_start + n_samples``).
-    host_time_s : float
-        Host monotonic clock (s) when the block was received.
-    overflow : bool
-        ``True`` if samples were lost just before this block.
+    ``samples``: complex64 ``(n_channels, n_samples)`` in ADC units;
+    ``sample_start``: index of the first one among the samples delivered
+    (the next block starts at ``sample_start + n_samples``); ``host_time_s``:
+    monotonic clock at reception; ``overflow``: samples lost just before.
     """
 
     samples: np.ndarray
@@ -94,18 +79,12 @@ class Source(Protocol):
 # ---------------------------------------------------------------------------
 
 class PlutoSource:
-    """IQ blocks received by the PlutoSDR while it transmits *tx_buffer*.
+    """RX buffers of the PlutoSDR while it transmits *tx_buffer* (parameters of :func:`open_pluto`).
 
-    The device is opened and configured by
-    :func:`iot_radar.acquisition.pluto.open_pluto` (same parameters).  Each
-    :meth:`read_block` returns one RX buffer.
-
-    **Lost samples.**  When the host does not read fast enough, the FPGA
-    drops RX samples and sets a bit of the RX status register.  The bit is
-    read (and cleared) after every buffer and reported as ``Block.overflow``.
-    If the register cannot be accessed (other firmware), a warning is logged
-    once and ``overflow`` stays ``False``.  On a Pluto read over USB, the
-    flagged buffers matched the measured throughput deficit.
+    Lost samples: the FPGA sets a bit of the RX status register, read and
+    cleared after every buffer (``Block.overflow``).  Without access to the
+    register (other firmware) a warning is logged once and ``overflow`` stays
+    ``False``.  Over USB, the flagged buffers matched the throughput deficit.
     """
 
     n_channels: int = 1
@@ -152,7 +131,7 @@ class PlutoSource:
         return block
 
     def close(self) -> None:
-        """Stop the cyclic transmission (leaves the Pluto in a known state)."""
+        """Stop the cyclic transmission."""
         try:
             self._sdr.tx_destroy_buffer()
         except Exception:
@@ -189,7 +168,7 @@ def _pluto_firmware_version(sdr) -> str:
 # ---------------------------------------------------------------------------
 
 SCENE_STATES: tuple[str, ...] = ("breathing", "empty", "motion", "apnea")
-"""States of the simulated scene (they are also annotation labels)."""
+"""States of the simulated scene (also annotation labels)."""
 
 
 def _parse_timeline(timeline: list | None) -> tuple[np.ndarray, np.ndarray]:
@@ -205,92 +184,25 @@ def _parse_timeline(timeline: list | None) -> tuple[np.ndarray, np.ndarray]:
     return starts_s, states
 
 class CWSimulationSource:
-    """Simulated PlutoSDR reception of a CW / CW-offset radar, block by block.
+    """Simulated Pluto reception, block by block (ADC units), for the TX tone ``s(t)``::
 
-    Physical model (baseband, in ADC units), for the TX tone
-    ``s(t) = exp(j·2π·f_offset·t)`` (``f_offset = 0`` in pure CW)::
+        r(t) = C_rx                                  receiver DC, at 0 Hz
+             + C_static · s(t)                       leakage and static clutter
+             + A · exp(−j·4π·(R0 + d(t))/λ) · s(t)   echo of the person
+             + w(t)                                  white noise
 
-        r(t) = C_rx                                  receiver DC offset, at 0 Hz
-             + C_static · s(t)                       TX→RX leakage and static clutter
-             + A · exp(−j·4π·(R0 + d(t))/λ) · s(t)   echo of the breathing person
-             + w(t)                                  complex white noise
+    Every echo is a copy of the TX tone, so it sits at ``+f_offset``; a
+    TX/RX LO offset ``δf`` multiplies them by ``exp(j2π·δf·t)``.  Chest:
+    ``d(t) = D·sin(2π·f_b·t) + D_h·sin(2π·f_h·t)``.  Optional *timeline*
+    ``[[t_start_s, state], ...]`` with ``breathing``, ``empty``, ``motion``
+    (sway added) and ``apnea`` (heartbeat only).  Samples rounded and clipped
+    to the 12-bit ADC.
 
-    where the echoes are multiplied by ``exp(j·2π·δf·t)`` for a residual
-    TX/RX local-oscillator offset ``δf``.  Every echo — leakage and walls
-    included — is a delayed copy of the TX tone, hence sits at ``+f_offset``
-    (the former model put the static clutter at 0 Hz, where the
-    clutter high-pass removed it perfectly, which never happens on the
-    hardware).
-
-    Scene model (:meth:`presence_and_displacement`): the radial chest
-    displacement is ``d(t) = D·sin(2π·f_b·t) + D_h·sin(2π·f_h·t)``
-    (breathing + heartbeat).  An optional **timeline** changes the scene over
-    time, e.g. ``[[0, "breathing"], [60, "empty"], [90, "motion"]]``: each
-    entry ``[t_start_s, state]`` holds until the next one, with the states
-
-    * ``breathing`` — person present, breathing (and heartbeat);
-    * ``empty`` — nobody in front of the radar (no echo of a person);
-    * ``motion`` — person moving: a sway of several centimetres is added;
-    * ``apnea`` — person present, holding the breath (heartbeat only).
-
-    Without a timeline the scene is ``breathing`` if *presence* else ``empty``.
-
-    The samples are finally rounded to the integer levels of the 12-bit ADC
-    and clipped to ``[-2048, 2047]``, as delivered by the Pluto.
-
-    Parameters
-    ----------
-    f_c_hz, f_s_hz : float
-        Carrier frequency (Hz) and sampling rate (Hz).
-    buffer_size : int
-        Samples per block.
-    tx_offset_hz : float
-        Effective baseband TX offset (Hz); 0 in pure CW.
-    breath_rate_hz : float
-        Breathing frequency ``f_b`` (Hz).
-    breath_amplitude_mm : float
-        Peak chest displacement ``D`` (mm).
-    presence : bool, optional
-        ``False`` simulates an empty scene (ignored when *timeline* is given).
-    heart_rate_hz, heart_amplitude_mm : float, optional
-        Heartbeat frequency (Hz) and peak chest displacement (mm).
-    timeline : list or None, optional
-        Scene timeline ``[[t_start_s, state], ...]`` (see above).
-    motion_amplitude_mm : float, optional
-        Amplitude of the body sway during ``motion`` periods (mm).
-    target_range_m : float, optional
-        Distance ``R0`` of the person (m); sets the phase of its echo.
-    target_amplitude : float, optional
-        Amplitude ``A`` of the echo of the person (ADC units).
-    static_clutter_amplitude : float, optional
-        Amplitude of the leakage and static clutter ``|C_static|`` (ADC units).
-    receiver_dc_amplitude : float, optional
-        Amplitude of the receiver DC offset ``|C_rx|`` (ADC units).
-    lo_offset_hz : float, optional
-        Residual TX/RX local-oscillator offset ``δf`` (Hz).
-    snr_db : float, optional
-        Ratio ``A² / noise power`` per sample (dB), before any processing gain.
-    seed : int or None, optional
-        Seed of the noise generator (``None``: different noise at each run).
-    realtime : bool, optional
-        If ``True``, :meth:`read_block` waits so that blocks are delivered at
-        the real sampling rate, like the hardware (an unpaced
-        simulation produced far more than 1 s of signal per second of wall
-        clock, so recordings and live displays ran too fast).  ``False``
-        (default) generates as fast as possible, for tests and offline use.
-    disturbers : list or None, optional
-        People moving around the radar (:mod:`iot_radar.acquisition.disturbers`:
-        walker, sway, gesture).  The radar is at the origin with its boresight
-        along +y and the person at ``(0, target_range_m)``.  Their echoes are
-        added at the TX frequency like every echo, and the paths they cross
-        (person, static reflectors) are attenuated (masking).
-    static_scatterers : list or None, optional
-        Static reflectors ``{"position_m": [x, y], "amplitude": A}`` (walls,
-        furniture), amplitude in ADC units at the receiver; their paths can be
-        masked by the disturbers, which makes the static centre drift.
-
-    Without disturbers nor static reflectors, the samples are exactly those of
-    the model above.
+    *snr_db*: ``A²`` / noise power per sample.  *realtime*: deliver at the
+    real rate (otherwise as fast as possible).  *disturbers* (walker, sway,
+    gesture) and *static_scatterers* ``{"position_m", "amplitude"}``: radar
+    at the origin, boresight +y, person at ``(0, target_range_m)``; the
+    disturbers mask the paths they cross.
     """
 
     n_channels: int = 1
@@ -334,7 +246,7 @@ class CWSimulationSource:
         self._timeline_starts_s, self._timeline_states = _parse_timeline(timeline)
         self._target_range_m = float(target_range_m)
         self._target_amplitude = float(target_amplitude)
-        # Fixed, arbitrary phases: only the geometry of the IQ arc matters.
+        # Arbitrary fixed phases.
         self._static_clutter = float(static_clutter_amplitude) * np.exp(1j * 0.7)
         self._receiver_dc = float(receiver_dc_amplitude) * np.exp(-1j * 2.1)
         self._lo_offset_hz = float(lo_offset_hz)
@@ -397,11 +309,7 @@ class CWSimulationSource:
         return np.where(entry >= 0, states, before_first_entry).astype(np.int8)
 
     def presence_and_displacement(self, t_s: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """Presence (1 or 0) and radial chest displacement (m) at times *t_s*.
-
-        The displacement is positive away from the radar (an inhalation
-        brings the chest closer: negative displacement).
-        """
+        """Presence (1 or 0) and chest displacement (m, positive away from the radar) at *t_s*."""
         t_s = np.asarray(t_s, dtype=np.float64)
         states = self.scene_states(t_s)
         breathing_m = np.where(
@@ -419,10 +327,7 @@ class CWSimulationSource:
         return presence, displacement_m
 
     def chest_displacement_m(self, t_s: np.ndarray) -> np.ndarray:
-        """Simulated chest displacement at times *t_s* (m), 0 when nobody is there.
-
-        This is the ground truth stored in the recorded sessions.
-        """
+        """Chest displacement (m), 0 when nobody is there: the ground truth of the sessions."""
         presence, displacement_m = self.presence_and_displacement(t_s)
         return presence * displacement_m
 
@@ -431,11 +336,7 @@ class CWSimulationSource:
         return activity_intervals(self._disturbers, n_samples, self.sample_rate_hz)
 
     def _scene_echoes(self, t_s: np.ndarray, target_echo: np.ndarray) -> np.ndarray:
-        """Echoes of the person (masked), static reflectors (masked) and disturbers.
-
-        Each disturber masks the paths of the person and of the static
-        reflectors, but not its own.
-        """
+        """Echoes of the person and static reflectors (masked by the disturbers), and of the disturbers."""
         echoes = target_echo * path_masking(self._target_position_m, self._disturbers, t_s)
         for position_m, amplitude in self._static_scatterers:
             phase = -4.0 * np.pi * float(np.linalg.norm(position_m)) / self._wavelength_m
@@ -449,7 +350,7 @@ class CWSimulationSource:
         if self._timeline_states.size == 0:
             label = "breathing" if self._presence else "empty"
             return [(0, n_samples, label)] if n_samples > 0 else []
-        # Sample index where each timeline entry starts, within the session.
+        # First sample of each timeline entry.
         starts = [min(n_samples, max(0, int(round(t * self.sample_rate_hz)))) for t in self._timeline_starts_s]
         labels = [SCENE_STATES[int(state)] for state in self._timeline_states]
         if starts[0] > 0:  # before the first entry the person breathes (see scene_states)
@@ -478,23 +379,12 @@ class CWSimulationSource:
 # ---------------------------------------------------------------------------
 
 class ReplaySource:
-    """Blocks of a recorded HDF5 session, delivered as during the acquisition.
+    """Blocks of a recorded HDF5 session, as delivered during the acquisition.
 
-    The blocks follow the ``/blocks`` table of the session: same boundaries,
-    same ``overflow`` flags and host times, so the pipeline sees exactly
-    what it saw live (and detects the same discontinuities).  Blocks longer
-    than *max_block_samples* (e.g. converted legacy recordings, stored as one
-    block) are cut into consecutive pieces.
-
-    Parameters
-    ----------
-    path : pathlib.Path
-        Session file written by :class:`iot_radar.acquisition.recording.SessionWriter`.
-    speed : float or None, optional
-        ``None`` delivers the blocks as fast as possible; ``1.0`` at the real
-        sampling rate, ``2.0`` twice as fast...
-    max_block_samples : int, optional
-        Longest block delivered (samples).
+    Same boundaries, ``overflow`` flags and host times as the ``/blocks``
+    table, so the pipeline sees what it saw live.  Longer blocks than
+    *max_block_samples* are cut.  *speed*: ``None`` as fast as possible,
+    ``1.0`` real time, ``2.0`` twice as fast.
     """
 
     kind: str = "replay"
@@ -545,10 +435,8 @@ def _replay_pieces(
 ) -> list[tuple[int, int, float, bool]]:
     """``(start, stop, host_time_s, overflow)`` of every block to deliver.
 
-    Each row of the ``/blocks`` table spans the samples up to the next row
-    (the last one up to the end of ``/iq``).  Rows longer than
-    *max_block_samples* are cut; the pieces after the first one get the
-    host time of their first sample and no overflow.
+    A row spans up to the next one; long rows are cut, and only their first
+    piece keeps the overflow flag.
     """
     starts = [int(s) for s in blocks["sample_start"]]
     stops = starts[1:] + [n_samples]
@@ -567,13 +455,8 @@ def _replay_pieces(
 # ---------------------------------------------------------------------------
 
 def open_source(cfg: dict[str, Any], simulation: bool) -> PlutoSource | CWSimulationSource:
-    """Open the IQ source described by the configuration.
-
-    The simulation is used when *simulation* is true or when
-    ``simulation.enabled`` is set in the configuration; otherwise the
-    PlutoSDR is opened and starts transmitting.  Raises ``ValueError`` on any
-    unknown key of the configuration.
-    """
+    """Open the simulation (if *simulation* or ``simulation.enabled``) or the PlutoSDR,
+    which starts transmitting.  ``ValueError`` on any unknown configuration key."""
     check_radar_config(cfg)
     sdr = cfg["sdr"]
     sim = cfg["simulation"]
