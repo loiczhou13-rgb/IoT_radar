@@ -1,8 +1,6 @@
 """PlutoSDR (AD9363) used as a monostatic CW radar: TX waveform, configuration, RX checks.
 
-The transmitter replays a baseband buffer in cyclic mode (carrier, or tone at
-``offset_hz``); the receiver, on the same LO, delivers the echoes in baseband.
-:class:`iot_radar.acquisition.sources.PlutoSource` turns the buffers into blocks.
+The transmitter replays a baseband buffer in cyclic mode (carrier, or tone at ``offset_hz``); the receiver, on the same LO, delivers the echoes in baseband. :class:`iot_radar.acquisition.sources.PlutoSource` turns the buffers into blocks.
 """
 
 from __future__ import annotations
@@ -25,9 +23,8 @@ RX_STATUS_REGISTER: int = 0x80000088
 RX_OVERFLOW_BIT: int = 0b0100
 """Set by the FPGA when RX samples were dropped (host too slow)."""
 
-DAC_FULL_SCALE: int = 2**14
-"""Scale of unit-amplitude TX samples: ``pyadi-iio`` casts to int16 without scaling
-and the 12-bit DAC uses the upper bits (unscaled, the carrier sits at ≈ −84 dBFS)."""
+DAC_HALF_SCALE: int = 2**14
+"""Scale of unit-amplitude TX samples (half the int16 range, −6 dBFS): ``pyadi-iio`` casts to int16 without scaling and the FPGA feeds the upper 12 bits to the DAC (unscaled, all TX samples sit within +/- 1, below one DAC step)."""
 
 
 # ---------------------------------------------------------------------------
@@ -47,7 +44,7 @@ def cw_tx_buffer(
     (:func:`snap_tx_offset_hz`): otherwise the phase jumps at every
     repetition and the spectrum becomes lines every ``f_s / buffer_size``
     (bug B1: 500 Hz requested, line at 488.28 Hz).  ``ValueError`` on an
-    unknown waveform, an offset above Nyquist or a non-integer period count.
+    unknown waveform, an offset of 0.4·f_s or more (4/5 of Nyquist) or a non-integer period count.
     """
     if waveform not in ("cw", "cw_offset"):
         raise ValueError(
@@ -55,13 +52,13 @@ def cw_tx_buffer(
         )
 
     if waveform == "cw":
-        logger.info("TX buffer — CW (constant envelope, scale=%d)", DAC_FULL_SCALE)
-        return np.full(buffer_size, DAC_FULL_SCALE + 0j, dtype=np.complex64)
+        logger.info("TX buffer — CW (constant envelope, scale=%d)", DAC_HALF_SCALE)
+        return np.full(buffer_size, DAC_HALF_SCALE + 0j, dtype=np.complex64)
 
-    if abs(offset_hz) >= f_s_hz / 2:
+    if abs(offset_hz) >= f_s_hz / 2.5:          # Sean's 4/5 rule
         raise ValueError(
-            f"offset_hz={offset_hz} Hz exceeds the Nyquist frequency "
-            f"(f_s/2 = {f_s_hz / 2} Hz). Reduce the offset or increase the sampling rate."
+            f"offset_hz={offset_hz} Hz is not below 0.4 x f_s (f_s/2.5 = {f_s_hz / 2.5} Hz, "
+            f"4/5 of the Nyquist frequency). Reduce the offset or increase the sampling rate."
         )
 
     periods_per_buffer = offset_hz * buffer_size / f_s_hz
@@ -76,10 +73,10 @@ def cw_tx_buffer(
     logger.info(
         "TX buffer — CW offset (offset=%.0f Hz, scale=%d)",
         offset_hz,
-        DAC_FULL_SCALE,
+        DAC_HALF_SCALE,
     )
     t_s = np.arange(buffer_size, dtype=np.float64) / f_s_hz
-    waveform_samples = DAC_FULL_SCALE * np.exp(1j * 2 * np.pi * offset_hz * t_s)
+    waveform_samples = DAC_HALF_SCALE * np.exp(1j * 2 * np.pi * offset_hz * t_s)
     return waveform_samples.astype(np.complex64)
 
 

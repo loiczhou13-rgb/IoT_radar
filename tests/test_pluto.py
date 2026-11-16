@@ -29,6 +29,14 @@ def test_tx_buffer_refuses_a_fractional_number_of_periods() -> None:
         cw_tx_buffer("cw_offset", 16384, 2e6, 500.0)
 
 
+def test_tx_offset_must_stay_below_0_4_f_s() -> None:
+    grid_hz = 2e6 / 16384                                   # whole periods per buffer
+    cw_tx_buffer("cw_offset", 16384, 2e6, 6553 * grid_hz)   # 799 927 Hz < 800 kHz
+    for offset_hz in (6554 * grid_hz, -6554 * grid_hz, 7373 * grid_hz):   # 800 049 Hz, its opposite, 0.45·f_s
+        with pytest.raises(ValueError, match="0.4 x f_s"):
+            cw_tx_buffer("cw_offset", 16384, 2e6, offset_hz)
+
+
 def test_default_config_transmits_and_receives_the_snapped_offset() -> None:
     cfg = load_config(DEFAULT_RADAR_CONFIG)
     assert effective_tx_offset_hz(cfg) == pytest.approx(33 * 1e6 / 65536)  # 503.54 Hz
