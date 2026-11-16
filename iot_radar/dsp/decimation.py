@@ -1,26 +1,10 @@
-"""Sample-rate reduction (decimation) of complex IQ streams.
+"""Decimation of complex IQ streams (ADC rate → slow time).
 
-Place in the chain: right after the acquisition and the NCO mixer
-(:mod:`iot_radar.dsp.mixer`).  The PlutoSDR delivers
-samples at millions of samples per second, while breathing lives below 1 Hz;
-:class:`Decimator` low-pass filters the stream and keeps one sample out of
-``decimation_factor``.
-
-:class:`Decimator` is stateful and causal: instantiate it once per stream and
-call it block by block.  The filter states and the sub-sampling phase are kept
-between calls, so block boundaries are invisible in the output — a complete
-recording can also be decimated offline by passing it as a single block (the
-result is identical).
-
-The decimation factor is decomposed into prime factors ≤ 13 and one Chebyshev
-type-I order-8 anti-aliasing filter (cut-off ``0.8 / q`` of the stage Nyquist
-frequency, as in ``scipy.signal.decimate``) is applied per stage.
-
-Note
-----
-Zero-phase filtering (``filtfilt``) needs the complete signal, so it cannot be
-used on a stream.  ``lfilter`` (forward only) introduces a constant group
-delay, harmless for signals well below the cut-off (~0.4 x output rate).
+Place in the chain: after the mixer.  The factor is split into primes ≤ 13,
+one stage each: Chebyshev I order-8 low-pass (cut-off ``0.8 / q`` of the stage
+Nyquist, as ``scipy.signal.decimate``), then one sample out of ``q``.  The
+filters are causal and keep their state between blocks, so the block
+boundaries are invisible in the output.
 """
 
 from __future__ import annotations
@@ -44,16 +28,7 @@ _CHEBY_RIPPLE_DB = 0.05
 # ---------------------------------------------------------------------------
 
 def _factorise(decimation_factor: int) -> list[int]:
-    """Decompose *decimation_factor* into prime factors ≤ 13 (ascending).
-
-    Each factor becomes one decimation stage with its own Chebyshev
-    anti-aliasing filter, maximising the stop-band rejection per stage.
-
-    Raises
-    ------
-    ValueError
-        If *decimation_factor* has a prime factor > 13.
-    """
+    """Prime factors ≤ 13 of *decimation_factor*, ascending (``ValueError`` otherwise)."""
     if decimation_factor <= 1:
         return []
 
@@ -77,11 +52,7 @@ def _factorise(decimation_factor: int) -> list[int]:
 
 
 def _check_shannon(f_s_hz: float, decimation_factor: int, max_frequency_hz: float) -> None:
-    """Raise ``ValueError`` if the output rate cannot represent *max_frequency_hz*.
-
-    The guard factor 2.5 (instead of the theoretical 2.0) accounts for the
-    transition band of the Chebyshev anti-aliasing filter.
-    """
+    """``ValueError`` if the output rate is below 2.5 × *max_frequency_hz* (2 + filter margin)."""
     f_s_out_hz = f_s_hz / decimation_factor
     if decimation_factor > 1 and f_s_out_hz <= 2.5 * max_frequency_hz:
         raise ValueError(
@@ -97,31 +68,12 @@ def _check_shannon(f_s_hz: float, decimation_factor: int, max_frequency_hz: floa
 # ---------------------------------------------------------------------------
 
 class Decimator:
-    """Stateful cascaded decimator for complex IQ streams.
+    """Stateful cascaded decimator of a complex stream (I and Q filtered separately).
 
-    Parameters
-    ----------
-    f_s_hz : float
-        Input sampling rate (Hz).
-    decimation_factor : int
-        Total decimation factor; must factor into primes ≤ 13.  The output
-        rate is ``f_s_hz / decimation_factor``.
-    max_frequency_hz : float
-        Highest frequency of interest (Hz), only used for the Shannon check.
-    output_dtype : numpy dtype, optional
-        Type of the output samples (``complex64`` by default).  A cascade cut
-        into two decimators gives exactly the samples of the single cascade
-        when the first one outputs ``complex128``.
-    stages : list or None, optional
-        ``[(b, a, q), ...]`` — filters and factors to use instead of the
-        Chebyshev cascade (e.g. the FIR of :mod:`iot_radar.dsp.doppler`); the
-        product of the factors must be *decimation_factor*.
-
-    Notes
-    -----
-    Each stage applies a Chebyshev type-I order-8 low-pass filter with
-    ``Wn = 0.8 / q`` and then keeps one sample out of *q*.  I and Q are
-    filtered separately (real filters), each with its own state.
+    *max_frequency_hz* only serves the Shannon check; *output_dtype*
+    ``complex128`` when the cascade is cut in two (the cut then changes
+    nothing); *stages* ``[(b, a, q), ...]`` replace the Chebyshev cascade
+    (e.g. the M1 FIR).
     """
 
     def __init__(
@@ -163,21 +115,7 @@ class Decimator:
         )
 
     def __call__(self, iq: np.ndarray) -> np.ndarray:
-        """Low-pass filter and down-sample one block, keeping the filter state.
-
-        Parameters
-        ----------
-        iq : numpy.ndarray
-            Complex IQ samples (1-D) at ``f_s_in_hz``.
-
-        Returns
-        -------
-        numpy.ndarray
-            ``complex64`` samples at ``f_s_out_hz``.  For a steady stream of
-            equal blocks the average output length is
-            ``len(iq) / decimation_factor``; one call may differ by one
-            sample, depending on the sub-sampling phase.
-        """
+        """Filter and down-sample one block; on average ``len(iq) / factor`` samples out."""
         if self.decimation_factor == 1:
             return iq.astype(self._output_dtype, copy=False)
 
@@ -191,8 +129,7 @@ class Decimator:
             re, self._zi_re[i] = lfilter(b, a, re, zi=self._zi_re[i])
             im, self._zi_im[i] = lfilter(b, a, im, zi=self._zi_im[i])
 
-            # Index of the first sample to keep in this block, so that the
-            # kept samples stay exactly q apart across block boundaries.
+            # First sample to keep: the kept samples stay q apart across blocks.
             offset = self._phase[i]
             n = re.size
 
@@ -211,7 +148,7 @@ class Decimator:
 
     @property
     def stages(self) -> list[tuple[np.ndarray, np.ndarray, int, float]]:
-        """``(b, a, q, f_in_hz)`` of every stage, in order (for the aliasing audit)."""
+        """``(b, a, q, f_in_hz)`` of every stage (for the aliasing audit)."""
         stages = []
         f_in_hz = self.f_s_in_hz
         for b, a, q in self._stages:
@@ -220,7 +157,7 @@ class Decimator:
         return stages
 
     def reset(self) -> None:
-        """Clear the filter states and sub-sampling phases (start of a new stream)."""
+        """Clear the filter states and sub-sampling phases."""
         for i in range(len(self._stages)):
             self._zi_re[i][:] = 0.0
             self._zi_im[i][:] = 0.0

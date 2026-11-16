@@ -100,7 +100,7 @@ Thumbs.db
 docs/_build/
 /site
 
-# ===== Data: radar sessions (HDF5) and legacy .npz for ml/ =====
+# ===== Data: radar sessions (HDF5) =====
 /data/
 # Recordings never go into Git, wherever they are (sessions live under data/).
 *.h5
@@ -110,7 +110,7 @@ docs/_build/
 # ... except the reference outputs of the characterisation tests.
 !tests/data/*.npz
 
-# ===== Results: evaluation outputs, ml/ training outputs and checkpoints =====
+# ===== Results: evaluation outputs and model checkpoints =====
 /results/
 *.pt
 *.pth

@@ -1,26 +1,15 @@
 """Test signals of a CW radar, independent of the simulator of the project.
 
-The non-regression tests must not check the processing against the model it
-was tuned on (``iot_radar.acquisition.sources.CWSimulationSource``).  This
-generator builds the received ADC samples from first principles, with only
-NumPy:
+Built from first principles with NumPy only, so that the tests do not check
+the processing against the model it was tuned on:
 
-* exact two-way path lengths: an echo at range ``R`` is the TX signal delayed
-  by ``τ = 2R/c``, i.e. ``exp(j2π·f_o·(t − τ)) · exp(−j2π·f_c·τ)`` for a tone at
-  offset ``f_o`` in baseband and the carrier ``f_c`` (2.45 GHz);
-* breathing frequencies that are not a whole number of cycles per analysis
-  window;
-* an echo amplitude that varies slowly by up to ±60 % (body orientation,
-  breathing depth);
-* a TX→RX leakage ``|C|`` far stronger than the echo, at the TX frequency,
-  and a receiver DC offset at 0 Hz;
-* the noise of the configuration (ratio echo² / noise power per ADC sample,
-  ``simulation.snr_db`` of ``configs/radar.yaml`` at ``sdr.sample_rate_hz``,
-  kept as a noise *density* when the tests run at a lower rate);
-* 12-bit quantisation: integers clipped to [−2048, 2047].
-
-The chest displacement is described by a function of time; helpers give
-breathing, apnea and target motion.
+* exact two-way delay ``τ = 2R/c``: ``exp(j2π·f_o·(t − τ)) · exp(−j2π·f_c·τ)``
+  at 2.45 GHz;
+* breathing rates that are not a whole number of cycles per window;
+* echo amplitude varying slowly by up to ±60 %;
+* TX→RX leakage far above the echo (at the TX frequency), receiver DC (0 Hz);
+* noise density of ``configs/radar.yaml`` (``simulation.snr_db`` at ``sdr.sample_rate_hz``);
+* 12-bit quantisation, clipped to [−2048, 2047].
 """
 
 from __future__ import annotations
@@ -39,7 +28,7 @@ CONFIG_PATH = Path(__file__).resolve().parents[1] / "configs" / "radar.yaml"
 
 
 def config_noise_density_db() -> float:
-    """Echo² over noise density (dB·Hz) of the configuration: its SNR per sample at its rate."""
+    """Echo² / noise density (dB·Hz) of the configuration."""
     cfg = yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8"))
     return float(cfg["simulation"]["snr_db"]) + 10.0 * np.log10(float(cfg["sdr"]["sample_rate_hz"]))
 
@@ -86,28 +75,9 @@ def with_motion(base: Callable[[np.ndarray], np.ndarray], start_s: float, stop_s
 class RadarScene:
     """One target in front of a CW radar, as received by the ADC.
 
-    Attributes
-    ----------
-    sample_rate_hz : float
-        ADC rate of the generated samples (Hz).
-    tx_offset_hz : float
-        Baseband frequency of the transmitted tone (Hz).
-    range_m : float
-        Distance of the chest at rest (m).
-    displacement_m : callable or None
-        Chest displacement (m) as a function of time (s); ``None`` = empty scene.
-    echo_amplitude : float
-        Mean echo amplitude (ADC units).
-    amplitude_variation : float
-        Relative slow variation of the echo amplitude (0.6 = ±60 %).
-    leakage : complex
-        TX→RX leakage and static clutter (ADC units), at the TX frequency.
-    receiver_dc : complex
-        Receiver DC offset (ADC units), at 0 Hz.
-    noise_density_db : float
-        Echo² over noise density (dB·Hz); default: the configuration.
-    seed : int
-        Seed of the noise and of the amplitude variation.
+    ``displacement_m``: chest displacement (m) as a function of time, ``None``
+    for an empty scene.  Amplitudes in ADC units; ``amplitude_variation``
+    0.6 = ±60 %; ``noise_density_db``: echo² / noise density (dB·Hz).
     """
 
     sample_rate_hz: float = 20_000.0
@@ -156,15 +126,11 @@ class RadarScene:
 
 def blocks(scene: RadarScene, duration_s: float, block_size: int = 2048,
            lost: dict[int, int] | None = None, flagged: set[int] | None = None):
-    """Consecutive blocks ``(samples (1, n), sample_start, overflow)`` of *duration_s* of *scene*.
+    """Blocks ``(samples (1, n), sample_start, overflow)`` of *duration_s* of *scene*.
 
-    *lost* maps a block index to a number of samples dropped just before it;
-    *flagged* holds the indices of the blocks that carry the loss flag
-    (``overflow``).  As on the Pluto, ``sample_start`` counts the samples
-    actually delivered, so a loss does not show in it, and the flag may be
-    read on another block than the one preceded by the loss (the Pluto
-    queues ``rx_kernel_buffers`` buffers: the samples are dropped after the
-    buffers already queued when the flag is read).
+    *lost*: block index → samples dropped just before it; *flagged*: blocks
+    carrying the loss flag.  As on the Pluto, ``sample_start`` counts the
+    delivered samples only, and the flag may come on another block than the loss.
     """
     lost, flagged = lost or {}, flagged or set()
     n_blocks = int(duration_s * scene.sample_rate_hz / block_size)

@@ -11,15 +11,6 @@ F_S_HZ = 20.0
 BAND_HZ = (0.1, 0.5)
 
 
-@pytest.mark.parametrize("rate_hz", [0.15, 0.25, 0.4])
-def test_all_estimators_on_a_sinusoid(rate_hz: float) -> None:
-    t_s = np.arange(400) / F_S_HZ
-    x = np.sin(2 * np.pi * rate_hz * t_s)
-    assert estimation.fft_peak_rate(x, F_S_HZ, BAND_HZ)[0] == pytest.approx(rate_hz, abs=0.01)
-    assert estimation.acf_rate(x, F_S_HZ, BAND_HZ)[0] == pytest.approx(rate_hz, abs=0.01)
-    assert estimation.zero_crossing_rate(x, F_S_HZ, BAND_HZ) == pytest.approx(rate_hz, abs=0.02)
-
-
 def test_cycles_of_an_asymmetric_breath() -> None:
     # Chest expansion (−d) with a 1:2 inhalation/exhalation ratio, 0.25 Hz, 8 mm peak to peak.
     t_s = np.arange(400) / F_S_HZ

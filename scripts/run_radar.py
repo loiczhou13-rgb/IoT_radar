@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
-"""Run the radar live: acquisition → phase-demodulation pipeline → dashboard.
-
-Usage (from the repository root, after ``pip install -e .``)::
+"""Run the radar live: acquisition → pipeline → dashboard.
 
     python scripts/run_radar.py                 # PlutoSDR, with the dashboard
     python scripts/run_radar.py --simulation    # no hardware
@@ -9,8 +7,8 @@ Usage (from the repository root, after ``pip install -e .``)::
     python scripts/run_radar.py --measure       # one measurement over a silence (M4), then exit
     python scripts/run_radar.py --config my_setup.yaml
 
-With the dashboard, the key ``m`` starts a measurement (M4): stand still,
-out of the beam, for ``measurement.duration_s`` (30 s by default).
+Dashboard key ``m``: measurement (M4), stand still out of the beam for
+``measurement.duration_s``.
 """
 
 from __future__ import annotations
@@ -84,9 +82,8 @@ def radar_outputs(pipeline: VitalSignsPipeline, source: Source,
                   measure_request: threading.Event | None = None) -> Iterator[PipelineOutput]:
     """Outputs of *pipeline* on *source* (closed at the end).
 
-    A measurement starts when *measure_request* is set (key ``m`` of the
-    dashboard, GUI thread): the request is read here, before each block, so
-    the pipeline is only used by the producer thread.
+    *measure_request* (key ``m``, GUI thread) is read before each block, so
+    only the producer thread uses the pipeline.
     """
     try:
         while True:
@@ -117,7 +114,7 @@ def dashboard_context(
     range_min_m, range_max_m = range_interval_m(cfg)
     settings = pipeline.settings
     detection = settings.detection
-    breathing_band_hz, heart_band_hz = settings.breathing_band_hz, settings.heart_band_hz
+    breathing_band_hz = settings.breathing_band_hz
     display = cfg.get("display", {})
     radar_rows = [
         ("Source", source_name),
@@ -133,10 +130,8 @@ def dashboard_context(
         ("Analysis window", f"{settings.window_s:.0f} s, every {settings.update_period_s} s"),
         ("Breathing band", f"{breathing_band_hz[0]}–{breathing_band_hz[1]} Hz"),
         ("", f"{60 * breathing_band_hz[0]:.0f}–{60 * breathing_band_hz[1]:.0f} /min"),
-        ("Heart band", f"{heart_band_hz[0]}–{heart_band_hz[1]} Hz"),
         ("Noise ref. band", f"{settings.reference_band_hz[0]}–{settings.reference_band_hz[1]} Hz"),
-        ("DC compensation", settings.dc_compensation),
-        ("Demodulation", settings.demodulation),
+        ("Demodulation", "circle fit + arctangent"),
         ("Circle fit", f"arc ≥ {settings.min_arc_rad} rad"),
         ("", f"residual ≤ {settings.max_circle_residual}"),
     ]
@@ -155,8 +150,6 @@ def dashboard_context(
         ("M1 Doppler filter", f"{motion.cutoff_hz} Hz, delay {pipeline.doppler_delay_s:.2f} s"
          if motion.doppler_filter_enabled else "off"),
         ("Aliasing into ±1 Hz", f"≥ {pipeline.alias_attenuation_db:.0f} dB"),
-        ("M2 centre tracking", f"{motion.center_method} {motion.center_window_s:.0f} s / {motion.center_step_s:.0f} s"
-         if motion.center_tracking_enabled else "off"),
         ("M3 weighting", f"κ₀ {motion.weight_midpoint_db:.0f} dB, slope {motion.weight_slope_db:.0f} dB"
          if motion.contamination_enabled else "off (former pause)"),
         ("M4 measurement", f"{pipeline.measurement_settings.duration_s:.0f} s (key m)"),
@@ -169,7 +162,6 @@ def dashboard_context(
         "waterfall_columns": int(display.get("waterfall_columns", 240)),
         "history_s": float(display.get("history_s", 120.0)),
         "breathing_band_hz": breathing_band_hz,
-        "heart_band_hz": heart_band_hz,
         "reference_band_hz": settings.reference_band_hz,
         "threshold_on": detection.threshold_on,
         "threshold_off": detection.threshold_off,
@@ -181,10 +173,7 @@ def dashboard_context(
 
 def show_or_log(outputs, headless: bool, context: dict[str, Any], full_screen: bool,
                 on_measure: Callable[[], None] | None = None) -> None:
-    """Display the outputs in the dashboard, or log them when *headless*.
-
-    *on_measure* is called when the key ``m`` of the dashboard is pressed.
-    """
+    """Show the outputs in the dashboard (*on_measure* on the key ``m``), or log them when *headless*."""
     if headless:
         try:
             for output in outputs:

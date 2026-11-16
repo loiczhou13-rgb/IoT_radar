@@ -1,17 +1,13 @@
 #!/usr/bin/env python3
-"""Replay a recorded HDF5 session through the phase-demodulation pipeline and the dashboard.
+"""Replay a recorded session through the same pipeline and dashboard as a live run.
 
-The raw IQ blocks of the session are fed to the same pipeline as a live run
-(:class:`iot_radar.acquisition.sources.ReplaySource`), so the replay shows
-what the radar computed — or what it would compute with another
-configuration (``--config``).
-
-Examples (from the repository root)::
+Examples::
 
     python scripts/replay.py data/sessions/session_0001_20261005_143012.h5
     python scripts/replay.py SESSION.h5 --speed 4      # four times faster
     python scripts/replay.py SESSION.h5 --speed 0      # as fast as possible
     python scripts/replay.py SESSION.h5 --headless     # no window: results in the log
+    python scripts/replay.py SESSION.h5 --config other.yaml   # another configuration
 """
 
 from __future__ import annotations
@@ -47,11 +43,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def replay_config(source: ReplaySource, config_path: str | None) -> dict[str, Any]:
-    """Configuration of the replay: ``--config``, else the one stored in the session.
-
-    Sessions converted from legacy recordings store no configuration; the
-    default configuration is then used, with a warning.
-    """
+    """``--config``, else the configuration stored in the session, else the default one (legacy sessions)."""
     if config_path is not None:
         return load_config(config_path)
     stored = source.attributes.get("config_yaml", "")
@@ -67,11 +59,7 @@ def session_config(cfg: dict[str, Any], source: ReplaySource) -> dict[str, Any]:
 
 
 def build_pipeline(cfg: dict[str, Any], source: ReplaySource) -> VitalSignsPipeline:
-    """Pipeline for the session: its sampling rate and TX offset come from the file.
-
-    Raw ADC sessions (Pluto, simulation) keep the saturation check of M3;
-    converted legacy sessions are not ADC values.
-    """
+    """Pipeline at the rate and TX offset of the session; ADC saturation check only for raw ADC sessions."""
     raw_adc = source.attributes.get("iq_stage") == "raw_adc"
     return VitalSignsPipeline.from_config(cfg, source.sample_rate_hz, float(source.attributes["tx_offset_hz"]),
                                           adc_full_scale=ADC_FULL_SCALE if raw_adc else None)

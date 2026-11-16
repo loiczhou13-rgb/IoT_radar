@@ -1,10 +1,6 @@
-"""Real-time dashboard of the phase-demodulation radar (matplotlib).
+"""Real-time dashboard (matplotlib) of the :class:`iot_radar.pipeline.PipelineOutput` objects.
 
-Place in the chain: last step.  The dashboard displays the
-:class:`iot_radar.pipeline.PipelineOutput` objects it receives; it does not
-know where the samples come from (live radar, simulation or replay).
-
-Layout (GridSpec 3 × 5)::
+It does not know where the samples come from.  Layout (GridSpec 3 × 5)::
 
     ┌──────────┬──────────────────────────────┬────────────┬────────────┐
     │ status   │ displacement waveform +       │ IQ         │            │
@@ -17,36 +13,13 @@ Layout (GridSpec 3 × 5)::
     │ history  │ spectrum      │ waterfall     │            │            │
     └──────────┴───────────────┴───────────────┴────────────┴────────────┘
 
-* **Status card** — detector state (and cause of a pause: target motion or
-  ADC saturation), breathing rate, confidence gauge with the ON/OFF
-  thresholds, duration of the breathing episode, measurement mode (progress,
-  then decision), apnea banner, stream discontinuities.
-* **Displacement waveform** — chest expansion towards the radar (inhalation
-  up), raw and band-passed, with end-of-inhalation ▲ / end-of-exhalation ▼.
-* **IQ constellation** — the analysed window in the IQ plane with the fitted
-  circle and its centre (DC offset): shows whether the phase can be
-  extracted (arc length, noise, clutter).
-* **Confidence timeline** — smoothed and instantaneous confidence, SNR and
-  concentration scores, M3 weight of the latest block; background coloured
-  by state.
-* **Measured quantities** — rates of four estimators, breath interval and
-  variability, depth, I:E ratio, time since the last breath, SNR,
-  concentration, echo / DC amplitudes, LO drift, indicative heart rate;
-  motion robustness (current weight, contaminated share, saturation) and the
-  last measurement (decision, rate, confidence, quality summary).
-* **Rate history**, **displacement spectrum** (bands, peak window, noise
-  floor) and **micro-Doppler waterfall** of the slow time.
-* **Parameters** — static radar, processing and detection parameters.
+Key ``m`` calls ``on_measure``: the caller starts the measurement (M4) in
+the producer thread; the GUI never touches the pipeline.
 
-Key ``m`` asks for a measurement (M4): the dashboard only calls the
-``on_measure`` callback; the caller starts the measurement in the producer
-thread, the pipeline is never touched from the GUI.
-
-Threading model: the outputs are produced in a daemon thread (blocking SDR
-reads never freeze the window); a matplotlib timer moves them to the
-display every 100 ms, so none is lost.  Two WSLg + TkAgg pitfalls are
-avoided: the producer starts only after the first ``draw_event`` (window
-painted), and the output iterator is only closed by the producer thread.
+Threads: the outputs are produced in a daemon thread (blocking SDR reads do
+not freeze the window) and a 100 ms timer displays them.  WSLg + TkAgg: the
+producer starts after the first ``draw_event``, and only it closes the
+output iterator.
 """
 
 from __future__ import annotations
@@ -90,13 +63,13 @@ STATE_STYLE = {
     STATE_BREATHING: ("#31a354", "BREATHING DETECTED"),
     STATE_MOTION: ("#fd8d3c", "MOTION — MEASUREMENT PAUSED"),
 }
-"""Colour and label of each detector state."""
+"""Colour and label of each state."""
 
 PAUSE_TEXT = {
     "motion": ("MOTION — MEASUREMENT PAUSED", "Target moving — rate paused until the window is clean"),
     "saturation": ("ADC SATURATION — PAUSED", "Lower sdr.rx_gain_db or move the radar"),
 }
-"""Label and explanation of a pause, by cause (``BreathingState.pause_reason``)."""
+"""Label and explanation of a pause, by ``BreathingState.pause_reason``."""
 
 DECISION_TEXT = {"breathing": "BREATHING", "no_breathing": "NO BREATHING", "inconclusive": "INCONCLUSIVE"}
 
@@ -122,26 +95,13 @@ def _fmt(value: float | None, fmt: str, unit: str = "", default: str = "—") ->
 
 
 class PhaseDashboard:
-    """Matplotlib dashboard of the breathing detection.
+    """Dashboard of the breathing detection.
 
-    Parameters
-    ----------
-    context : dict
-        Static description of the run:
-
-        * ``title`` and ``subtitle`` (str);
-        * ``micro_doppler_f_hz`` (axis of the micro-Doppler columns, Hz) and
-          ``display_max_hz`` (half-span shown);
-        * ``waterfall_columns`` (int) and ``history_s`` (length of the
-          timelines, s);
-        * ``breathing_band_hz``, ``heart_band_hz``, ``reference_band_hz``,
-          ``threshold_on``, ``threshold_off``, ``peak_halfwidth_hz``;
-        * ``parameters`` — ``[(section title, [(name, value), ...]), ...]``.
-    full_screen : bool, optional
-        Toggle the full-screen mode at start-up.
-    on_measure : callable or None, optional
-        Called (GUI thread, no argument) when the key ``m`` is pressed: the
-        caller starts a measurement (M4).  ``None`` disables the key.
+    *context*: static description of the run (``title``, ``subtitle``,
+    ``micro_doppler_f_hz``, ``display_max_hz``, ``waterfall_columns``,
+    ``history_s``, bands, thresholds, ``peak_halfwidth_hz``, and
+    ``parameters`` = ``[(section, [(name, value), ...]), ...]``).
+    *on_measure*: called on the key ``m`` (``None`` disables it).
     """
 
     def __init__(self, context: dict[str, Any], full_screen: bool = False,
@@ -155,7 +115,6 @@ class PhaseDashboard:
         self._n_columns = int(context.get("waterfall_columns", 240))
         self._breathing_band_hz = tuple(context.get("breathing_band_hz", (0.1, 0.5)))
         self._reference_band_hz = tuple(context.get("reference_band_hz", (2.5, 5.0)))
-        self._heart_band_hz = tuple(context.get("heart_band_hz", (0.8, 2.0)))
         self._threshold_on = float(context.get("threshold_on", 0.6))
         self._threshold_off = float(context.get("threshold_off", 0.4))
         self._peak_halfwidth_hz = float(context.get("peak_halfwidth_hz", 0.1))
@@ -285,7 +244,6 @@ class PhaseDashboard:
         # --- Displacement spectrum ---------------------------------------------
         ax = self.ax_spectrum
         ax.axvspan(*self._breathing_band_hz, color="tab:green", alpha=0.10, label="breathing band")
-        ax.axvspan(*self._heart_band_hz, color="tab:pink", alpha=0.06, label="heart band")
         ax.axvspan(*self._reference_band_hz, color="tab:red", alpha=0.06, label="noise reference")
         (self._line_spectrum,) = ax.plot([], [], color="tab:purple", linewidth=1.0)
         self._peak_span = ax.axvspan(0, 0, color="tab:green", alpha=0.35, label="peak window")
@@ -543,7 +501,6 @@ class PhaseDashboard:
         """Text of the measured-quantities panel."""
         metrics, cycles, demodulation = analysis.metrics, analysis.cycles, analysis.demodulation
         unit = "mm" if demodulation.calibrated else "a.u."
-        rates = analysis.rates_hz
 
         def bpm(rate_hz: float | None) -> str:
             return _fmt(60 * rate_hz if rate_hz else None, ".1f")
@@ -554,8 +511,8 @@ class PhaseDashboard:
             interval = _fmt(cycles.intervals_s.mean() if cycles.intervals_s.size else None, ".2f", " s")
         breathing_rows = [
             ("Reported rate", _fmt(breathing.rate_bpm, ".1f", " /min")),
-            ("FFT | ACF", f"{bpm(rates.get('fft'))} | {bpm(rates.get('acf'))} /min"),
-            ("Cycles | ZC", f"{bpm(rates.get('peaks'))} | {bpm(rates.get('zero_crossing'))} /min"),
+            ("Spectral peak", f"{bpm(metrics.rate_hz)} /min"),
+            ("From the cycles", f"{bpm(cycles.rate_hz)} /min"),
             ("Breath interval", interval),
             ("Depth", _fmt(cycles.depth, ".1f", f" {unit}")),
             ("I:E ratio", _fmt(cycles.ie_ratio, ".2f") if demodulation.calibrated else "— (sign unknown)"),
@@ -576,7 +533,6 @@ class PhaseDashboard:
             ]
         signal_rows += [
             ("LO drift", f"{analysis.lo_drift_hz * 1e3:+.1f} mHz"),
-            ("Heart rate (ind.)", bpm(analysis.heart_rate_hz) + " /min"),
         ]
         sections = [("Breathing", breathing_rows), ("Detection", detection_rows), ("Signal", signal_rows)]
         if contamination is not None:

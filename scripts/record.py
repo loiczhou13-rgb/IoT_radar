@@ -1,28 +1,20 @@
 #!/usr/bin/env python3
 """Record radar sessions (raw IQ) into HDF5 files, without display.
 
-Examples (from the repository root) — a 2-minute session with a breathing
-person 2.5 m behind 20 cm of concrete::
+Examples::
 
+    # 2 min, breathing person 2.5 m behind 20 cm of concrete
     python scripts/record.py --label breathing --duration-s 120 \
         --subject-id S01 --distance-m 2.5 --obstacle concrete \
         --obstacle-thickness-cm 20 --room lab_b12
-
-Five 60 s sessions of an empty room with a 2-minute pause after each one::
-
+    # five 60 s sessions of an empty room, 2 min apart
     python scripts/record.py -n 5 --interval-s 120 --label empty --duration-s 60 --room lab_b12
-
-Simulated session (the label then sets a constant simulated scene; without
-``--label`` the scene of the configuration — possibly a timeline — is used
-and the annotations follow it)::
-
+    # simulation: --label sets a constant scene, otherwise the scene of the configuration
     python scripts/record.py --simulation --duration-s 30
 
-Each session is written to ``<sessions_dir>/session_<id>_<YYYYMMDD>_<HHMMSS>.h5``
-(UTC start time, see ``iot_radar.acquisition.recording`` for the layout).  The
-whole session is annotated with ``--label``; a simulated session also stores
-the simulated chest displacement and the intervals of the simulated
-disturbances (people moving around the radar) as ground truth.
+File: ``<sessions_dir>/session_<id>_<YYYYMMDD>_<HHMMSS>.h5`` (UTC, layout in
+``iot_radar.acquisition.recording``), annotated with ``--label``; a simulated
+session also stores the ground truth (chest displacement, disturbances).
 """
 
 from __future__ import annotations
@@ -110,12 +102,8 @@ def scene_from_args(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def record_session(cfg: dict[str, Any], args: argparse.Namespace, session_id: int) -> Path:
-    """Record one session and return the path of its file.
-
-    The acquisition stops after ``args.duration_s`` seconds of **signal**
-    (whole blocks), on Ctrl-C, or when the PlutoSDR link is lost; the file is
-    closed properly in every case.
-    """
+    """Record one session; stop after ``duration_s`` of signal, on Ctrl-C or when the
+    link is lost (the file is closed properly in every case).  Return its path."""
     simulation = args.simulation or cfg["simulation"].get("enabled", False)
     source = open_source(cfg, simulation=args.simulation)
     radar = radar_attributes(cfg, source)

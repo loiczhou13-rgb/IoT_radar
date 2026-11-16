@@ -9,10 +9,6 @@ A portable **continuous-wave (CW) radar** built on an **ADALM-Pluto** SDR
 chest displacement in millimetres and decides, every half second, whether
 someone is breathing, holding their breath (apnea) or moving.
 
-Student project (S6, IoT team).  Everything runs in Python 3.10+, with or
-without the radar: a physical simulation and recorded sessions feed exactly
-the same processing chain.
-
 > **Status.** The phase chain is validated on the simulated radar (rate within
 > ±1 breath/min, displacement amplitude, apnea, empty scene, stream
 > discontinuities — see `tests/test_vital_signs_pipeline.py`), including

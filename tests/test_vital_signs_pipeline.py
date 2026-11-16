@@ -1,10 +1,7 @@
-"""Validation of the phase-demodulation pipeline on the simulated radar.
+"""Pipeline on the simulated radar, with the default settings of configs/radar.yaml (M1 and M3 on).
 
-A reduced configuration keeps the tests fast: 100 kS/s instead of 2 MS/s
-(decimation 5000 instead of 100000 down to the 20 Hz slow time), with the
-default processing and detection settings of configs/radar.yaml, including
-the motion robustness (M1 to M3, MOTION_ROBUSTNESS_PLAN.md).  The noise
-(-10 dB per ADC sample) gives a slow-time SNR of about 27 dB.
+Fast configuration: 100 kS/s (decimation 5000 to 20 Hz); −10 dB per ADC
+sample gives about 27 dB in the slow time.
 """
 
 from __future__ import annotations
@@ -82,9 +79,7 @@ def test_apnea_raises_the_alert() -> None:
     outputs = _run(_config(timeline=[[0, "breathing"], [35, "apnea"]], heart_amplitude_mm=0.15), 50.0)
     assert not _at(outputs, 34.0).breathing.apnea
     assert _at(outputs, 34.0).breathing.state == STATE_BREATHING
-    # The last inhalation before the apnea ends at 32.5 s (chest maximum of
-    # the 0.3 Hz breathing); apnea_s = 10 s, so the alert comes at ~42.5 s,
-    # plus the delay of the M1 filter.
+    # Last inhalation at 32.5 s + apnea_s (10 s) + M1 delay.
     alert_times_s = [o.t_s for o in outputs if o.breathing.apnea]
     assert alert_times_s and 42.0 + DOPPLER_DELAY_S <= alert_times_s[0] <= 44.0 + DOPPLER_DELAY_S
     assert all(o.breathing.apnea for o in outputs if o.t_s >= 44.0 + DOPPLER_DELAY_S)
@@ -153,3 +148,23 @@ def test_slow_input_rate_of_converted_recordings() -> None:
     logging.disable(logging.NOTSET)
     assert outputs[-1].analysis.metrics.rate_hz == pytest.approx(0.25, abs=0.01)
     assert outputs[-1].micro_doppler_column_db.shape == (256,)
+
+
+def test_unknown_configuration_keys_are_refused() -> None:
+    """5.5: a typo is an error that lists the valid keys, never a silent default."""
+    cfg = _config()
+    cfg["vital_signs"]["window_seconds"] = 30.0
+    with pytest.raises(ValueError, match=r"window_seconds.*'vital_signs'.*Valid keys: .*window_s"):
+        VitalSignsPipeline.from_config(cfg, 100e3, 244.140625)
+    cfg = _config()
+    cfg["vital_signs"]["detection"]["apnea_seconds"] = 10.0
+    with pytest.raises(ValueError, match=r"apnea_seconds.*vital_signs.detection"):
+        VitalSignsPipeline.from_config(cfg, 100e3, 244.140625)
+    cfg = _config()
+    cfg["simulation"]["breath_rate"] = 0.3
+    with pytest.raises(ValueError, match=r"breath_rate.*'simulation'.*breath_rate_hz"):
+        open_source(cfg, simulation=True)
+    cfg = _config()
+    cfg["vital_sign"] = {}
+    with pytest.raises(ValueError, match=r"vital_sign.*radar configuration.*vital_signs"):
+        open_source(cfg, simulation=True)

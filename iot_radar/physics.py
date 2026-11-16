@@ -1,8 +1,4 @@
-"""Physical constants and the monostatic radar range equation (link budget).
-
-Used across the chain: the wavelength sets the phase sensitivity to a chest
-displacement, and the link budget gives the range shown on the dashboard.
-"""
+"""Physical constants and the radar range equation (range shown on the dashboard)."""
 
 from __future__ import annotations
 
@@ -28,26 +24,10 @@ def radar_range_m(
     wavelength_m: float,
     noise_bandwidth_hz: float,
 ) -> float:
-    """Maximum detection range of the monostatic radar equation (m).
+    """Range (m) at which the echo reaches ``min_snr_db`` (monostatic radar equation).
 
-    ``R = [P_t G_t G_r λ² σ / ((4π)³ k T0 B F L SNR_min)]^(1/4)``
-
-    Parameters
-    ----------
-    scenario : dict
-        One scenario of the ``link_budget`` configuration section, with the
-        keys ``tx_power_dbm``, ``tx_antenna_gain_dbi``, ``rx_antenna_gain_dbi``,
-        ``radar_cross_section_m2``, ``noise_figure_db``, ``system_losses_db``
-        and ``min_snr_db``.
-    wavelength_m : float
-        Carrier wavelength λ (m).
-    noise_bandwidth_hz : float
-        Effective noise bandwidth B (Hz).
-
-    Returns
-    -------
-    float
-        Range (m) at which the echo reaches the minimum SNR.
+    ``R = [P_t G_t G_r λ² σ / ((4π)³ k T0 B F L SNR_min)]^(1/4)``; *scenario* is
+    one scenario of the ``link_budget`` section.
     """
     tx_power_w = 1e-3 * 10.0 ** (scenario["tx_power_dbm"] / 10.0)
     tx_gain = 10.0 ** (scenario["tx_antenna_gain_dbi"] / 10.0)
@@ -63,15 +43,7 @@ def radar_range_m(
 
 
 def range_interval_m(cfg: dict[str, Any]) -> tuple[float, float]:
-    """Pessimistic and optimistic detection ranges (m) of the configuration.
-
-    Reads ``sdr.center_frequency_hz`` and the ``link_budget`` section.
-
-    Returns
-    -------
-    tuple[float, float]
-        ``(range_min_m, range_max_m)``: pessimistic then optimistic scenario.
-    """
+    """``(pessimistic, optimistic)`` detection ranges (m) of the configuration."""
     link_budget = cfg["link_budget"]
     f_c_hz = float(cfg["sdr"]["center_frequency_hz"])
     wavelength_m = SPEED_OF_LIGHT / f_c_hz

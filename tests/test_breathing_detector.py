@@ -45,8 +45,10 @@ def test_metrics_of_breathing_and_of_noise() -> None:
 
 
 def test_settings_from_config() -> None:
-    settings = DetectionSettings.from_config({"threshold_on": 0.7, "unknown_key": 1})
+    settings = DetectionSettings.from_config({"threshold_on": 0.7})
     assert settings.threshold_on == 0.7 and settings.threshold_off == 0.4
+    with pytest.raises(ValueError, match="unknown_key"):
+        DetectionSettings.from_config({"threshold_on": 0.7, "unknown_key": 1})
     with pytest.raises(ValueError):
         DetectionSettings.from_config({"threshold_on": 0.3, "threshold_off": 0.5})
 

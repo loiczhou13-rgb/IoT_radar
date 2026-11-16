@@ -1,1 +1,1 @@
-"""Signal-processing bricks (no dependency on acquisition, UI or ML code)."""
+"""Signal-processing bricks (no dependency on the acquisition or the UI)."""

@@ -1,13 +1,10 @@
 #!/usr/bin/env python3
-"""Home screen of the radar (pygame): start the radar on the PlutoSDR or in simulation.
-
-Run from the repository root::
+"""Home screen (pygame): start the radar on the PlutoSDR or in simulation.
 
     python scripts/launcher.py
 
-Each button runs ``scripts/run_radar.py`` in its **own process**: matplotlib's
-Tk back-end must own the main thread of its process, and the radar parses its
-own command line (bug B4: it used to run in a thread of the launcher).
+Each button runs ``scripts/run_radar.py`` in its own process: the Tk back-end
+of matplotlib must own the main thread, and the radar parses its own command line.
 """
 
 from __future__ import annotations

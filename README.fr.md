@@ -9,10 +9,6 @@ module la **phase** de l'écho ; le logiciel démodule cette phase, la convertit
 en déplacement du thorax en millimètres et décide, toutes les demi-secondes,
 si quelqu'un respire, retient sa respiration (apnée) ou bouge.
 
-Projet étudiant (S6, équipe IoT).  Tout tourne en Python 3.10+, avec ou sans
-le radar : une simulation physique et les sessions enregistrées alimentent
-exactement la même chaîne de traitement.
-
 > **État.** La chaîne de phase est validée sur le radar simulé (fréquence à
 > ±1 respiration/min près, amplitude du déplacement, apnée, scène vide,
 > discontinuités du flux — voir `tests/test_vital_signs_pipeline.py`), y
